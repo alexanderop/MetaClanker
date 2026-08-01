@@ -149,6 +149,12 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     if (event.type === "synchronized") return;
     if (event.type === "thread-status") {
       detail.value = { ...current, thread: { ...current.thread, status: event.status } };
+      shell.value = {
+        ...shell.value,
+        threads: shell.value.threads.map((thread) =>
+          thread.id === event.threadId ? { ...thread, status: event.status } : thread,
+        ),
+      };
       return;
     }
     if (event.type === "message-upserted") {

@@ -38,9 +38,13 @@ const thread = {
 };
 
 let startRequests: unknown[] = [];
+let eventClient: { send: (data: string) => void } | null = null;
 const threadEvents = ws
   .link("/api/threads/:id/events")
-  .addEventListener("connection", ({ client }) => client.send("pong"));
+  .addEventListener("connection", ({ client }) => {
+    eventClient = client;
+    client.send("pong");
+  });
 
 const worker = setupWorker(
   threadEvents,
@@ -96,6 +100,7 @@ beforeAll(async () => {
 beforeEach(() => {
   worker.resetHandlers();
   startRequests = [];
+  eventClient = null;
   window.localStorage.clear();
 });
 
@@ -189,6 +194,37 @@ test("a stored project draft survives a fresh app mount with its controls and cu
       targets: violation.nodes.map((node) => node.target),
     })),
   ).toEqual([]);
+});
+
+test("a completed live turn updates its sidebar status without a reload", async () => {
+  worker.use(
+    http.get("/api/shell", () =>
+      HttpResponse.json({ projects: [project], threads: [thread], latestSequence: 1 }),
+    ),
+  );
+  await router.push({ name: "thread", params: { threadId: thread.id } });
+  await router.isReady();
+  const screen = await render(App, { global: { plugins: [createPinia(), router, i18n] } });
+
+  await expect
+    .element(screen.getByRole("status", { name: "Thread status: running" }))
+    .toBeVisible();
+  expect(eventClient).not.toBeNull();
+  eventClient?.send(
+    JSON.stringify({
+      type: "thread-status",
+      sequence: 2,
+      threadId: thread.id,
+      status: "completed",
+    }),
+  );
+
+  await expect
+    .element(screen.getByRole("status", { name: "Thread status: completed" }))
+    .toBeVisible();
+  await expect
+    .element(screen.getByRole("link", { name: new RegExp(`${thread.title}.*completed`, "i") }))
+    .toBeVisible();
 });
 
 test("a rejected first send preserves every local draft field and reuses its command identity", async () => {
