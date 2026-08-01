@@ -15,7 +15,7 @@
     "test:unit": "vitest run --project node-unit",
     "test:contract": "pnpm --filter @metaclanker/testing build && vitest run --project node-contract",
     "test:e2e:web": "pnpm build && playwright test",
-    "test:integration": "vitest run --project node-integration",
+    "test:integration": "pnpm --filter @metaclanker/testing build && vitest run --project node-integration",
     "test:browser": "vitest run --project browser-ui",
     "test:mutation": "stryker run",
     "test:smoke:package": "node tests/package-smoke.mjs",
@@ -47,7 +47,6 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.65.0",
     "vitest": "4.1.10",
-    "vitest-browser-vue": "2.1.0",
     "vue-eslint-parser": "10.4.1"
   },
   "engines": {

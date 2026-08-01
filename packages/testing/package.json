@@ -5,6 +5,30 @@
   "type": "module",
   "exports": {
     "./acp/fake-agent": "./dist/acp/fake-agent.js",
+    "./acp/scenarios": {
+      "types": "./dist/acp/scenarios.d.ts",
+      "default": "./dist/acp/scenarios.js"
+    },
+    "./acp/controller": {
+      "types": "./dist/acp/controller.d.ts",
+      "default": "./dist/acp/controller.js"
+    },
+    "./acp/redaction": {
+      "types": "./dist/acp/redaction.d.ts",
+      "default": "./dist/acp/redaction.js"
+    },
+    "./fixtures/application-data": {
+      "types": "./dist/fixtures/application-data.d.ts",
+      "default": "./dist/fixtures/application-data.js"
+    },
+    "./fixtures/builders": {
+      "types": "./dist/fixtures/builders.d.ts",
+      "default": "./dist/fixtures/builders.js"
+    },
+    "./vue/render-feature": {
+      "types": "./dist/vue/render-feature.d.ts",
+      "default": "./dist/vue/render-feature.js"
+    },
     "./fixtures": {
       "types": "./dist/fixtures.d.ts",
       "default": "./dist/fixtures.js"
@@ -15,9 +39,12 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "catalog:"
+    "@agentclientprotocol/sdk": "catalog:",
+    "@metaclanker/contracts": "workspace:*"
   },
   "devDependencies": {
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest-browser-vue": "2.1.0",
+    "vue": "catalog:"
   }
 }

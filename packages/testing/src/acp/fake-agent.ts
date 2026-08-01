@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import * as acp from "@agentclientprotocol/sdk";
 
+import { scenarioFromEnvironment } from "./scenarios.js";
+
 const sessions = new Set<string>();
+const scenario = scenarioFromEnvironment(process.env["METACLANKER_FAKE_ACP_SCENARIO"]);
 const cancellations = new Map<string, () => void>();
 const noop = (): void => undefined;
 const createCancellation = (): {
@@ -15,35 +18,50 @@ const createCancellation = (): {
   return { promise, resolve };
 };
 
+const terminate = (): Promise<never> => {
+  process.exitCode = 17;
+  queueMicrotask(() => process.exit(17));
+  return new Promise<never>(() => undefined);
+};
+
+const sessionModes = () => ({
+  currentModeId: "default",
+  availableModes: [{ id: "default", name: "Default", description: "Deterministic mode" }],
+});
+
 const app = acp
   .agent({ name: "MetaClanker deterministic fake" })
-  .onRequest(acp.methods.agent.initialize, ({ params }) => ({
-    protocolVersion: params.protocolVersion,
-    agentCapabilities: {
-      promptCapabilities: { image: false, audio: false, embeddedContext: false },
-      sessionCapabilities: { close: {}, resume: {} },
-    },
-    agentInfo: { name: "metaclanker-fake-acp", version: "1.0.0" },
-  }))
+  .onRequest(acp.methods.agent.initialize, ({ params }) => {
+    if (scenario.crashAt === "initialize") return terminate();
+    return {
+      protocolVersion:
+        scenario.protocolVersion === 1 ? params.protocolVersion : scenario.protocolVersion,
+      agentCapabilities: {
+        promptCapabilities: { image: false, audio: false, embeddedContext: false },
+        sessionCapabilities: {
+          ...(scenario.sessionCapabilities.close ? { close: {} } : {}),
+          ...(scenario.sessionCapabilities.resume ? { resume: {} } : {}),
+          ...(scenario.sessionCapabilities.delete ? { delete: {} } : {}),
+        },
+        ...(scenario.sessionCapabilities.load ? { loadSession: true } : {}),
+      },
+      agentInfo: { name: "metaclanker-fake-acp", version: "1.0.0" },
+    };
+  })
   .onRequest(acp.methods.agent.session.new, ({ params }) => {
+    if (scenario.crashAt === "session-new") return terminate();
     const sessionId = `fake-${crypto.randomUUID()}`;
     sessions.add(sessionId);
     return {
       sessionId,
-      modes: {
-        currentModeId: "default",
-        availableModes: [{ id: "default", name: "Default", description: "Deterministic mode" }],
-      },
+      modes: sessionModes(),
       _meta: { cwd: params.cwd },
     };
   })
   .onRequest(acp.methods.agent.session.resume, ({ params }) => {
     sessions.add(params.sessionId);
     return {
-      modes: {
-        currentModeId: "default",
-        availableModes: [{ id: "default", name: "Default", description: "Deterministic mode" }],
-      },
+      modes: sessionModes(),
       _meta: { cwd: params.cwd },
     };
   })
@@ -51,6 +69,22 @@ const app = acp
     if (!sessions.has(params.sessionId)) {
       throw new Error("Unknown fake session");
     }
+    if (scenario.crashAt === "prompt" || scenario.prompt.mode === "crash") return terminate();
+    if (scenario.prompt.mode === "malformed-frame") {
+      process.stdout.write('{"jsonrpc":\n');
+      return terminate();
+    }
+    if (scenario.prompt.mode === "complete") {
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `${scenario.prompt.message} (${params.sessionId})` },
+        },
+      });
+      return { stopReason: "end_turn" };
+    }
+
     const promptText = params.prompt
       .map((block) => (block.type === "text" ? block.text : ""))
       .join(" ");
@@ -74,7 +108,7 @@ const app = acp
       sessionId: params.sessionId,
       update: {
         sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: "I’ll inspect the project and make the requested change." },
+        content: { type: "text", text: scenario.prompt.message },
       },
     });
     await client.notify(acp.methods.client.session.update, {

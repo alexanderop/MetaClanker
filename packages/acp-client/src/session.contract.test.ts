@@ -5,16 +5,38 @@ import { describe, expect, it } from "vitest";
 
 import type { NormalizedAgentEvent } from "@metaclanker/application/ports";
 import { ProjectId, ThreadId, TurnId } from "@metaclanker/contracts/ids";
+import { fakeAcpEnvironment } from "@metaclanker/testing/acp/controller";
+import { acpScenario, type AcpScenario } from "@metaclanker/testing/acp/scenarios";
 
 import { makeAcpSessions } from "./session.js";
 
 const notObservedYet = (): void => undefined;
 
+const fakeAgent = fileURLToPath(new URL("../../testing/dist/acp/fake-agent.js", import.meta.url));
+
+const openFakeSession = async (scenario: AcpScenario, suffix: string) => {
+  const command = {
+    command: process.execPath,
+    args: [fakeAgent],
+    environment: fakeAcpEnvironment(scenario),
+  };
+  const sessions = makeAcpSessions({ codex: command, claude: command });
+  return Effect.runPromise(
+    sessions.open({
+      provider: "codex",
+      cwd: process.cwd(),
+      projectId: ProjectId.make(`project:${suffix}`),
+      threadId: ThreadId.make(`thread:${suffix}`),
+      providerSessionId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+    }),
+  );
+};
+
 describe("ACP process supervision", () => {
   it("negotiates v1, streams updates, and resolves one live permission", async () => {
-    const fakeAgent = fileURLToPath(
-      new URL("../../testing/dist/acp/fake-agent.js", import.meta.url),
-    );
     const sessions = makeAcpSessions({
       codex: { command: process.execPath, args: [fakeAgent] },
       claude: { command: process.execPath, args: [fakeAgent] },
@@ -74,9 +96,6 @@ describe("ACP process supervision", () => {
   });
 
   it("keeps a session update that arrives after the prompt response", async () => {
-    const fakeAgent = fileURLToPath(
-      new URL("../../testing/dist/acp/fake-agent.js", import.meta.url),
-    );
     const sessions = makeAcpSessions({
       codex: { command: process.execPath, args: [fakeAgent] },
       claude: { command: process.execPath, args: [fakeAgent] },
@@ -119,5 +138,77 @@ describe("ACP process supervision", () => {
     await trailing;
     await Effect.runPromise(handle.close);
     expect(chunks.join("")).toBe("trailing chunk");
+  });
+
+  it("honors omitted session capabilities without inventing support", async () => {
+    const handle = await openFakeSession(
+      acpScenario({
+        sessionCapabilities: { close: false, resume: false, load: false, delete: false },
+        prompt: { mode: "complete" },
+      }),
+      "no-capabilities",
+    );
+
+    expect(handle.capabilities).toMatchObject({
+      protocolVersion: 1,
+      close: false,
+      resume: false,
+      load: false,
+      delete: false,
+    });
+    await Effect.runPromise(handle.close);
+  });
+
+  it("rejects an adapter that negotiates an unsupported protocol version", async () => {
+    await expect(
+      openFakeSession(acpScenario({ protocolVersion: 2 }), "unsupported-protocol"),
+    ).rejects.toThrow("unsupported ACP protocol 2");
+  });
+
+  it("keeps concurrent provider processes isolated", async () => {
+    const scenario = acpScenario({ prompt: { mode: "complete", message: "isolated" } });
+    const [first, second] = await Promise.all([
+      openFakeSession(scenario, "concurrent-first"),
+      openFakeSession(scenario, "concurrent-second"),
+    ]);
+    const events = await Promise.all(
+      [first, second].map((handle, index) => {
+        const chunks: string[] = [];
+        return Effect.runPromise(
+          handle.prompt(
+            {
+              turnId: TurnId.make(`turn:concurrent-${String(index)}`),
+              text: "Identify this session",
+              attachments: [],
+            },
+            (event) =>
+              Effect.sync(() => {
+                if (event.type === "agent-message-chunk") chunks.push(event.chunk);
+              }),
+          ),
+        ).then(() => chunks);
+      }),
+    );
+    await Promise.all([Effect.runPromise(first.close), Effect.runPromise(second.close)]);
+
+    expect(events[0]).toHaveLength(1);
+    expect(events[1]).toHaveLength(1);
+    expect(events[0]?.[0]).toMatch(/^isolated \(fake-/u);
+    expect(events[1]?.[0]).toMatch(/^isolated \(fake-/u);
+    expect(events[0]?.[0]).not.toBe(events[1]?.[0]);
+  });
+
+  it("reports a provider exit during prompt dispatch as a disconnected session", async () => {
+    const handle = await openFakeSession(acpScenario({ crashAt: "prompt" }), "prompt-crash");
+
+    await expect(
+      Effect.runPromise(
+        handle.prompt(
+          { turnId: TurnId.make("turn:prompt-crash"), text: "Crash now", attachments: [] },
+          () => Effect.void,
+        ),
+      ),
+    ).rejects.toThrow("ACP connection closed");
+    await Effect.runPromise(handle.close);
   });
 });

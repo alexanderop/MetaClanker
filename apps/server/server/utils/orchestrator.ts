@@ -33,7 +33,6 @@ import { publishThreadEvent } from "./hub.js";
 import { runApplication } from "./runtime.js";
 import { deriveThreadTitle } from "./thread-title.js";
 
-const fakeEntry = process.env["METACLANKER_FAKE_ACP_ENTRY"];
 const unavailableProviders = new Set<Provider>();
 const unavailableAdapter = (provider: Provider): AdapterCommand => {
   unavailableProviders.add(provider);
@@ -47,6 +46,7 @@ const installedAdapter = (provider: Provider): AdapterCommand => {
   }
 };
 const adapterCommands = (): Readonly<Record<Provider, AdapterCommand>> => {
+  const fakeEntry = process.env["METACLANKER_FAKE_ACP_ENTRY"];
   if (fakeEntry !== undefined) {
     const entry = fakeEntry.startsWith("file:") ? fileURLToPath(fakeEntry) : fakeEntry;
     const command = { command: process.execPath, args: [entry] };
@@ -55,7 +55,6 @@ const adapterCommands = (): Readonly<Record<Provider, AdapterCommand>> => {
   return { codex: installedAdapter("codex"), claude: installedAdapter("claude") };
 };
 
-const sessions = makeAcpSessions(adapterCommands());
 const activeSessions = new Map<string, AcpSessionHandle>();
 const activeTurns = new Set<string>();
 const backgroundTasks = new Set<Promise<void>>();
@@ -140,7 +139,7 @@ const openThreadSession = async (
   const current = activeSessions.get(detail.thread.id);
   if (current !== undefined) return current;
   const handle = await Effect.runPromise(
-    sessions.open({
+    makeAcpSessions(adapterCommands()).open({
       provider: detail.thread.provider,
       cwd: project.path,
       projectId: project.id,
@@ -615,6 +614,11 @@ export const closeAgentSessions = async (): Promise<void> => {
     [...activeSessions.values()].map((session) => Effect.runPromise(session.close)),
   );
   activeSessions.clear();
+  await Promise.all(backgroundTasks);
+};
+
+/** Waits for durable follow-up work without using elapsed time as a test signal. */
+export const drainAgentWork = async (): Promise<void> => {
   await Promise.all(backgroundTasks);
 };
 

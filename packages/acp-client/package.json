@@ -28,6 +28,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@metaclanker/testing": "workspace:*",
     "typescript": "catalog:"
   }
 }

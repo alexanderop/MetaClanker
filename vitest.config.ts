@@ -2,11 +2,12 @@ import { playwright } from "@vitest/browser-playwright";
 import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vitest/config";
 
-const runtimeDataExclude = ["apps/server/.data/**"];
+const runtimeDataExclude = ["**/node_modules/**", "apps/server/.data/**"];
 
 export default defineConfig({
   test: {
     passWithNoTests: true,
+    allowOnly: false,
     retry: 0,
     projects: [
       {

@@ -4,10 +4,10 @@ import { HttpResponse, http, ws } from "msw";
 import { setupWorker } from "msw/browser";
 import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 import { userEvent } from "vitest/browser";
-import { render } from "vitest-browser-vue";
 
 import { ProjectId, ThreadId, TurnId } from "@metaclanker/contracts/ids";
 import { defaultUserSettings } from "@metaclanker/contracts/wire";
+import { renderFeature } from "@metaclanker/testing/vue/render-feature";
 
 import App from "../../App.vue";
 import { i18n } from "../../shared/i18n.js";
@@ -109,7 +109,7 @@ afterAll(() => worker.stop());
 test("project onboarding continues to a local draft and first send promotes exactly once", async () => {
   await router.push("/");
   await router.isReady();
-  const screen = await render(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
 
   await screen.getByRole("button", { name: "Add project" }).first().click();
   const projectDialog = screen.getByRole("dialog", { name: "Choose a server project directory" });
@@ -171,7 +171,7 @@ test("a stored project draft survives a fresh app mount with its controls and cu
   );
   await router.push({ name: "draft", params: { projectId: project.id } });
   await router.isReady();
-  const screen = await render(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
 
   const composer = screen.getByRole("textbox", {
     name: "Ask the agent to build, investigate, or explain…",
@@ -204,7 +204,7 @@ test("a completed live turn updates its sidebar status without a reload", async 
   );
   await router.push({ name: "thread", params: { threadId: thread.id } });
   await router.isReady();
-  const screen = await render(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
 
   await expect
     .element(screen.getByRole("status", { name: "Thread status: running" }))
@@ -242,7 +242,7 @@ test("a rejected first send preserves every local draft field and reuses its com
   );
   await router.push({ name: "draft", params: { projectId: project.id } });
   await router.isReady();
-  const screen = await render(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
 
   await screen
     .getByRole("textbox", { name: "Ask the agent to build, investigate, or explain…" })

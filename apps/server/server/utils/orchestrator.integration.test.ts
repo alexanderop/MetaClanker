@@ -1,100 +1,104 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect } from "effect";
 import { expect, test } from "vitest";
 
-import { Store } from "@metaclanker/application/commands";
 import { CommandId, ProjectId } from "@metaclanker/contracts/ids";
 
+import { withOrchestrationHarness } from "../test-support/orchestration.js";
+
 test("first send rejects before persistence and preserves an accepted provider failure exactly once", async () => {
-  const dataDirectory = await mkdtemp(join(tmpdir(), "metaclanker-orchestrator-data-"));
-  const projectDirectory = await mkdtemp(join(tmpdir(), "metaclanker-orchestrator-project-"));
-  const previousDataDirectory = process.env["METACLANKER_DATA_DIR"];
-  const previousFakeEntry = process.env["METACLANKER_FAKE_ACP_ENTRY"];
-  process.env["METACLANKER_DATA_DIR"] = dataDirectory;
-  process.env["METACLANKER_FAKE_ACP_ENTRY"] = join(dataDirectory, "missing-fake-agent.mjs");
+  await withOrchestrationHarness(
+    async (harness) => {
+      const rejectedCommandId = CommandId.make("command:orchestrator-rejected");
+      const acceptedCommandId = CommandId.make("command:orchestrator-accepted");
+      const projectId = ProjectId.make("project:orchestrator");
 
-  const runtime = await import("./runtime.js");
-  const orchestrator = await import("./orchestrator.js");
-  const rejectedCommandId = CommandId.make("command:orchestrator-rejected");
-  const acceptedCommandId = CommandId.make("command:orchestrator-accepted");
-  const projectId = ProjectId.make("project:orchestrator");
+      await expect(
+        harness.startThreadWithPrompt({
+          commandId: rejectedCommandId,
+          projectId: ProjectId.make("project:missing"),
+          provider: "codex",
+          model: null,
+          effort: null,
+          permissionMode: null,
+          prompt: "Do not persist this",
+          attachments: [],
+        }),
+      ).rejects.toThrow("Project not found");
+      const shellAfterRejection = await harness.shellSnapshot();
+      expect(shellAfterRejection.threads).toHaveLength(0);
+      expect(shellAfterRejection.latestSequence).toBe(0);
 
-  try {
-    await expect(
-      orchestrator.startThreadWithPrompt({
-        commandId: rejectedCommandId,
-        projectId: ProjectId.make("project:missing"),
-        provider: "codex",
+      await harness.createProject({
+        id: projectId,
+        commandId: CommandId.make("command:orchestrator-project"),
+        name: "Orchestrator project",
+        path: harness.projectDirectory,
+        gitBranch: null,
+        gitStatus: "unavailable",
+        createdAt: "2026-08-01T00:00:00.000Z",
+      });
+      const input = {
+        commandId: acceptedCommandId,
+        projectId,
+        provider: "codex" as const,
         model: null,
         effort: null,
         permissionMode: null,
-        prompt: "Do not persist this",
+        prompt: "Preserve this accepted turn",
         attachments: [],
-      }),
-    ).rejects.toThrow("Project not found");
-    const shellAfterRejection = await runtime.runApplication(
-      Effect.gen(function* () {
-        const store = yield* Store;
-        return yield* store.shellSnapshot;
-      }),
-    );
-    expect(shellAfterRejection.threads).toHaveLength(0);
-    expect(shellAfterRejection.latestSequence).toBe(0);
+      };
+      const accepted = await harness.startThreadWithPrompt(input);
+      const replayed = await harness.startThreadWithPrompt(input);
+      expect(replayed).toEqual(accepted);
 
-    await runtime.runApplication(
-      Effect.gen(function* () {
-        const store = yield* Store;
-        yield* store.createProject({
-          id: projectId,
-          commandId: CommandId.make("command:orchestrator-project"),
-          name: "Orchestrator project",
-          path: projectDirectory,
-          gitBranch: null,
-          gitStatus: "unavailable",
-          createdAt: "2026-08-01T00:00:00.000Z",
-        });
-      }),
-    );
+      await harness.close();
+      const durable = {
+        shell: await harness.shellSnapshot(),
+        detail: await harness.threadDetail(accepted.thread.id),
+      };
+      expect(durable.shell.threads).toHaveLength(1);
+      expect(durable.detail?.thread.status).toBe("failed");
+      expect(durable.detail?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+      expect(durable.detail?.messages.some((message) => message.role === "system")).toBe(true);
+    },
+    { fakeAcpEntry: join(process.cwd(), "missing-fake-agent.mjs") },
+  );
+});
+
+test("an accepted first send streams through the production ACP supervisor exactly once", async () => {
+  await withOrchestrationHarness(async (harness) => {
+    const projectId = ProjectId.make("project:orchestrator-success");
+    await harness.createProject({
+      id: projectId,
+      commandId: CommandId.make("command:orchestrator-success-project"),
+      name: "Orchestrator success project",
+      path: harness.projectDirectory,
+      gitBranch: null,
+      gitStatus: "unavailable",
+      createdAt: "2026-08-01T00:00:00.000Z",
+    });
     const input = {
-      commandId: acceptedCommandId,
+      commandId: CommandId.make("command:orchestrator-success"),
       projectId,
-      provider: "codex" as const,
+      provider: "claude" as const,
       model: null,
       effort: null,
       permissionMode: null,
-      prompt: "Preserve this accepted turn",
+      prompt: "Complete the deterministic turn",
       attachments: [],
     };
-    const accepted = await orchestrator.startThreadWithPrompt(input);
-    const replayed = await orchestrator.startThreadWithPrompt(input);
-    expect(replayed).toEqual(accepted);
 
-    await orchestrator.closeAgentSessions();
-    const durable = await runtime.runApplication(
-      Effect.gen(function* () {
-        const store = yield* Store;
-        const shell = yield* store.shellSnapshot;
-        const detail = yield* store.getThread(accepted.thread.id);
-        return { shell, detail };
-      }),
+    const accepted = await harness.startThreadWithPrompt(input);
+    const replayed = await harness.startThreadWithPrompt(input);
+    await harness.drain();
+    const detail = await harness.threadDetail(accepted.thread.id);
+
+    expect(replayed).toEqual(accepted);
+    expect(detail?.thread.status).toBe("completed");
+    expect(detail?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(detail?.messages.map((message) => message.content).join(" ")).toContain(
+      "Integration fake completed",
     );
-    expect(durable.shell.threads).toHaveLength(1);
-    expect(durable.detail?.thread.status).toBe("failed");
-    expect(durable.detail?.messages.filter((message) => message.role === "user")).toHaveLength(1);
-    expect(durable.detail?.messages.some((message) => message.role === "system")).toBe(true);
-  } finally {
-    await orchestrator.closeAgentSessions();
-    await runtime.closeApplicationRuntime();
-    if (previousDataDirectory === undefined) delete process.env["METACLANKER_DATA_DIR"];
-    else process.env["METACLANKER_DATA_DIR"] = previousDataDirectory;
-    if (previousFakeEntry === undefined) delete process.env["METACLANKER_FAKE_ACP_ENTRY"];
-    else process.env["METACLANKER_FAKE_ACP_ENTRY"] = previousFakeEntry;
-    await Promise.all([
-      rm(dataDirectory, { recursive: true, force: true }),
-      rm(projectDirectory, { recursive: true, force: true }),
-    ]);
-  }
+  });
 });
