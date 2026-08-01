@@ -12,6 +12,7 @@ import { Store } from "@metaclanker/application/commands";
 import {
   AgentNodeId,
   CommandId,
+  EventId,
   MessageId,
   PendingInteractionId,
   ProjectId,
@@ -32,6 +33,10 @@ import {
   defaultUserSettings,
 } from "@metaclanker/contracts/wire";
 import type { Project, Thread, ThreadDetail } from "@metaclanker/contracts/wire";
+import type { DomainEvent, UnsequencedDomainEvent } from "@metaclanker/domain/events";
+
+import { eventThreadId, UnsequencedDomainEventSchema } from "./eventCodec.js";
+import { runMigrations } from "./migrations.js";
 
 class DecodeStoreError extends Data.TaggedError("StoreError")<{
   readonly operation: string;
@@ -51,11 +56,6 @@ const decode = <A, I>(operation: string, schema: Schema.Schema<A, I, never>, val
   });
 
 const parseJson = (value: string): unknown => JSON.parse(value);
-
-const sqliteBoolean = (value: boolean | undefined): number | null => {
-  if (value === undefined) return null;
-  return value ? 1 : 0;
-};
 
 const ProjectRow = Schema.Struct({
   id: ProjectId,
@@ -105,6 +105,7 @@ const ToolCallRow = Schema.Struct({
   kind: Schema.String,
   status: ToolCall.fields.status,
   content: Schema.String,
+  sequence: Sequence,
   created_at: Schema.String,
   updated_at: Schema.String,
 });
@@ -120,6 +121,7 @@ const InteractionRow = Schema.Struct({
   description: Schema.String,
   options_json: Schema.String,
   status: PendingInteraction.fields.status,
+  sequence: Sequence,
   created_at: Schema.String,
 });
 
@@ -143,6 +145,14 @@ const ReceiptRow = Schema.Struct({
   aggregate_id: Schema.String,
   reason: Schema.NullOr(Schema.String),
   created_at: Schema.String,
+});
+
+const EventRow = Schema.Struct({
+  sequence: Sequence,
+  schema_version: Schema.Literal(1),
+  event_id: EventId,
+  payload_json: Schema.String,
+  received_at: Schema.String,
 });
 
 const CheckpointFileSchema = Schema.Struct({
@@ -174,6 +184,7 @@ type ToolCallRow = typeof ToolCallRow.Type;
 type InteractionRow = typeof InteractionRow.Type;
 type AgentNodeRow = typeof AgentNodeRow.Type;
 type ReceiptRow = typeof ReceiptRow.Type;
+type EventRow = typeof EventRow.Type;
 type CheckpointRow = typeof CheckpointRow.Type;
 
 const projectFromRow = (row: ProjectRow): Project => ({
@@ -219,6 +230,7 @@ const toolCallFromRow = (row: ToolCallRow): ToolCall => ({
   kind: row.kind,
   status: row.status,
   content: row.content,
+  sequence: row.sequence,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -241,6 +253,7 @@ const interactionFromRow = (row: InteractionRow) =>
         description: row.description,
         options,
         status: row.status,
+        sequence: row.sequence,
         createdAt: row.created_at,
       }),
     ),
@@ -268,53 +281,11 @@ const receiptFromRow = (row: ReceiptRow): CommandReceipt => ({
   createdAt: row.created_at,
 });
 
-const migrationStatements = [
-  `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS environments (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, git_branch TEXT, git_status TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS provider_adapters (id TEXT PRIMARY KEY, provider TEXT NOT NULL, version TEXT NOT NULL, protocol_version INTEGER NOT NULL, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, provider TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, model TEXT, provider_session_id TEXT, archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, command_id TEXT UNIQUE, status TEXT NOT NULL, prompt TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT)`,
-  `CREATE TABLE IF NOT EXISTS command_receipts (command_id TEXT PRIMARY KEY, status TEXT NOT NULL, aggregate_id TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS side_effect_intents (id TEXT PRIMARY KEY, command_id TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, schema_version INTEGER NOT NULL DEFAULT 1, event_id TEXT NOT NULL UNIQUE, thread_id TEXT, type TEXT NOT NULL, payload_json TEXT NOT NULL, received_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, turn_id TEXT, role TEXT NOT NULL, content TEXT NOT NULL, sequence INTEGER NOT NULL, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS tool_calls (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, turn_id TEXT NOT NULL, node_id TEXT NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS pending_requests (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, turn_id TEXT NOT NULL, node_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, options_json TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS agent_nodes (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, parent_id TEXT, name TEXT NOT NULL, provider TEXT NOT NULL, model TEXT, state TEXT NOT NULL, activity TEXT NOT NULL, child_count INTEGER NOT NULL DEFAULT 0, pending_approval INTEGER NOT NULL DEFAULT 0, changed_file_count INTEGER NOT NULL DEFAULT 0)`,
-  `CREATE TABLE IF NOT EXISTS agent_edges (thread_id TEXT NOT NULL, parent_id TEXT NOT NULL, child_id TEXT NOT NULL UNIQUE, PRIMARY KEY (thread_id, parent_id, child_id))`,
-  `CREATE TABLE IF NOT EXISTS checkpoints (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, turn_id TEXT, kind TEXT NOT NULL, ref TEXT NOT NULL, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-  `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, datetime('now'))`,
-] as const;
-
 const makeStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const sqlite = yield* SqliteClient.SqliteClient;
 
-  for (const statement of migrationStatements) {
-    yield* sql.unsafe(statement);
-  }
-  yield* sql
-    .unsafe(`ALTER TABLE checkpoints ADD COLUMN checkpoint_json TEXT NOT NULL DEFAULT '{}'`)
-    .pipe(Effect.catchAll(() => Effect.void));
-  yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at)
-    VALUES (2, datetime('now'))`;
-  yield* sql
-    .unsafe(`ALTER TABLE threads ADD COLUMN provider_session_id TEXT`)
-    .pipe(Effect.catchAll(() => Effect.void));
-  yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at)
-    VALUES (3, datetime('now'))`;
-  yield* sql
-    .unsafe(`ALTER TABLE turns ADD COLUMN command_id TEXT`)
-    .pipe(Effect.catchAll(() => Effect.void));
-  yield* sql.unsafe(`CREATE UNIQUE INDEX IF NOT EXISTS turns_command_id ON turns(command_id)`);
-  yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at)
-    VALUES (4, datetime('now'))`;
-  yield* sql`UPDATE pending_requests SET status = 'stale' WHERE status = 'pending'`;
-  yield* sql`UPDATE threads SET status = 'recovery-required'
-    WHERE status IN ('starting', 'running', 'waiting', 'needs-input', 'cancelling')`;
-
+  yield* runMigrations;
   const latestSequence = sql<{ readonly sequence: number }>`
     SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events
   `.pipe(
@@ -343,6 +314,7 @@ const makeStore = Effect.gen(function* () {
       const receipt = yield* findReceipt(input.commandId);
       let projectId =
         receipt === null ? input.id : Schema.decodeUnknownSync(ProjectId)(receipt.aggregateId);
+      let eventSequence: Sequence | null = null;
 
       if (receipt === null) {
         const pathRows = yield* sql<ProjectRow>`SELECT id, name, path, git_branch, git_status,
@@ -354,25 +326,28 @@ const makeStore = Effect.gen(function* () {
         );
         const existingProject = existing[0];
         if (existingProject === undefined) {
-          yield* sql`INSERT OR IGNORE INTO projects
+          const orderRows = yield* sql<{ readonly next_order: number }>`
+            SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM projects`;
+          const project: Project = {
+            id: input.id,
+            name: input.name,
+            path: input.path,
+            gitBranch: input.gitBranch,
+            gitStatus: input.gitStatus,
+            hidden: false,
+            order: orderRows[0]?.next_order ?? 0,
+            createdAt: input.createdAt,
+          };
+          eventSequence = yield* appendEvent({
+            origin: "client",
+            type: "project.upserted",
+            project,
+          });
+          yield* sql`INSERT INTO projects
             (id, name, path, git_branch, git_status, hidden, sort_order, created_at)
-            VALUES (${input.id}, ${input.name}, ${input.path}, ${input.gitBranch}, ${input.gitStatus}, 0,
-              (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM projects), ${input.createdAt})`;
-          const persistedRows =
-            yield* sql<ProjectRow>`SELECT id, name, path, git_branch, git_status,
-            hidden, sort_order, created_at FROM projects WHERE path = ${input.path}`;
-          const persisted = yield* decode(
-            "resolve project by normalized path",
-            Schema.Array(ProjectRow),
-            persistedRows,
-          );
-          const persistedProject = persisted[0];
-          if (persistedProject === undefined) {
-            return yield* Effect.fail(
-              storeError("create project", "Project path was not persisted"),
-            );
-          }
-          projectId = persistedProject.id;
+            VALUES (${project.id}, ${project.name}, ${project.path}, ${project.gitBranch},
+              ${project.gitStatus}, 0, ${project.order}, ${project.createdAt})`;
+          projectId = project.id;
         } else {
           projectId = existingProject.id;
         }
@@ -392,7 +367,7 @@ const makeStore = Effect.gen(function* () {
       if (row === undefined) {
         return yield* Effect.fail(storeError("create project", "Project was not persisted"));
       }
-      return projectFromRow(row);
+      return { record: projectFromRow(row), eventSequence };
     }).pipe(
       sql.withTransaction,
       Effect.mapError((cause) => storeError("create project", cause)),
@@ -424,17 +399,276 @@ const makeStore = Effect.gen(function* () {
       }),
     );
 
-  const appendEvent: MetaClankerStore["appendEvent"] = (threadId, type, payload) =>
+  const appendEvent = (event: UnsequencedDomainEvent) =>
     Effect.gen(function* () {
       const eventId = crypto.randomUUID();
+      const receivedAt = new Date().toISOString();
       yield* sql`INSERT INTO events
         (schema_version, event_id, thread_id, type, payload_json, received_at)
-        VALUES (1, ${eventId}, ${threadId}, ${type}, ${payload}, ${new Date().toISOString()})`;
+        VALUES (1, ${eventId}, ${eventThreadId(event)}, ${event.type}, ${JSON.stringify(event)},
+          ${receivedAt})`;
       const rows = yield* sql<{
         readonly sequence: number;
       }>`SELECT last_insert_rowid() AS sequence`;
       return yield* decode("append event", Sequence, rows[0]?.sequence);
     }).pipe(Effect.mapError((cause) => storeError("append event", cause)));
+
+  const readEvents: MetaClankerStore["readEvents"] = (afterSequence, limit) =>
+    sql<EventRow>`SELECT sequence, schema_version, event_id, payload_json, received_at
+      FROM events WHERE schema_version = 1 AND sequence > ${afterSequence}
+      ORDER BY sequence LIMIT ${limit}`.pipe(
+      Effect.mapError((cause) => storeError("read events", cause)),
+      Effect.flatMap((rows) => decode("event rows", Schema.Array(EventRow), rows)),
+      Effect.flatMap((rows) =>
+        Effect.forEach(rows, (row) =>
+          Effect.try({
+            try: () => JSON.parse(row.payload_json) as unknown,
+            catch: (cause) => storeError("parse event payload", cause),
+          }).pipe(
+            Effect.flatMap((payload) =>
+              decode("domain event payload", UnsequencedDomainEventSchema, payload),
+            ),
+            Effect.map(
+              (payload): DomainEvent => ({
+                ...payload,
+                schemaVersion: row.schema_version,
+                sequence: row.sequence,
+                eventId: row.event_id,
+                receivedAt: row.received_at,
+              }),
+            ),
+          ),
+        ),
+      ),
+      Effect.mapError((cause) => storeError("read events", cause)),
+    );
+
+  yield* Effect.gen(function* () {
+    const completed = yield* sql<{ readonly version: number }>`SELECT version
+      FROM schema_migrations WHERE version = 7`;
+    if (completed.length > 0) return;
+
+    const legacy = yield* sql<{ readonly count: number }>`SELECT COUNT(*) AS count
+      FROM events WHERE schema_version = 0`;
+    if ((legacy[0]?.count ?? 0) > 0) {
+      const projectRows = yield* sql<ProjectRow>`SELECT id, name, path, git_branch, git_status,
+        hidden, sort_order, created_at FROM projects ORDER BY sort_order, created_at`;
+      const projects = yield* decode("baseline projects", Schema.Array(ProjectRow), projectRows);
+      for (const row of projects) {
+        yield* appendEvent({
+          origin: "server",
+          type: "project.upserted",
+          project: projectFromRow(row),
+        });
+      }
+
+      const threadRows =
+        yield* sql<ThreadRow>`SELECT id, project_id, provider, title, status, model,
+        provider_session_id, archived, created_at, updated_at FROM threads ORDER BY created_at`;
+      const threads = yield* decode("baseline threads", Schema.Array(ThreadRow), threadRows);
+      for (const row of threads) {
+        yield* appendEvent({
+          origin: "server",
+          type: "thread.upserted",
+          thread: threadFromRow(row),
+        });
+      }
+
+      const messageRows = yield* sql<MessageRow>`SELECT id, thread_id, turn_id, role, content,
+        sequence, created_at FROM messages ORDER BY sequence`;
+      const messages = yield* decode("baseline messages", Schema.Array(MessageRow), messageRows);
+      for (const row of messages) {
+        const message = messageFromRow(row);
+        const sequence = yield* appendEvent({
+          origin: "server",
+          type: "message.upserted",
+          message: {
+            id: message.id,
+            threadId: message.threadId,
+            turnId: message.turnId,
+            role: message.role,
+            content: message.content,
+            createdAt: message.createdAt,
+          },
+        });
+        yield* sql`UPDATE messages SET sequence = ${sequence} WHERE id = ${message.id}`;
+      }
+
+      const toolRows = yield* sql<ToolCallRow>`SELECT id, thread_id, turn_id, node_id, title, kind,
+        status, content, sequence, created_at, updated_at FROM tool_calls ORDER BY sequence`;
+      const tools = yield* decode("baseline tools", Schema.Array(ToolCallRow), toolRows);
+      for (const row of tools) {
+        const toolCall = toolCallFromRow(row);
+        const sequence = yield* appendEvent({
+          origin: "server",
+          type: "tool.upserted",
+          toolCall: {
+            id: toolCall.id,
+            threadId: toolCall.threadId,
+            turnId: toolCall.turnId,
+            nodeId: toolCall.nodeId,
+            title: toolCall.title,
+            kind: toolCall.kind,
+            status: toolCall.status,
+            content: toolCall.content,
+            createdAt: toolCall.createdAt,
+            updatedAt: toolCall.updatedAt,
+          },
+        });
+        yield* sql`UPDATE tool_calls SET sequence = ${sequence} WHERE id = ${toolCall.id}`;
+      }
+
+      const interactionRows = yield* sql<InteractionRow>`SELECT id, project_id, thread_id, turn_id,
+        node_id, kind, title, description, options_json, status, sequence, created_at
+        FROM pending_requests ORDER BY sequence`;
+      const interactions = yield* decode(
+        "baseline interactions",
+        Schema.Array(InteractionRow),
+        interactionRows,
+      );
+      for (const row of interactions) {
+        const interaction = yield* interactionFromRow(row);
+        const sequence = yield* appendEvent({
+          origin: "server",
+          type: "interaction.upserted",
+          interaction: {
+            id: interaction.id,
+            projectId: interaction.projectId,
+            threadId: interaction.threadId,
+            turnId: interaction.turnId,
+            nodeId: interaction.nodeId,
+            kind: interaction.kind,
+            title: interaction.title,
+            description: interaction.description,
+            options: interaction.options,
+            status: interaction.status,
+            createdAt: interaction.createdAt,
+          },
+        });
+        yield* sql`UPDATE pending_requests SET sequence = ${sequence}
+          WHERE id = ${interaction.id}`;
+      }
+
+      const nodeRows = yield* sql<AgentNodeRow>`SELECT id, thread_id, parent_id, name, provider,
+        model, state, activity, child_count, pending_approval, changed_file_count
+        FROM agent_nodes ORDER BY id`;
+      const nodes = yield* decode("baseline agent nodes", Schema.Array(AgentNodeRow), nodeRows);
+      for (const row of nodes) {
+        yield* appendEvent({
+          origin: "server",
+          type: "agent-node.upserted",
+          node: agentNodeFromRow(row),
+        });
+      }
+
+      const checkpointRows = yield* sql<CheckpointRow>`SELECT checkpoint_json, thread_id,
+        turn_id, kind FROM checkpoints ORDER BY created_at`;
+      const checkpoints = yield* decode(
+        "baseline checkpoints",
+        Schema.Array(CheckpointRow),
+        checkpointRows,
+      );
+      for (const row of checkpoints) {
+        const checkpoint = yield* decode(
+          "baseline checkpoint",
+          CheckpointSchema,
+          parseJson(row.checkpoint_json),
+        );
+        yield* appendEvent({
+          origin: "git",
+          type: "checkpoint.saved",
+          record: {
+            checkpoint,
+            threadId: row.thread_id,
+            turnId: row.turn_id,
+            kind: row.kind,
+          },
+        });
+      }
+
+      const settingsRows = yield* sql<{ readonly value_json: string }>`SELECT value_json
+        FROM settings WHERE key = 'user'`;
+      const settingsValue = settingsRows[0]?.value_json;
+      if (settingsValue !== undefined) {
+        const settings = yield* decode("baseline settings", UserSettings, parseJson(settingsValue));
+        yield* appendEvent({ origin: "server", type: "settings.saved", settings });
+      }
+    }
+    yield* sql`INSERT INTO schema_migrations(version, applied_at) VALUES (7, datetime('now'))`;
+  }).pipe(sql.withTransaction);
+
+  yield* Effect.gen(function* () {
+    const pendingRows = yield* sql<InteractionRow>`SELECT id, project_id, thread_id, turn_id,
+      node_id, kind, title, description, options_json, status, sequence, created_at
+      FROM pending_requests WHERE status = 'pending'`;
+    const pending = yield* decode(
+      "recover pending interactions",
+      Schema.Array(InteractionRow),
+      pendingRows,
+    );
+    for (const row of pending) {
+      const current = yield* interactionFromRow(row);
+      const interaction = { ...current, status: "stale" as const };
+      yield* appendEvent({
+        origin: "server",
+        type: "interaction.upserted",
+        interaction: {
+          id: interaction.id,
+          projectId: interaction.projectId,
+          threadId: interaction.threadId,
+          turnId: interaction.turnId,
+          nodeId: interaction.nodeId,
+          kind: interaction.kind,
+          title: interaction.title,
+          description: interaction.description,
+          options: interaction.options,
+          status: interaction.status,
+          createdAt: interaction.createdAt,
+        },
+      });
+      yield* sql`UPDATE pending_requests SET status = 'stale' WHERE id = ${interaction.id}`;
+    }
+
+    const runningTurnRows = yield* sql<TurnRow>`SELECT id, thread_id FROM turns
+      WHERE status = 'running'`;
+    const runningTurns = yield* decode(
+      "recover active turns",
+      Schema.Array(TurnRow),
+      runningTurnRows,
+    );
+    for (const turn of runningTurns) {
+      const completedAt = new Date().toISOString();
+      yield* appendEvent({
+        origin: "server",
+        type: "turn.completed",
+        threadId: turn.thread_id,
+        turnId: turn.id,
+        outcome: "recovery-required",
+      });
+      yield* sql`UPDATE turns SET status = 'recovery-required', completed_at = ${completedAt}
+        WHERE id = ${turn.id}`;
+      yield* sql`UPDATE side_effect_intents
+        SET state = 'recovery-required', updated_at = ${completedAt}
+        WHERE id = ${turn.id} AND state = 'pending'`;
+    }
+
+    const activeRows = yield* sql<ThreadRow>`SELECT id, project_id, provider, title, status, model,
+      provider_session_id, archived, created_at, updated_at FROM threads
+      WHERE status IN ('starting', 'running', 'waiting', 'needs-input', 'cancelling')`;
+    const active = yield* decode("recover active threads", Schema.Array(ThreadRow), activeRows);
+    for (const row of active) {
+      const updatedAt = new Date().toISOString();
+      yield* appendEvent({
+        origin: "server",
+        type: "thread.status-changed",
+        threadId: row.id,
+        status: "recovery-required",
+        updatedAt,
+      });
+      yield* sql`UPDATE threads SET status = 'recovery-required', updated_at = ${updatedAt}
+        WHERE id = ${row.id}`;
+    }
+  }).pipe(sql.withTransaction);
 
   const service: MetaClankerStore = {
     shellSnapshot: Effect.gen(function* () {
@@ -454,22 +688,52 @@ const makeStore = Effect.gen(function* () {
     }).pipe(Effect.mapError((cause) => storeError("shell snapshot", cause))),
     createProject,
     renameProject: (id, name) =>
-      sql`UPDATE projects SET name = ${name} WHERE id = ${id}`.pipe(
-        Effect.flatMap(() => getProject(id)),
+      Effect.gen(function* () {
+        const project = { ...(yield* getProject(id)), name };
+        const eventSequence = yield* appendEvent({
+          origin: "client",
+          type: "project.upserted",
+          project,
+        });
+        yield* sql`UPDATE projects SET name = ${name} WHERE id = ${id}`;
+        return { record: project, eventSequence };
+      }).pipe(
+        sql.withTransaction,
         Effect.mapError((cause) => storeError("rename project", cause)),
       ),
     updateProject: (id, input) =>
-      sql`UPDATE projects SET
-        name = COALESCE(${input.name ?? null}, name),
-        hidden = COALESCE(${sqliteBoolean(input.hidden)}, hidden),
-        sort_order = COALESCE(${input.order ?? null}, sort_order)
-        WHERE id = ${id}`.pipe(
-        Effect.flatMap(() => getProject(id)),
+      Effect.gen(function* () {
+        const current = yield* getProject(id);
+        const project: Project = {
+          ...current,
+          name: input.name ?? current.name,
+          hidden: input.hidden ?? current.hidden,
+          order: input.order ?? current.order,
+        };
+        const eventSequence = yield* appendEvent({
+          origin: "client",
+          type: "project.upserted",
+          project,
+        });
+        yield* sql`UPDATE projects SET name = ${project.name}, hidden = ${project.hidden ? 1 : 0},
+          sort_order = ${project.order} WHERE id = ${id}`;
+        return { record: project, eventSequence };
+      }).pipe(
+        sql.withTransaction,
         Effect.mapError((cause) => storeError("update project", cause)),
       ),
     removeProject: (id) =>
-      sql`DELETE FROM projects WHERE id = ${id}`.pipe(
-        Effect.asVoid,
+      Effect.gen(function* () {
+        yield* getProject(id);
+        const eventSequence = yield* appendEvent({
+          origin: "client",
+          type: "project.removed",
+          projectId: id,
+        });
+        yield* sql`DELETE FROM projects WHERE id = ${id}`;
+        return { record: id, eventSequence };
+      }).pipe(
+        sql.withTransaction,
         Effect.mapError((cause) => storeError("remove project", cause)),
       ),
     createThread: (input) =>
@@ -477,7 +741,25 @@ const makeStore = Effect.gen(function* () {
         const receipt = yield* findReceipt(input.commandId);
         const threadId =
           receipt === null ? input.id : Schema.decodeUnknownSync(ThreadId)(receipt.aggregateId);
+        let eventSequence: Sequence | null = null;
         if (receipt === null) {
+          const thread: Thread = {
+            id: input.id,
+            projectId: input.projectId,
+            provider: input.provider,
+            title: input.title,
+            status: "idle",
+            model: input.model,
+            providerSessionId: null,
+            archived: false,
+            createdAt: input.createdAt,
+            updatedAt: input.createdAt,
+          };
+          eventSequence = yield* appendEvent({
+            origin: "client",
+            type: "thread.upserted",
+            thread,
+          });
           yield* sql`INSERT INTO threads
             (id, project_id, provider, title, status, model, archived, created_at, updated_at)
             VALUES (${input.id}, ${input.projectId}, ${input.provider}, ${input.title}, 'idle',
@@ -490,7 +772,7 @@ const makeStore = Effect.gen(function* () {
             createdAt: input.createdAt,
           });
         }
-        return yield* getThreadRow(threadId);
+        return { record: yield* getThreadRow(threadId), eventSequence };
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("create thread", cause)),
@@ -513,9 +795,27 @@ const makeStore = Effect.gen(function* () {
             thread: yield* getThreadRow(replayed.thread_id),
             turnId: replayed.id,
             acceptedNow: false,
+            threadEventSequence: null,
           };
         }
 
+        const thread: Thread = {
+          id: input.id,
+          projectId: input.projectId,
+          provider: input.provider,
+          title: input.title,
+          status: "running",
+          model: input.model,
+          providerSessionId: null,
+          archived: false,
+          createdAt: input.createdAt,
+          updatedAt: input.createdAt,
+        };
+        const threadEventSequence = yield* appendEvent({
+          origin: "client",
+          type: "thread.upserted",
+          thread,
+        });
         yield* sql`INSERT INTO threads
           (id, project_id, provider, title, status, model, archived, created_at, updated_at)
           VALUES (${input.id}, ${input.projectId}, ${input.provider}, ${input.title}, 'running',
@@ -524,11 +824,24 @@ const makeStore = Effect.gen(function* () {
           (id, thread_id, command_id, status, prompt, created_at, completed_at)
           VALUES (${input.turnId}, ${input.id}, ${input.commandId}, 'running', ${input.prompt},
             ${input.createdAt}, NULL)`;
-        const sequence = yield* appendEvent(
-          input.id,
-          "turn.started",
-          JSON.stringify({ turnId: input.turnId }),
-        );
+        yield* appendEvent({
+          origin: "client",
+          type: "turn.started",
+          threadId: input.id,
+          turnId: input.turnId,
+        });
+        const sequence = yield* appendEvent({
+          origin: "client",
+          type: "message.upserted",
+          message: {
+            id: input.userMessageId,
+            threadId: input.id,
+            turnId: input.turnId,
+            role: "user",
+            content: input.prompt,
+            createdAt: input.createdAt,
+          },
+        });
         yield* sql`INSERT INTO messages
           (id, thread_id, turn_id, role, content, sequence, created_at)
           VALUES (${input.userMessageId}, ${input.id}, ${input.turnId}, 'user', ${input.prompt},
@@ -549,10 +862,132 @@ const makeStore = Effect.gen(function* () {
           thread: yield* getThreadRow(input.id),
           turnId: input.turnId,
           acceptedNow: true,
+          threadEventSequence,
         };
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("start thread", cause)),
+      ),
+    startTurn: (input) =>
+      Effect.gen(function* () {
+        const receipt = yield* findReceipt(input.commandId);
+        if (receipt !== null) {
+          const replayedTurnId = yield* decode("replayed turn", TurnId, receipt.aggregateId);
+          const rows = yield* sql<TurnRow>`SELECT id, thread_id FROM turns
+            WHERE id = ${replayedTurnId}`;
+          const turns = yield* decode("replayed turn", Schema.Array(TurnRow), rows);
+          const replayed = turns[0];
+          if (replayed === undefined) {
+            return yield* Effect.fail(
+              storeError("start turn", "Accepted turn receipt has no durable turn"),
+            );
+          }
+          return {
+            acceptedNow: false as const,
+            thread: yield* getThreadRow(replayed.thread_id),
+            turnId: replayed.id,
+          };
+        }
+
+        const activeRows = yield* sql<TurnRow>`SELECT id, thread_id FROM turns
+          WHERE thread_id = ${input.threadId} AND status = 'running'`;
+        const active = yield* decode("active turn", Schema.Array(TurnRow), activeRows);
+        if (active.length > 0) {
+          return yield* Effect.fail(
+            storeError("start turn", "This thread already has an active turn"),
+          );
+        }
+
+        const current = yield* getThreadRow(input.threadId);
+        const thread: Thread = {
+          ...current,
+          status: "running",
+          updatedAt: input.createdAt,
+        };
+        const statusEventSequence = yield* appendEvent({
+          origin: "client",
+          type: "thread.status-changed",
+          threadId: input.threadId,
+          status: "running",
+          updatedAt: input.createdAt,
+        });
+        yield* sql`UPDATE threads SET status = 'running', updated_at = ${input.createdAt}
+          WHERE id = ${input.threadId}`;
+        yield* sql`INSERT INTO turns
+          (id, thread_id, command_id, status, prompt, created_at, completed_at)
+          VALUES (${input.turnId}, ${input.threadId}, ${input.commandId}, 'running', ${input.prompt},
+            ${input.createdAt}, NULL)`;
+        yield* appendEvent({
+          origin: "client",
+          type: "turn.started",
+          threadId: input.threadId,
+          turnId: input.turnId,
+        });
+        const messageEventSequence = yield* appendEvent({
+          origin: "client",
+          type: "message.upserted",
+          message: {
+            id: input.userMessageId,
+            threadId: input.threadId,
+            turnId: input.turnId,
+            role: "user",
+            content: input.prompt,
+            createdAt: input.createdAt,
+          },
+        });
+        const userMessage: Message = {
+          id: input.userMessageId,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          role: "user",
+          content: input.prompt,
+          sequence: messageEventSequence,
+          createdAt: input.createdAt,
+        };
+        yield* sql`INSERT INTO messages
+          (id, thread_id, turn_id, role, content, sequence, created_at)
+          VALUES (${userMessage.id}, ${userMessage.threadId}, ${userMessage.turnId}, 'user',
+            ${userMessage.content}, ${userMessage.sequence}, ${userMessage.createdAt})`;
+        const nodeEventSequence = yield* appendEvent({
+          origin: "server",
+          type: "agent-node.upserted",
+          node: input.rootNode,
+        });
+        yield* sql`INSERT INTO agent_nodes
+          (id, thread_id, parent_id, name, provider, model, state, activity, child_count,
+            pending_approval, changed_file_count)
+          VALUES (${input.rootNode.id}, ${input.rootNode.threadId}, ${input.rootNode.parentId},
+            ${input.rootNode.name}, ${input.rootNode.provider}, ${input.rootNode.model},
+            ${input.rootNode.state}, ${input.rootNode.activity}, ${input.rootNode.childCount},
+            ${input.rootNode.pendingApproval ? 1 : 0}, ${input.rootNode.changedFileCount})
+          ON CONFLICT(id) DO UPDATE SET state = excluded.state, activity = excluded.activity,
+            child_count = excluded.child_count, pending_approval = excluded.pending_approval,
+            changed_file_count = excluded.changed_file_count`;
+        yield* sql`INSERT INTO side_effect_intents
+          (id, command_id, kind, state, payload_json, created_at, updated_at)
+          VALUES (${input.turnId}, ${input.commandId}, 'acp.prompt', 'pending',
+            ${JSON.stringify({ threadId: input.threadId, turnId: input.turnId, attachments: input.attachments })},
+            ${input.createdAt}, ${input.createdAt})`;
+        yield* saveReceipt({
+          commandId: input.commandId,
+          status: "accepted",
+          aggregateId: input.turnId,
+          reason: null,
+          createdAt: input.createdAt,
+        });
+        return {
+          acceptedNow: true as const,
+          thread,
+          turnId: input.turnId,
+          userMessage,
+          rootNode: input.rootNode,
+          statusEventSequence,
+          messageEventSequence,
+          nodeEventSequence,
+        };
+      }).pipe(
+        sql.withTransaction,
+        Effect.mapError((cause) => storeError("start turn", cause)),
       ),
     completeTurn: (turnId, status, completedAt) =>
       Effect.gen(function* () {
@@ -566,7 +1001,13 @@ const makeStore = Effect.gen(function* () {
           WHERE id = ${turnId}`;
         yield* sql`UPDATE side_effect_intents SET state = ${status}, updated_at = ${completedAt}
           WHERE id = ${turnId}`;
-        yield* appendEvent(turn.thread_id, "turn.completed", JSON.stringify({ turnId, status }));
+        yield* appendEvent({
+          origin: "server",
+          type: "turn.completed",
+          threadId: turn.thread_id,
+          turnId,
+          outcome: status,
+        });
       }).pipe(
         sql.withTransaction,
         Effect.asVoid,
@@ -585,10 +1026,10 @@ const makeStore = Effect.gen(function* () {
           sequence, created_at FROM messages WHERE thread_id = ${id} ORDER BY sequence`;
         const toolRows =
           yield* sql<ToolCallRow>`SELECT id, thread_id, turn_id, node_id, title, kind,
-          status, content, created_at, updated_at FROM tool_calls WHERE thread_id = ${id}`;
+          status, content, sequence, created_at, updated_at FROM tool_calls WHERE thread_id = ${id}`;
         const interactionRows =
           yield* sql<InteractionRow>`SELECT id, project_id, thread_id, turn_id,
-          node_id, kind, title, description, options_json, status, created_at FROM pending_requests
+          node_id, kind, title, description, options_json, status, sequence, created_at FROM pending_requests
           WHERE thread_id = ${id} ORDER BY created_at`;
         const nodeRows = yield* sql<AgentNodeRow>`SELECT id, thread_id, parent_id, name, provider,
           model, state, activity, child_count, pending_approval, changed_file_count FROM agent_nodes
@@ -613,49 +1054,103 @@ const makeStore = Effect.gen(function* () {
         } satisfies ThreadDetail;
       }).pipe(Effect.mapError((cause) => storeError("thread detail", cause))),
     renameThread: (id, title) =>
-      sql`UPDATE threads SET title = ${title}, updated_at = ${new Date().toISOString()}
-        WHERE id = ${id}`.pipe(
-        Effect.flatMap(() => getThreadRow(id)),
+      Effect.gen(function* () {
+        const current = yield* getThreadRow(id);
+        const thread = { ...current, title, updatedAt: new Date().toISOString() };
+        const eventSequence = yield* appendEvent({
+          origin: "client",
+          type: "thread.upserted",
+          thread,
+        });
+        yield* sql`UPDATE threads SET title = ${thread.title}, updated_at = ${thread.updatedAt}
+          WHERE id = ${id}`;
+        return { record: thread, eventSequence };
+      }).pipe(
+        sql.withTransaction,
         Effect.mapError((cause) => storeError("rename thread", cause)),
       ),
     setThreadArchived: (id, archived) =>
-      sql`UPDATE threads SET archived = ${archived ? 1 : 0},
-        updated_at = ${new Date().toISOString()} WHERE id = ${id}`.pipe(
-        Effect.flatMap(() => getThreadRow(id)),
+      Effect.gen(function* () {
+        const current = yield* getThreadRow(id);
+        const thread = { ...current, archived, updatedAt: new Date().toISOString() };
+        const eventSequence = yield* appendEvent({
+          origin: "client",
+          type: "thread.upserted",
+          thread,
+        });
+        yield* sql`UPDATE threads SET archived = ${archived ? 1 : 0},
+          updated_at = ${thread.updatedAt} WHERE id = ${id}`;
+        return { record: thread, eventSequence };
+      }).pipe(
+        sql.withTransaction,
         Effect.mapError((cause) => storeError("archive thread", cause)),
       ),
     deleteThread: (id) =>
-      sql`DELETE FROM threads WHERE id = ${id}`.pipe(
-        Effect.asVoid,
+      Effect.gen(function* () {
+        yield* getThreadRow(id);
+        const eventSequence = yield* appendEvent({
+          origin: "client",
+          type: "thread.removed",
+          threadId: id,
+        });
+        yield* sql`DELETE FROM threads WHERE id = ${id}`;
+        return { record: id, eventSequence };
+      }).pipe(
+        sql.withTransaction,
         Effect.mapError((cause) => storeError("delete thread", cause)),
       ),
     setThreadStatus: (id, status) =>
       Effect.gen(function* () {
-        yield* sql`UPDATE threads SET status = ${status}, updated_at = ${new Date().toISOString()}
+        const updatedAt = new Date().toISOString();
+        const sequence = yield* appendEvent({
+          origin: "server",
+          type: "thread.status-changed",
+          threadId: id,
+          status,
+          updatedAt,
+        });
+        yield* sql`UPDATE threads SET status = ${status}, updated_at = ${updatedAt}
           WHERE id = ${id}`;
-        return yield* appendEvent(id, "thread.status-changed", JSON.stringify({ status }));
+        return sequence;
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("set thread status", cause)),
       ),
     setProviderSession: (id, providerSessionId) =>
-      sql`UPDATE threads SET provider_session_id = ${providerSessionId},
-        updated_at = ${new Date().toISOString()} WHERE id = ${id}`.pipe(
-        Effect.flatMap(() => getThreadRow(id)),
+      Effect.gen(function* () {
+        const current = yield* getThreadRow(id);
+        const thread = {
+          ...current,
+          providerSessionId,
+          updatedAt: new Date().toISOString(),
+        };
+        const eventSequence = yield* appendEvent({
+          origin: "server",
+          type: "thread.upserted",
+          thread,
+        });
+        yield* sql`UPDATE threads SET provider_session_id = ${providerSessionId},
+          updated_at = ${thread.updatedAt} WHERE id = ${id}`;
+        return { record: thread, eventSequence };
+      }).pipe(
+        sql.withTransaction,
         Effect.mapError((cause) => storeError("set provider session", cause)),
       ),
     appendMessage: (input) =>
       Effect.gen(function* () {
-        const sequence = yield* appendEvent(
-          input.threadId,
-          "message.upserted",
-          JSON.stringify({ id: input.id, role: input.role }),
-        );
+        const existingRows = yield* sql<MessageRow>`SELECT id, thread_id, turn_id, role, content,
+          sequence, created_at FROM messages WHERE id = ${input.id}`;
+        const existing = yield* decode("existing message", Schema.Array(MessageRow), existingRows);
+        const content = `${existing[0]?.content ?? ""}${input.content}`;
+        const sequence = yield* appendEvent({
+          origin: input.role === "user" ? "client" : "provider",
+          type: "message.upserted",
+          message: { ...input, content },
+        });
         yield* sql`INSERT INTO messages (id, thread_id, turn_id, role, content, sequence, created_at)
-          VALUES (${input.id}, ${input.threadId}, ${input.turnId}, ${input.role}, ${input.content},
+          VALUES (${input.id}, ${input.threadId}, ${input.turnId}, ${input.role}, ${content},
             ${sequence}, ${input.createdAt})
-          ON CONFLICT(id) DO UPDATE SET content = messages.content || excluded.content,
-            sequence = excluded.sequence`;
+          ON CONFLICT(id) DO UPDATE SET content = excluded.content`;
         const rows = yield* sql<MessageRow>`SELECT id, thread_id, turn_id, role, content, sequence,
           created_at FROM messages WHERE id = ${input.id}`;
         const decoded = yield* decode("append message", Schema.Array(MessageRow), rows);
@@ -663,36 +1158,64 @@ const makeStore = Effect.gen(function* () {
         if (row === undefined) {
           return yield* Effect.fail(storeError("append message", "Message projection missing"));
         }
-        return messageFromRow(row);
+        return { record: messageFromRow(row), eventSequence: sequence };
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("append message", cause)),
       ),
     upsertToolCall: (input: UpsertToolCallRecord) =>
       Effect.gen(function* () {
+        const sequence = yield* appendEvent({
+          origin: "provider",
+          type: "tool.upserted",
+          toolCall: input,
+        });
         yield* sql`INSERT INTO tool_calls
-          (id, thread_id, turn_id, node_id, title, kind, status, content, created_at, updated_at)
+          (id, thread_id, turn_id, node_id, title, kind, status, content, sequence, created_at, updated_at)
           VALUES (${input.id}, ${input.threadId}, ${input.turnId}, ${input.nodeId}, ${input.title},
-            ${input.kind}, ${input.status}, ${input.content}, ${input.createdAt}, ${input.updatedAt})
+            ${input.kind}, ${input.status}, ${input.content}, ${sequence}, ${input.createdAt}, ${input.updatedAt})
           ON CONFLICT(id) DO UPDATE SET status = excluded.status, content = excluded.content,
             updated_at = excluded.updated_at`;
-        yield* appendEvent(input.threadId, "tool.updated", JSON.stringify({ id: input.id }));
-        return input;
+        const rows = yield* sql<ToolCallRow>`SELECT id, thread_id, turn_id, node_id, title, kind,
+          status, content, sequence, created_at, updated_at FROM tool_calls WHERE id = ${input.id}`;
+        const decoded = yield* decode("upserted tool", Schema.Array(ToolCallRow), rows);
+        const row = decoded[0];
+        if (row === undefined) {
+          return yield* Effect.fail(storeError("upsert tool", "Tool projection missing"));
+        }
+        return { record: toolCallFromRow(row), eventSequence: sequence };
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("upsert tool", cause)),
       ),
     upsertInteraction: (input) =>
       Effect.gen(function* () {
+        const sequence = yield* appendEvent({
+          origin: "provider",
+          type: "interaction.upserted",
+          interaction: input,
+        });
         yield* sql`INSERT INTO pending_requests
           (id, project_id, thread_id, turn_id, node_id, kind, title, description, options_json,
-            status, created_at)
+            status, sequence, created_at)
           VALUES (${input.id}, ${input.projectId}, ${input.threadId}, ${input.turnId}, ${input.nodeId},
             ${input.kind}, ${input.title}, ${input.description}, ${JSON.stringify(input.options)},
-            ${input.status}, ${input.createdAt})
+            ${input.status}, ${sequence}, ${input.createdAt})
           ON CONFLICT(id) DO UPDATE SET status = excluded.status`;
-        yield* appendEvent(input.threadId, "interaction.updated", JSON.stringify({ id: input.id }));
-        return input;
+        const rows = yield* sql<InteractionRow>`SELECT id, project_id, thread_id, turn_id, node_id,
+          kind, title, description, options_json, status, sequence, created_at FROM pending_requests
+          WHERE id = ${input.id}`;
+        const decoded = yield* decode("upserted interaction", Schema.Array(InteractionRow), rows);
+        const row = decoded[0];
+        if (row === undefined) {
+          return yield* Effect.fail(
+            storeError("upsert interaction", "Interaction projection missing"),
+          );
+        }
+        return {
+          record: yield* interactionFromRow(row),
+          eventSequence: sequence,
+        };
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("upsert interaction", cause)),
@@ -701,21 +1224,43 @@ const makeStore = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* sql`UPDATE pending_requests SET status = ${status} WHERE id = ${id}`;
         const rows = yield* sql<InteractionRow>`SELECT id, project_id, thread_id, turn_id, node_id,
-          kind, title, description, options_json, status, created_at FROM pending_requests
+          kind, title, description, options_json, status, sequence, created_at FROM pending_requests
           WHERE id = ${id}`;
         const decoded = yield* decode("resolve interaction", Schema.Array(InteractionRow), rows);
         const row = decoded[0];
         if (row === undefined) {
           return yield* Effect.fail(storeError("resolve interaction", "Interaction not found"));
         }
-        yield* appendEvent(row.thread_id, "interaction.updated", JSON.stringify({ id, status }));
-        return yield* interactionFromRow(row);
+        const interaction = yield* interactionFromRow(row);
+        const eventSequence = yield* appendEvent({
+          origin: "client",
+          type: "interaction.upserted",
+          interaction: {
+            id: interaction.id,
+            projectId: interaction.projectId,
+            threadId: interaction.threadId,
+            turnId: interaction.turnId,
+            nodeId: interaction.nodeId,
+            kind: interaction.kind,
+            title: interaction.title,
+            description: interaction.description,
+            options: interaction.options,
+            status: interaction.status,
+            createdAt: interaction.createdAt,
+          },
+        });
+        return { record: interaction, eventSequence };
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("resolve interaction", cause)),
       ),
     upsertAgentNode: (input) =>
       Effect.gen(function* () {
+        const eventSequence = yield* appendEvent({
+          origin: "provider",
+          type: "agent-node.upserted",
+          node: input,
+        });
         yield* sql`INSERT INTO agent_nodes
           (id, thread_id, parent_id, name, provider, model, state, activity, child_count,
             pending_approval, changed_file_count)
@@ -732,13 +1277,12 @@ const makeStore = Effect.gen(function* () {
             SELECT COUNT(*) FROM agent_edges WHERE parent_id = ${input.parentId}
           ) WHERE id = ${input.parentId}`;
         }
-        yield* appendEvent(input.threadId, "agent-node.updated", JSON.stringify({ id: input.id }));
-        return input;
+        return { record: input, eventSequence };
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("upsert agent node", cause)),
       ),
-    appendEvent,
+    readEvents,
     findReceipt,
     saveReceipt,
     backup: (destination) =>
@@ -757,20 +1301,28 @@ const makeStore = Effect.gen(function* () {
       }),
     ),
     saveSettings: (settings) =>
-      sql`INSERT INTO settings (key, schema_version, value_json, updated_at)
-        VALUES ('user', 1, ${JSON.stringify(settings)}, ${new Date().toISOString()})
-        ON CONFLICT(key) DO UPDATE SET schema_version = excluded.schema_version,
-          value_json = excluded.value_json, updated_at = excluded.updated_at`.pipe(
-        Effect.as(settings),
+      Effect.gen(function* () {
+        yield* appendEvent({ origin: "client", type: "settings.saved", settings });
+        yield* sql`INSERT INTO settings (key, schema_version, value_json, updated_at)
+          VALUES ('user', 1, ${JSON.stringify(settings)}, ${new Date().toISOString()})
+          ON CONFLICT(key) DO UPDATE SET schema_version = excluded.schema_version,
+            value_json = excluded.value_json, updated_at = excluded.updated_at`;
+        return settings;
+      }).pipe(
+        sql.withTransaction,
         Effect.mapError((cause) => storeError("save settings", cause)),
       ),
     saveCheckpoint: (record) =>
-      sql`INSERT INTO checkpoints (id, thread_id, turn_id, kind, ref, created_at, checkpoint_json)
-        VALUES (${record.checkpoint.id}, ${record.threadId}, ${record.turnId}, ${record.kind},
-          ${record.checkpoint.snapshotPath}, ${record.checkpoint.createdAt},
-          ${JSON.stringify(record.checkpoint)})
-        ON CONFLICT(id) DO UPDATE SET checkpoint_json = excluded.checkpoint_json`.pipe(
-        Effect.as(record),
+      Effect.gen(function* () {
+        yield* appendEvent({ origin: "git", type: "checkpoint.saved", record });
+        yield* sql`INSERT INTO checkpoints (id, thread_id, turn_id, kind, ref, created_at, checkpoint_json)
+          VALUES (${record.checkpoint.id}, ${record.threadId}, ${record.turnId}, ${record.kind},
+            ${record.checkpoint.snapshotPath}, ${record.checkpoint.createdAt},
+            ${JSON.stringify(record.checkpoint)})
+          ON CONFLICT(id) DO UPDATE SET checkpoint_json = excluded.checkpoint_json`;
+        return record;
+      }).pipe(
+        sql.withTransaction,
         Effect.mapError((cause) => storeError("save checkpoint", cause)),
       ),
     listCheckpoints: (threadId) =>

@@ -201,11 +201,10 @@ watch(
 
 <template>
   <section v-if="project" :class="draftViewClass" aria-labelledby="draft-title">
-    <div class="m-auto w-[min(52rem,100%)] self-center">
-      <Eyebrow class="mb-[0.3rem] text-left text-text-muted">{{ $t("draft.eyebrow") }}</Eyebrow>
+    <div class="m-auto w-[min(48rem,100%)] self-center">
       <h1
         id="draft-title"
-        class="m-0 mb-4 text-[clamp(1.15rem,2.2vw,1.65rem)] leading-[1.25] tracking-[-0.025em]"
+        class="m-0 mb-8 text-center text-[clamp(1.5rem,3vw,2rem)] font-normal leading-[1.2] tracking-[-0.03em]"
       >
         {{ $t("draft.title") }}
         <label>
@@ -225,10 +224,12 @@ watch(
         ?
       </h1>
 
-      <div class="overflow-hidden rounded-md border border-border bg-surface">
+      <div
+        class="overflow-hidden rounded-[1.35rem] border border-border-subtle bg-[color-mix(in_srgb,var(--color-surface)_94%,transparent)] shadow-soft backdrop-blur-[16px]"
+      >
         <Textarea
           ref="promptInput"
-          class="min-h-[7.5rem] p-4 text-[0.88rem] leading-[1.55]"
+          class="min-h-28 px-4 pt-4 pb-2 text-[0.9rem] leading-[1.55]"
           :value="draft.prompt"
           rows="5"
           :placeholder="$t('thread.composerPlaceholder')"
@@ -244,7 +245,7 @@ watch(
           {{ sendError }} Your draft is still here.
         </FieldError>
         <div
-          class="flex items-end gap-[0.45rem] overflow-x-auto border-t border-border-subtle p-[0.65rem] max-narrow:grid max-narrow:grid-cols-2 max-narrow:overflow-visible"
+          class="flex items-end gap-1.5 overflow-x-auto border-t border-border-subtle px-3 py-2.5 max-narrow:grid max-narrow:grid-cols-2 max-narrow:overflow-visible"
         >
           <Field :class="draftFieldClass">
             <span>{{ $t("draft.provider") }}</span>
@@ -327,7 +328,7 @@ watch(
             })
           }}
         </p>
-        <div class="grid gap-[0.55rem] border-t border-border-subtle p-[0.7rem]">
+        <div class="grid gap-2 border-t border-border-subtle px-3 py-2.5">
           <Field class="gap-[0.35rem] text-[0.62rem] font-normal text-text-muted">
             <span>{{ $t("draft.attachLabel") }}</span>
             <span
@@ -368,7 +369,7 @@ watch(
           </ul>
         </div>
       </div>
-      <p class="mt-3 mb-0 text-left text-[0.65rem] text-text-muted">{{ $t("draft.privacy") }}</p>
+      <p class="mt-3 mb-0 text-center text-[0.65rem] text-text-muted">{{ $t("draft.privacy") }}</p>
     </div>
   </section>
   <section

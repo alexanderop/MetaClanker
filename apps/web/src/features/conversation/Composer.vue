@@ -54,18 +54,16 @@ const onKeydown = (event: KeyboardEvent): void => {
 </script>
 
 <template>
-  <footer
-    class="border-t border-border-subtle bg-surface px-[max(1.3rem,calc((100%-52rem)/2))] pt-3 pb-[0.6rem]"
-  >
+  <footer class="bg-transparent px-[max(1rem,calc((100%-48rem)/2))] pt-2 pb-4">
     <div
-      class="rounded-lg border border-border bg-surface-raised shadow-raised transition-[border-color,box-shadow] duration-150 focus-within:border-[color-mix(in_srgb,var(--color-accent-strong)_55%,var(--color-border))] focus-within:shadow-[var(--shadow-ring),var(--shadow-soft)]"
+      class="overflow-hidden rounded-[1.35rem] border border-border-subtle bg-[color-mix(in_srgb,var(--color-surface)_94%,transparent)] shadow-soft backdrop-blur-[16px] transition-[border-color,box-shadow] duration-150 focus-within:border-[color-mix(in_srgb,var(--color-accent-strong)_45%,var(--color-border))] focus-within:shadow-[var(--shadow-ring),var(--shadow-soft)]"
       :class="
         active ? 'border-[color-mix(in_srgb,var(--color-info)_48%,var(--color-border))]' : undefined
       "
     >
       <Textarea
         :value="draft"
-        class="max-h-48 min-h-[3.35rem] px-[0.85rem] pt-[0.8rem] pb-[0.3rem] text-[0.82rem] leading-[1.5]"
+        class="max-h-48 min-h-16 px-4 pt-3.5 pb-1 text-[0.86rem] leading-[1.5]"
         rows="2"
         :placeholder="$t('thread.composerPlaceholder')"
         :aria-label="$t('thread.composerPlaceholder')"
@@ -73,15 +71,14 @@ const onKeydown = (event: KeyboardEvent): void => {
         @input="updateDraft"
         @keydown="onKeydown"
       />
-      <div class="flex items-center justify-between px-[0.45rem] pt-[0.35rem] pb-[0.45rem]">
-        <div class="flex items-center gap-1">
-          <Button variant="outline" size="icon" type="button" aria-label="Attach a file">
-            <span aria-hidden="true">＋</span>
-          </Button>
-          <Button variant="ghost" size="sm" type="button" class="capitalize">
-            {{ thread.provider }}
-          </Button>
-          <Button variant="ghost" size="sm" type="button">Default permissions</Button>
+      <div class="flex items-center justify-between px-3 pt-1 pb-3">
+        <div
+          class="flex items-center gap-2 text-[0.65rem] text-text-muted"
+          aria-label="Agent settings"
+        >
+          <span class="capitalize">{{ thread.provider }}</span>
+          <span aria-hidden="true">·</span>
+          <span>{{ thread.model ?? "Default model" }}</span>
         </div>
         <Button
           v-if="active"
@@ -107,8 +104,5 @@ const onKeydown = (event: KeyboardEvent): void => {
         </Button>
       </div>
     </div>
-    <p class="mt-[0.35rem] mb-0 text-center text-[0.55rem] text-text-muted">
-      Enter to send · Shift+Enter for a new line · MetaClanker runs locally
-    </p>
   </footer>
 </template>

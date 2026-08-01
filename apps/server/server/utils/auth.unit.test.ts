@@ -4,6 +4,7 @@ import {
   consumeWebSocketTicket,
   createEnvironmentSession,
   isLoopbackRequest,
+  isTrustedLocalBootstrap,
   issueWebSocketTicket,
   pairingHint,
   revokeEnvironmentSession,
@@ -18,6 +19,28 @@ describe("environment authentication", () => {
     expect(isLoopbackRequest(undefined, "192.0.2.1", "worker-1")).toBe(false);
     expect(isLoopbackRequest(undefined, "127.0.0.1", undefined)).toBe(false);
     expect(isLoopbackRequest("192.0.2.1", "127.0.0.1", "worker-1")).toBe(false);
+  });
+
+  it("rejects reverse-proxied and DNS-rebound local bootstrap requests", () => {
+    expect(isLoopbackRequest("127.0.0.1", "203.0.113.8", undefined)).toBe(false);
+    expect(
+      isTrustedLocalBootstrap({
+        address: "127.0.0.1",
+        forwardedAddress: "127.0.0.1",
+        nitroDevWorkerId: undefined,
+        host: "attacker.example",
+        origin: "https://attacker.example",
+      }),
+    ).toBe(false);
+    expect(
+      isTrustedLocalBootstrap({
+        address: "127.0.0.1",
+        forwardedAddress: "127.0.0.1",
+        nitroDevWorkerId: undefined,
+        host: "127.0.0.1:4317",
+        origin: "http://127.0.0.1:4317",
+      }),
+    ).toBe(true);
   });
 
   it("revokes an environment session explicitly", () => {

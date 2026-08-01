@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useTemplateRef } from "vue";
+import { computed, nextTick, ref, useTemplateRef, watch } from "vue";
 
 import type { AgentNode, Provider } from "@metaclanker/contracts/wire";
 
@@ -13,7 +13,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ select: [node: AgentNode] }>();
 const treeItems = useTemplateRef<HTMLButtonElement[]>("treeItems");
-const focusedIndex = ref(0);
+const focusedId = ref<string | null>(null);
 
 interface TreeEntry {
   readonly node: AgentNode;
@@ -43,10 +43,31 @@ const entries = computed(() => {
   return result;
 });
 
+const focusedIndex = computed(() => {
+  const index = entries.value.findIndex((entry) => entry.node.id === focusedId.value);
+  return index < 0 ? 0 : index;
+});
+
+watch(
+  entries,
+  (next) => {
+    if (next.length === 0) {
+      focusedId.value = null;
+      return;
+    }
+    if (next.some((entry) => entry.node.id === focusedId.value)) return;
+    focusedId.value =
+      next.find((entry) => entry.node.id === props.selectedId)?.node.id ?? next[0]?.node.id ?? null;
+  },
+  { immediate: true },
+);
+
 const focusEntry = (index: number): void => {
-  focusedIndex.value = Math.max(0, Math.min(entries.value.length - 1, index));
+  if (entries.value.length === 0) return;
+  const nextIndex = Math.max(0, Math.min(entries.value.length - 1, index));
+  focusedId.value = entries.value[nextIndex]?.node.id ?? null;
   void nextTick(() => {
-    treeItems.value?.[focusedIndex.value]?.focus();
+    treeItems.value?.[nextIndex]?.focus();
   });
 };
 
@@ -55,7 +76,20 @@ const onKeydown = (event: KeyboardEvent, entry: TreeEntry, index: number): void 
   else if (event.key === "ArrowUp") focusEntry(index - 1);
   else if (event.key === "Home") focusEntry(0);
   else if (event.key === "End") focusEntry(entries.value.length - 1);
-  else if (event.key === "Enter" || event.key === " ") emit("select", entry.node);
+  else if (event.key === "ArrowRight") {
+    const childIndex = entries.value.findIndex(
+      (candidate) => candidate.node.parentId === entry.node.id,
+    );
+    if (childIndex < 0) return;
+    focusEntry(childIndex);
+  } else if (event.key === "ArrowLeft") {
+    if (entry.node.parentId === null) return;
+    const parentIndex = entries.value.findIndex(
+      (candidate) => candidate.node.id === entry.node.parentId,
+    );
+    if (parentIndex < 0) return;
+    focusEntry(parentIndex);
+  } else if (event.key === "Enter" || event.key === " ") emit("select", entry.node);
   else return;
   event.preventDefault();
 };
@@ -77,6 +111,7 @@ const providerLetter = (provider: Provider) => (provider === "codex" ? "C" : "A"
       :tabindex="index === focusedIndex ? 0 : -1"
       :style="{ paddingInlineStart: `${entry.depth * 1.25}rem` }"
       @click="$emit('select', entry.node)"
+      @focus="focusedId = entry.node.id"
       @keydown="onKeydown($event, entry, index)"
     >
       <ProviderMark :provider="entry.node.provider" size="sm">

@@ -63,4 +63,69 @@ export default tseslint.config(
     files: ["apps/desktop/src/preload.cts"],
     rules: { "@typescript-eslint/no-require-imports": "off" },
   },
+  {
+    files: ["apps/web/src/shared/**/*.{ts,vue}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              regex: "^(?:\\.\\./)+(?:features|views)(?:/|$)",
+              message: "Shared web code cannot depend on features or views.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["apps/web/src/ui/**/*.{ts,vue}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              regex: "^(?:\\.\\./)+(?:features|views|shared)(?:/|$)",
+              message: "UI primitives cannot depend on shared state, features, or views.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["apps/web/src/features/**/*.{ts,vue}"],
+    ignores: ["apps/web/src/features/**/*.test.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              regex: "^\\.\\./(?!\\.)",
+              message: "Features cannot import sibling features; compose them in a view.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["packages/{contracts,domain,application}/src/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              regex: "^@metaclanker/(?:acp-client|git|persistence|server)(?:/|$)",
+              message: "Core packages cannot depend on infrastructure implementations.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

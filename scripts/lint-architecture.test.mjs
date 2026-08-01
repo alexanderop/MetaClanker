@@ -1,0 +1,58 @@
+import assert from "node:assert/strict";
+import { resolve } from "node:path";
+import test from "node:test";
+
+import { architectureViolationForImport, importedSpecifiers } from "./lint-architecture.mjs";
+
+const root = resolve(import.meta.dirname, "..");
+
+test("rejects web boundary bypasses through the @ alias", () => {
+  const importer = resolve(root, "apps/web/src/shared/session.ts");
+
+  assert.equal(
+    architectureViolationForImport(importer, "@/features/threads/model.js", root),
+    "web shared code cannot import features or views",
+  );
+  assert.equal(
+    architectureViolationForImport(importer, "@/views/ThreadView.vue", root),
+    "web shared code cannot import features or views",
+  );
+});
+
+test("rejects a nested relative import into another feature", () => {
+  const importer = resolve(root, "apps/web/src/features/projects/components/ProjectCard.vue");
+
+  assert.equal(
+    architectureViolationForImport(importer, "../../threads/model.js", root),
+    "web features cannot import views or other features",
+  );
+  assert.equal(architectureViolationForImport(importer, "../model.js", root), null);
+});
+
+test("resolves relative cross-package imports before enforcing core boundaries", () => {
+  const importer = resolve(root, "packages/domain/src/events.ts");
+
+  assert.equal(
+    architectureViolationForImport(importer, "../../persistence/src/database.js", root),
+    "core packages cannot import infrastructure implementations",
+  );
+  assert.equal(
+    architectureViolationForImport(importer, "@metaclanker/server/runtime", root),
+    "core packages cannot import infrastructure implementations",
+  );
+});
+
+test("extracts static, re-export, and dynamic imports from Vue script blocks", () => {
+  const source = `<template><div /></template>
+    <script setup lang="ts">
+      import value from "@/features/one/model.js";
+      export { other } from "@/features/two/model.js";
+      const lazy = import("@/views/LazyView.vue");
+    </script>`;
+
+  assert.deepEqual(importedSpecifiers(source, "Component.vue"), [
+    "@/features/one/model.js",
+    "@/features/two/model.js",
+    "@/views/LazyView.vue",
+  ]);
+});

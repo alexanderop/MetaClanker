@@ -9,6 +9,7 @@ coverage/
 .vitest/
 .vitest-attachments/
 .stryker-tmp/
+tmp/
 reports/
 playwright-report/
 test-results/

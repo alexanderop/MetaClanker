@@ -13,6 +13,7 @@ import type {
   MetaClankerStore,
   NormalizedAgentEvent,
   TurnCompletionStatus,
+  UpsertToolCallRecord,
 } from "@metaclanker/application/ports";
 import { AgentNodeId, MessageId, ThreadId, ToolCallId, TurnId } from "@metaclanker/contracts/ids";
 import type { CommandId, PendingInteractionId, ProjectId } from "@metaclanker/contracts/ids";
@@ -25,11 +26,12 @@ import type {
   Thread,
   ThreadDetail,
   ThreadStatus,
-  ToolCall,
 } from "@metaclanker/contracts/wire";
 import { CheckpointsService } from "@metaclanker/git/checkpoints";
 
-import { publishThreadEvent } from "./hub.js";
+import { publishShellEvent, publishThreadEvent } from "./hub.js";
+import { AgentWork } from "./agent-work.js";
+import { LocalDiagnostics } from "./local-diagnostics.js";
 import { runApplication } from "./runtime.js";
 import { deriveThreadTitle } from "./thread-title.js";
 
@@ -56,8 +58,45 @@ const adapterCommands = (): Readonly<Record<Provider, AdapterCommand>> => {
 };
 
 const activeSessions = new Map<string, AcpSessionHandle>();
+const openingSessions = new Map<string, Promise<AcpSessionHandle>>();
 const activeTurns = new Set<string>();
-const backgroundTasks = new Set<Promise<void>>();
+
+const submitAgentWork = (
+  correlation: Pick<TurnContext, "project" | "detail" | "turnId">,
+  work: () => Promise<void>,
+): Promise<void> =>
+  runApplication(
+    Effect.gen(function* () {
+      const agentWork = yield* AgentWork;
+      const diagnostics = yield* LocalDiagnostics;
+      const submittedAt = Date.now();
+      yield* agentWork.submit(
+        Effect.gen(function* () {
+          const startedAt = Date.now();
+          yield* diagnostics.record({
+            operation: "agent.prompt",
+            phase: "started",
+            queueLagMs: startedAt - submittedAt,
+            provider: correlation.detail.thread.provider,
+            projectId: correlation.project.id,
+            threadId: correlation.detail.thread.id,
+            turnId: correlation.turnId,
+          });
+          yield* Effect.promise(work);
+          yield* diagnostics.record({
+            operation: "agent.prompt",
+            phase: "completed",
+            outcome: "ok",
+            durationMs: Date.now() - startedAt,
+            provider: correlation.detail.thread.provider,
+            projectId: correlation.project.id,
+            threadId: correlation.detail.thread.id,
+            turnId: correlation.turnId,
+          });
+        }),
+      );
+    }),
+  );
 
 export const listProviderReadiness = (): ReadonlyArray<{
   provider: Provider;
@@ -86,47 +125,50 @@ const shellProjects = (): Promise<ReadonlyArray<Project>> =>
 
 const publishStatus = async (threadId: ThreadId, status: ThreadStatus): Promise<void> => {
   const sequence = await withStore((store) => store.setThreadStatus(threadId, status));
-  publishThreadEvent(threadId, { type: "thread-status", sequence, threadId, status });
+  const event = { type: "thread-status", sequence, threadId, status } as const;
+  publishThreadEvent(threadId, event);
+  publishShellEvent(event);
 };
 
 const persistMessage = async (input: Omit<Message, "sequence">): Promise<Message> => {
-  const message = await withStore((store) => store.appendMessage(input));
+  const persisted = await withStore((store) => store.appendMessage(input));
+  const message = persisted.record;
   publishThreadEvent(message.threadId, {
     type: "message-upserted",
-    sequence: message.sequence,
+    sequence: persisted.eventSequence,
     message,
   });
   return message;
 };
 
-const latestSequence = async (threadId: ThreadId): Promise<number> => {
-  const detail = await threadDetail(threadId);
-  return detail?.latestSequence ?? 0;
-};
-
-const persistToolCall = async (toolCall: ToolCall): Promise<void> => {
-  await withStore((store) => store.upsertToolCall(toolCall));
+const persistToolCall = async (input: UpsertToolCallRecord): Promise<void> => {
+  const persisted = await withStore((store) => store.upsertToolCall(input));
+  const toolCall = persisted.record;
   publishThreadEvent(toolCall.threadId, {
     type: "tool-upserted",
-    sequence: await latestSequence(toolCall.threadId),
+    sequence: persisted.eventSequence,
     toolCall,
   });
 };
 
-const persistInteraction = async (interaction: PendingInteraction): Promise<void> => {
-  await withStore((store) => store.upsertInteraction(interaction));
+const persistInteraction = async (
+  input: Omit<PendingInteraction, "sequence">,
+): Promise<PendingInteraction> => {
+  const persisted = await withStore((store) => store.upsertInteraction(input));
+  const interaction = persisted.record;
   publishThreadEvent(interaction.threadId, {
     type: "interaction-upserted",
-    sequence: await latestSequence(interaction.threadId),
+    sequence: persisted.eventSequence,
     interaction,
   });
+  return interaction;
 };
 
 const persistNode = async (node: AgentNode): Promise<void> => {
-  await withStore((store) => store.upsertAgentNode(node));
+  const persisted = await withStore((store) => store.upsertAgentNode(node));
   publishThreadEvent(node.threadId, {
     type: "agent-node-upserted",
-    sequence: await latestSequence(node.threadId),
+    sequence: persisted.eventSequence,
     node,
   });
 };
@@ -138,25 +180,42 @@ const openThreadSession = async (
 ): Promise<AcpSessionHandle> => {
   const current = activeSessions.get(detail.thread.id);
   if (current !== undefined) return current;
-  const handle = await Effect.runPromise(
-    makeAcpSessions(adapterCommands()).open({
-      provider: detail.thread.provider,
-      cwd: project.path,
-      projectId: project.id,
-      threadId: detail.thread.id,
-      providerSessionId: detail.thread.providerSessionId,
-      model: detail.thread.model,
-      effort: options.effort,
-      permissionMode: options.permissionMode,
-    }),
-  );
-  if (detail.thread.providerSessionId !== handle.providerSessionId) {
-    await withStore((store) =>
-      store.setProviderSession(detail.thread.id, handle.providerSessionId),
+  const opening = openingSessions.get(detail.thread.id);
+  if (opening !== undefined) return opening;
+  const created = (async (): Promise<AcpSessionHandle> => {
+    const handle = await Effect.runPromise(
+      makeAcpSessions(adapterCommands()).open({
+        provider: detail.thread.provider,
+        cwd: project.path,
+        projectId: project.id,
+        threadId: detail.thread.id,
+        providerSessionId: detail.thread.providerSessionId,
+        model: detail.thread.model,
+        effort: options.effort,
+        permissionMode: options.permissionMode,
+      }),
     );
+    try {
+      if (detail.thread.providerSessionId !== handle.providerSessionId) {
+        await withStore((store) =>
+          store.setProviderSession(detail.thread.id, handle.providerSessionId),
+        );
+      }
+      activeSessions.set(detail.thread.id, handle);
+      return handle;
+    } catch (cause) {
+      await Effect.runPromise(handle.close);
+      throw cause;
+    }
+  })();
+  openingSessions.set(detail.thread.id, created);
+  try {
+    return await created;
+  } finally {
+    if (openingSessions.get(detail.thread.id) === created) {
+      openingSessions.delete(detail.thread.id);
+    }
   }
-  activeSessions.set(detail.thread.id, handle);
-  return handle;
 };
 
 interface TurnContext {
@@ -274,9 +333,15 @@ const executePromptWork = async (
     }),
   );
   const handle = await openThreadSession(context.detail, context.project, context);
-  const outcome = await Effect.runPromise(
-    handle.prompt({ turnId: context.turnId, text, attachments }, eventWriter(context)),
+  const promptResult = await Effect.runPromise(
+    handle
+      .prompt({ turnId: context.turnId, text, attachments }, eventWriter(context))
+      .pipe(Effect.either),
   );
+  if (promptResult._tag === "Left") {
+    throw Object.assign(new Error(promptResult.left.message), promptResult.left);
+  }
+  const outcome = promptResult.right;
   await publishStatus(context.detail.thread.id, outcome.stopReason);
   await persistNode({
     id: context.rootNodeId,
@@ -327,18 +392,24 @@ const executePromptWork = async (
   return outcome.stopReason;
 };
 
-const failureTurnStatus = (cause: unknown): TurnCompletionStatus => {
-  if (
+const isConnectionFailure = (cause: unknown): boolean =>
+  Boolean(
     typeof cause === "object" &&
     cause !== null &&
     "_tag" in cause &&
     cause._tag === "AcpRuntimeError" &&
     "code" in cause &&
-    (cause.code === "disconnected" || cause.code === "process-exit")
-  ) {
-    return "recovery-required";
-  }
-  return "failed";
+    (cause.code === "disconnected" || cause.code === "process-exit"),
+  );
+
+const failureTurnStatus = (cause: unknown): TurnCompletionStatus =>
+  isConnectionFailure(cause) ? "recovery-required" : "failed";
+
+const evictThreadSession = async (threadId: ThreadId): Promise<void> => {
+  const handle = activeSessions.get(threadId);
+  if (handle === undefined) return;
+  activeSessions.delete(threadId);
+  await Effect.runPromise(handle.close);
 };
 
 const executePrompt = (
@@ -357,6 +428,7 @@ const executePrompt = (
     })
     .catch(async (cause: unknown) => {
       const status = failureTurnStatus(cause);
+      if (isConnectionFailure(cause)) await evictThreadSession(context.detail.thread.id);
       await publishStatus(context.detail.thread.id, status);
       if (persistedIntent) {
         await withStore((store) =>
@@ -380,9 +452,6 @@ export const dispatchPrompt = async (
   text: string,
   attachments: ReadonlyArray<string>,
 ): Promise<TurnId> => {
-  const existingReceipt = await withStore((store) => store.findReceipt(commandId));
-  if (existingReceipt !== null) return TurnId.make(existingReceipt.aggregateId);
-  if (activeTurns.has(threadId)) throw new Error("This thread already has an active turn");
   const detail = await threadDetail(threadId);
   if (detail === null) throw new Error("Thread not found");
   const projects = await shellProjects();
@@ -395,17 +464,7 @@ export const dispatchPrompt = async (
   const turnId = TurnId.make(crypto.randomUUID());
   const startedAt = new Date().toISOString();
   const rootNodeId = AgentNodeId.make(`root:${threadId}`);
-  activeTurns.add(threadId);
-  await persistMessage({
-    id: MessageId.make(crypto.randomUUID()),
-    threadId,
-    turnId,
-    role: "user",
-    content: text,
-    createdAt: startedAt,
-  });
-  await publishStatus(threadId, "running");
-  await persistNode({
+  const rootNode: AgentNode = {
     id: rootNodeId,
     threadId,
     parentId: null,
@@ -417,35 +476,54 @@ export const dispatchPrompt = async (
     childCount: 0,
     pendingApproval: false,
     changedFileCount: 0,
-  });
-  await withStore((store) =>
-    store.saveReceipt({
+  };
+  const started = await withStore((store) =>
+    store.startTurn({
       commandId,
-      status: "accepted",
-      aggregateId: turnId,
-      reason: null,
+      threadId,
+      turnId,
+      userMessageId: MessageId.make(crypto.randomUUID()),
+      prompt: text,
+      attachments,
+      rootNode,
       createdAt: startedAt,
     }),
   );
-  const task = executePrompt(
-    {
-      detail,
-      project,
-      turnId,
-      agentMessageId: MessageId.make(crypto.randomUUID()),
-      thoughtMessageId: MessageId.make(crypto.randomUUID()),
-      planMessageId: MessageId.make(crypto.randomUUID()),
-      rootNodeId,
-      startedAt,
-      effort: null,
-      permissionMode: null,
-    },
-    text,
-    attachments,
-  );
-  const tracked = task.finally(() => backgroundTasks.delete(tracked));
-  backgroundTasks.add(tracked);
-  return turnId;
+  if (!started.acceptedNow) return started.turnId;
+
+  activeTurns.add(threadId);
+  const statusEvent = {
+    type: "thread-status",
+    sequence: started.statusEventSequence,
+    threadId,
+    status: "running",
+  } as const;
+  publishThreadEvent(threadId, statusEvent);
+  publishShellEvent(statusEvent);
+  publishThreadEvent(threadId, {
+    type: "message-upserted",
+    sequence: started.messageEventSequence,
+    message: started.userMessage,
+  });
+  publishThreadEvent(threadId, {
+    type: "agent-node-upserted",
+    sequence: started.nodeEventSequence,
+    node: started.rootNode,
+  });
+  const context: TurnContext = {
+    detail: { ...detail, thread: started.thread },
+    project,
+    turnId: started.turnId,
+    agentMessageId: MessageId.make(crypto.randomUUID()),
+    thoughtMessageId: MessageId.make(crypto.randomUUID()),
+    planMessageId: MessageId.make(crypto.randomUUID()),
+    rootNodeId,
+    startedAt,
+    effort: null,
+    permissionMode: null,
+  };
+  await submitAgentWork(context, () => executePrompt(context, text, attachments, true));
+  return started.turnId;
 };
 
 export interface StartThreadWithPromptInput {
@@ -498,60 +576,62 @@ export const startThreadWithPrompt = async (
     return { accepted: true, thread: started.thread, turnId: started.turnId };
   }
 
+  if (started.threadEventSequence !== null) {
+    publishShellEvent({
+      type: "thread-upserted",
+      sequence: started.threadEventSequence,
+      thread: started.thread,
+    });
+  }
+
   const detail = await threadDetail(started.thread.id);
   if (detail === null) throw new Error("Accepted thread could not be loaded");
   const rootNodeId = AgentNodeId.make(`root:${started.thread.id}`);
   activeTurns.add(started.thread.id);
-  const task = persistNode({
-    id: rootNodeId,
-    threadId: started.thread.id,
-    parentId: null,
-    name: started.thread.title,
-    provider: started.thread.provider,
-    model: started.thread.model,
-    state: "running",
-    activity: "Starting turn",
-    childCount: 0,
-    pendingApproval: false,
-    changedFileCount: 0,
-  })
-    .then(() =>
-      executePrompt(
-        {
-          detail,
-          project,
-          turnId: started.turnId,
-          agentMessageId: MessageId.make(crypto.randomUUID()),
-          thoughtMessageId: MessageId.make(crypto.randomUUID()),
-          planMessageId: MessageId.make(crypto.randomUUID()),
-          rootNodeId,
-          startedAt,
-          effort: input.effort,
-          permissionMode: input.permissionMode,
-        },
-        input.prompt,
-        input.attachments,
-        true,
-      ),
-    )
-    .catch(async (cause: unknown) => {
-      const status = failureTurnStatus(cause);
-      await publishStatus(started.thread.id, status);
-      await withStore((store) =>
-        store.completeTurn(started.turnId, status, new Date().toISOString()),
-      );
-      await persistMessage({
-        id: MessageId.make(crypto.randomUUID()),
-        threadId: started.thread.id,
-        turnId: started.turnId,
-        role: "system",
-        content: "The agent connection failed. This turn was preserved and was not sent again.",
-        createdAt: new Date().toISOString(),
-      });
+  const context: TurnContext = {
+    detail,
+    project,
+    turnId: started.turnId,
+    agentMessageId: MessageId.make(crypto.randomUUID()),
+    thoughtMessageId: MessageId.make(crypto.randomUUID()),
+    planMessageId: MessageId.make(crypto.randomUUID()),
+    rootNodeId,
+    startedAt,
+    effort: input.effort,
+    permissionMode: input.permissionMode,
+  };
+  await submitAgentWork(context, () =>
+    persistNode({
+      id: rootNodeId,
+      threadId: started.thread.id,
+      parentId: null,
+      name: started.thread.title,
+      provider: started.thread.provider,
+      model: started.thread.model,
+      state: "running",
+      activity: "Starting turn",
+      childCount: 0,
+      pendingApproval: false,
+      changedFileCount: 0,
     })
-    .finally(() => activeTurns.delete(started.thread.id));
-  const tracked = task.finally(() => backgroundTasks.delete(tracked));
-  backgroundTasks.add(tracked);
+      .then(() => executePrompt(context, input.prompt, input.attachments, true))
+      .catch(async (cause: unknown) => {
+        const status = failureTurnStatus(cause);
+        await publishStatus(started.thread.id, status);
+        await withStore((store) =>
+          store.completeTurn(started.turnId, status, new Date().toISOString()),
+        );
+        await persistMessage({
+          id: MessageId.make(crypto.randomUUID()),
+          threadId: started.thread.id,
+          turnId: started.turnId,
+          role: "system",
+          content: "The agent connection failed. This turn was preserved and was not sent again.",
+          createdAt: new Date().toISOString(),
+        });
+      })
+      .finally(() => activeTurns.delete(started.thread.id)),
+  );
 
   return { accepted: true, thread: started.thread, turnId: started.turnId };
 };
@@ -581,8 +661,13 @@ export const respondToInteraction = async (
   if (receipt !== null) return interaction;
   const session = activeSessions.get(owner.thread.id);
   if (session === undefined) {
-    const stale = await withStore((store) => store.resolveInteraction(interactionId, "stale"));
-    await persistInteraction(stale);
+    const persisted = await withStore((store) => store.resolveInteraction(interactionId, "stale"));
+    const stale = persisted.record;
+    publishThreadEvent(stale.threadId, {
+      type: "interaction-upserted",
+      sequence: persisted.eventSequence,
+      interaction: stale,
+    });
     await withStore((store) =>
       store.saveReceipt({
         commandId,
@@ -595,8 +680,13 @@ export const respondToInteraction = async (
     return stale;
   }
   await Effect.runPromise(session.respondInteraction(interactionId, optionId));
-  const resolved = await withStore((store) => store.resolveInteraction(interactionId, "resolved"));
-  await persistInteraction(resolved);
+  const persisted = await withStore((store) => store.resolveInteraction(interactionId, "resolved"));
+  const resolved = persisted.record;
+  publishThreadEvent(resolved.threadId, {
+    type: "interaction-upserted",
+    sequence: persisted.eventSequence,
+    interaction: resolved,
+  });
   await withStore((store) =>
     store.saveReceipt({
       commandId,
@@ -610,16 +700,23 @@ export const respondToInteraction = async (
 };
 
 export const closeAgentSessions = async (): Promise<void> => {
+  await Promise.allSettled(openingSessions.values());
   await Promise.all(
     [...activeSessions.values()].map((session) => Effect.runPromise(session.close)),
   );
   activeSessions.clear();
-  await Promise.all(backgroundTasks);
+  openingSessions.clear();
+  await drainAgentWork();
 };
 
 /** Waits for durable follow-up work without using elapsed time as a test signal. */
 export const drainAgentWork = async (): Promise<void> => {
-  await Promise.all(backgroundTasks);
+  await runApplication(
+    Effect.gen(function* () {
+      const agentWork = yield* AgentWork;
+      yield* agentWork.drain;
+    }),
+  );
 };
 
 export const reviewThread = async (threadId: ThreadId) => {

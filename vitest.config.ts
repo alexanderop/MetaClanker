@@ -6,7 +6,6 @@ const runtimeDataExclude = ["**/node_modules/**", "apps/server/.data/**"];
 
 export default defineConfig({
   test: {
-    passWithNoTests: true,
     allowOnly: false,
     retry: 0,
     projects: [

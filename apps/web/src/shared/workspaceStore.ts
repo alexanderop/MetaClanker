@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { defineStore } from "pinia";
-import { computed, ref, shallowRef } from "vue";
+import { computed, onScopeDispose, ref, shallowRef } from "vue";
 
 import { CommandId, ProjectId } from "@metaclanker/contracts/ids";
 import type { ThreadId } from "@metaclanker/contracts/ids";
@@ -16,6 +16,9 @@ import type {
 import { Provider as ProviderSchema, defaultUserSettings } from "@metaclanker/contracts/wire";
 
 import { api, schemas } from "./apiClient.js";
+import { applyShellEvent } from "./live-shell-state.js";
+import { applyThreadEvent } from "./live-thread-state.js";
+import { createSerialConsumer } from "./serial-consumer.js";
 
 const emptyShell: ShellSnapshot = { projects: [], threads: [], latestSequence: 0 };
 const conversationDraftStorageKey = "metaclanker:conversation-drafts:v2";
@@ -65,11 +68,19 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   const settings = ref<UserSettings>(defaultUserSettings);
   const providerReadiness = ref<ReadonlyArray<ProviderReadiness>>([]);
   let socket: WebSocket | null = null;
+  let shellSocket: WebSocket | null = null;
   let reconnectAttempt = 0;
+  let shellReconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let shellReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let selectedThreadId: ThreadId | null = null;
+  let bootstrapGeneration = 0;
+  let threadLoadGeneration = 0;
+  let threadSocketGeneration = 0;
+  let shellSocketGeneration = 0;
   let snapshotLoading = false;
-  let bufferedEvents: ServerEvent[] = [];
+  let shellSnapshotLoading = false;
+  let mediaListenerAttached = true;
 
   const selectedProject = computed(() => {
     const projectId = detail.value?.thread.projectId;
@@ -80,9 +91,42 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   // the header toggle needs so that flipping out of "system" lands on the opposite
   // of what the user is currently looking at rather than on a no-op.
   const prefersDark = ref(systemPrefersDark.matches);
-  systemPrefersDark.addEventListener("change", (event) => {
+  const updateSystemTheme = (event: MediaQueryListEvent): void => {
     prefersDark.value = event.matches;
-  });
+  };
+  systemPrefersDark.addEventListener("change", updateSystemTheme);
+
+  const ensureMediaListener = (): void => {
+    if (mediaListenerAttached) return;
+    systemPrefersDark.addEventListener("change", updateSystemTheme);
+    mediaListenerAttached = true;
+  };
+
+  const clearReconnectTimer = (): void => {
+    if (reconnectTimer === null) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  };
+
+  const clearShellReconnectTimer = (): void => {
+    if (shellReconnectTimer === null) return;
+    clearTimeout(shellReconnectTimer);
+    shellReconnectTimer = null;
+  };
+
+  const closeThreadSocket = (): void => {
+    threadSocketGeneration += 1;
+    const current = socket;
+    socket = null;
+    current?.close();
+  };
+
+  const closeShellSocket = (): void => {
+    shellSocketGeneration += 1;
+    const current = shellSocket;
+    shellSocket = null;
+    current?.close();
+  };
 
   const resolvedTheme = computed<"light" | "dark">(() => {
     const theme = settings.value.theme;
@@ -98,6 +142,10 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   };
 
   const bootstrap = async (): Promise<void> => {
+    const generation = ++bootstrapGeneration;
+    ensureMediaListener();
+    closeShellSocket();
+    clearShellReconnectTimer();
     loading.value = true;
     error.value = null;
     try {
@@ -107,28 +155,38 @@ export const useWorkspaceStore = defineStore("workspace", () => {
         api.settings(),
         api.providerReadiness(),
       ]);
+      if (generation !== bootstrapGeneration) return;
       shell.value = nextShell;
       settings.value = nextSettings;
       providerReadiness.value = nextProviderReadiness;
       applyTheme(nextSettings.theme);
+      await subscribeShell();
     } catch (cause) {
+      if (generation !== bootstrapGeneration) return;
       error.value = cause instanceof Error ? cause.message : String(cause);
     } finally {
-      loading.value = false;
+      if (generation === bootstrapGeneration) loading.value = false;
     }
   };
 
   const loadThread = async (id: ThreadId): Promise<void> => {
+    const generation = ++threadLoadGeneration;
     selectedThreadId = id;
+    closeThreadSocket();
+    clearReconnectTimer();
+    snapshotLoading = false;
     loading.value = true;
     error.value = null;
     try {
-      detail.value = await api.thread(id);
+      const snapshot = await api.thread(id);
+      if (generation !== threadLoadGeneration || selectedThreadId !== id) return;
+      detail.value = snapshot;
       await subscribe(id);
     } catch (cause) {
+      if (generation !== threadLoadGeneration || selectedThreadId !== id) return;
       error.value = cause instanceof Error ? cause.message : String(cause);
     } finally {
-      loading.value = false;
+      if (generation === threadLoadGeneration) loading.value = false;
     }
   };
 
@@ -138,112 +196,208 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       if (selectedThreadId !== null) void synchronizeSnapshot(selectedThreadId);
       return;
     }
-    if (snapshotLoading) {
-      bufferedEvents.push(event);
-      return;
-    }
+    if (snapshotLoading) return;
     if (current === null) {
       if (selectedThreadId !== null) void synchronizeSnapshot(selectedThreadId);
       return;
     }
-    if (event.type === "synchronized") return;
-    if (event.type === "thread-status") {
-      detail.value = { ...current, thread: { ...current.thread, status: event.status } };
-      shell.value = {
-        ...shell.value,
-        threads: shell.value.threads.map((thread) =>
-          thread.id === event.threadId ? { ...thread, status: event.status } : thread,
-        ),
-      };
-      return;
-    }
-    if (event.type === "message-upserted") {
-      const messages = [
-        ...current.messages.filter((message) => message.id !== event.message.id),
-        event.message,
-      ].toSorted((left, right) => left.sequence - right.sequence);
-      detail.value = { ...current, messages, latestSequence: event.sequence };
-      return;
-    }
-    if (event.type === "tool-upserted") {
-      detail.value = {
-        ...current,
-        toolCalls: [
-          ...current.toolCalls.filter((tool) => tool.id !== event.toolCall.id),
-          event.toolCall,
-        ],
-        latestSequence: event.sequence,
-      };
-      return;
-    }
-    if (event.type === "interaction-upserted") {
-      detail.value = {
-        ...current,
-        interactions: [
-          ...current.interactions.filter((item) => item.id !== event.interaction.id),
-          event.interaction,
-        ],
-        latestSequence: event.sequence,
-      };
-      return;
-    }
-    detail.value = {
-      ...current,
-      agentNodes: [...current.agentNodes.filter((node) => node.id !== event.node.id), event.node],
-      latestSequence: event.sequence,
-    };
+    const next = applyThreadEvent({ shell: shell.value, detail: current }, event);
+    shell.value = next.shell;
+    detail.value = next.detail;
   };
 
   const synchronizeSnapshot = async (id: ThreadId): Promise<void> => {
-    if (snapshotLoading) return;
+    if (snapshotLoading || selectedThreadId !== id) return;
     snapshotLoading = true;
-    const snapshot = await api.thread(id);
-    if (selectedThreadId !== id) {
-      snapshotLoading = false;
-      return;
-    }
-    detail.value = snapshot;
-    const pending = bufferedEvents
-      .filter((event) => "sequence" in event && event.sequence > snapshot.latestSequence)
-      .toSorted((left, right) => {
-        const leftSequence = "sequence" in left ? left.sequence : 0;
-        const rightSequence = "sequence" in right ? right.sequence : 0;
-        return leftSequence - rightSequence;
-      });
-    bufferedEvents = [];
-    snapshotLoading = false;
-    for (const event of pending) applyEvent(event);
-  };
-
-  const subscribe = async (id: ThreadId): Promise<void> => {
-    socket?.close();
-    bufferedEvents = [];
-    snapshotLoading = false;
-    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
-    const { ticket } = await api.ticket();
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    socket = new WebSocket(
-      `${protocol}//${window.location.host}/api/threads/${encodeURIComponent(id)}/events?ticket=${encodeURIComponent(ticket)}`,
-    );
-    socket.addEventListener("open", () => {
-      reconnectAttempt = 0;
-    });
-    socket.addEventListener("message", (message) => {
-      if (message.data === "pong" || typeof message.data !== "string") return;
-      void Promise.resolve(message.data)
-        .then((data): unknown => JSON.parse(data))
-        .then(Schema.decodeUnknownPromise(schemas.ServerEvent))
-        .then(applyEvent, (cause) => {
-          error.value = `The live update stream sent invalid data: ${String(cause)}`;
-        });
-    });
-    socket.addEventListener("close", () => {
+    closeThreadSocket();
+    clearReconnectTimer();
+    try {
+      const snapshot = await api.thread(id);
       if (selectedThreadId !== id) return;
+      detail.value = snapshot;
+      error.value = null;
+      snapshotLoading = false;
+      await subscribe(id);
+    } catch (cause) {
+      if (selectedThreadId !== id) return;
+      error.value = `The conversation could not be resynchronized: ${cause instanceof Error ? cause.message : String(cause)}`;
       const delay = Math.min(10_000, 500 * 2 ** reconnectAttempt) + Math.random() * 250;
       reconnectAttempt += 1;
-      reconnectTimer = setTimeout(() => void subscribe(id), delay);
-    });
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void synchronizeSnapshot(id);
+      }, delay);
+    } finally {
+      snapshotLoading = false;
+    }
   };
+
+  const scheduleThreadReconnect = (id: ThreadId): void => {
+    if (selectedThreadId !== id) return;
+    clearReconnectTimer();
+    const delay = Math.min(10_000, 500 * 2 ** reconnectAttempt) + Math.random() * 250;
+    reconnectAttempt += 1;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      void subscribe(id).catch((cause: unknown) => {
+        if (selectedThreadId !== id) return;
+        error.value = `The conversation could not reconnect: ${cause instanceof Error ? cause.message : String(cause)}`;
+        scheduleThreadReconnect(id);
+      });
+    }, delay);
+  };
+
+  async function subscribe(id: ThreadId): Promise<void> {
+    closeThreadSocket();
+    clearReconnectTimer();
+    const generation = threadSocketGeneration;
+    const { ticket } = await api.ticket();
+    if (generation !== threadSocketGeneration || selectedThreadId !== id) return;
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const nextSocket = new WebSocket(
+      `${protocol}//${window.location.host}/api/threads/${encodeURIComponent(id)}/events?ticket=${encodeURIComponent(ticket)}&afterSequence=${String(detail.value?.latestSequence ?? 0)}`,
+    );
+    socket = nextSocket;
+    nextSocket.addEventListener("open", () => {
+      if (generation !== threadSocketGeneration) return;
+      reconnectAttempt = 0;
+      error.value = null;
+    });
+    const eventConsumer = createSerialConsumer(
+      (event: ServerEvent) => {
+        if (generation === threadSocketGeneration) applyEvent(event);
+      },
+      (cause) => {
+        if (generation === threadSocketGeneration) {
+          error.value = `The live update stream sent invalid data: ${String(cause)}`;
+        }
+      },
+    );
+    nextSocket.addEventListener("message", (message) => {
+      if (message.data === "pong" || typeof message.data !== "string") return;
+      const data = message.data;
+      eventConsumer.push(() =>
+        Promise.resolve(data)
+          .then((serialized): unknown => JSON.parse(serialized))
+          .then(Schema.decodeUnknownPromise(schemas.ServerEvent)),
+      );
+    });
+    nextSocket.addEventListener("close", () => {
+      if (generation !== threadSocketGeneration || selectedThreadId !== id) return;
+      socket = null;
+      scheduleThreadReconnect(id);
+    });
+  }
+
+  const applyShellLiveEvent = (event: ServerEvent): void => {
+    if (event.type === "snapshot-required") {
+      void synchronizeShellSnapshot();
+      return;
+    }
+    if (shellSnapshotLoading) return;
+    shell.value = applyShellEvent(shell.value, event);
+  };
+
+  const synchronizeShellSnapshot = async (): Promise<void> => {
+    if (shellSnapshotLoading) return;
+    shellSnapshotLoading = true;
+    closeShellSocket();
+    clearShellReconnectTimer();
+    try {
+      shell.value = await api.shell();
+      error.value = null;
+      shellSnapshotLoading = false;
+      await subscribeShell();
+    } catch (cause) {
+      error.value = `The workspace could not be resynchronized: ${cause instanceof Error ? cause.message : String(cause)}`;
+      const delay = Math.min(10_000, 500 * 2 ** shellReconnectAttempt) + Math.random() * 250;
+      shellReconnectAttempt += 1;
+      shellReconnectTimer = setTimeout(() => {
+        shellReconnectTimer = null;
+        void synchronizeShellSnapshot();
+      }, delay);
+    } finally {
+      shellSnapshotLoading = false;
+    }
+  };
+
+  const scheduleShellReconnect = (): void => {
+    clearShellReconnectTimer();
+    const generation = shellSocketGeneration;
+    const delay = Math.min(10_000, 500 * 2 ** shellReconnectAttempt) + Math.random() * 250;
+    shellReconnectAttempt += 1;
+    shellReconnectTimer = setTimeout(() => {
+      shellReconnectTimer = null;
+      if (generation !== shellSocketGeneration) return;
+      const reconnect = subscribeShell();
+      const reconnectGeneration = shellSocketGeneration;
+      void reconnect.catch((cause: unknown) => {
+        if (reconnectGeneration !== shellSocketGeneration) return;
+        error.value = `The workspace could not reconnect: ${cause instanceof Error ? cause.message : String(cause)}`;
+        scheduleShellReconnect();
+      });
+    }, delay);
+  };
+
+  async function subscribeShell(): Promise<void> {
+    closeShellSocket();
+    clearShellReconnectTimer();
+    const generation = shellSocketGeneration;
+    const { ticket } = await api.ticket();
+    if (generation !== shellSocketGeneration) return;
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const nextSocket = new WebSocket(
+      `${protocol}//${window.location.host}/api/shell/events?ticket=${encodeURIComponent(ticket)}&afterSequence=${String(shell.value.latestSequence)}`,
+    );
+    shellSocket = nextSocket;
+    nextSocket.addEventListener("open", () => {
+      if (generation !== shellSocketGeneration) return;
+      shellReconnectAttempt = 0;
+      error.value = null;
+    });
+    const eventConsumer = createSerialConsumer(
+      (event: ServerEvent) => {
+        if (generation === shellSocketGeneration) applyShellLiveEvent(event);
+      },
+      (cause) => {
+        if (generation === shellSocketGeneration) {
+          error.value = `The workspace update stream sent invalid data: ${String(cause)}`;
+        }
+      },
+    );
+    nextSocket.addEventListener("message", (message) => {
+      if (message.data === "pong" || typeof message.data !== "string") return;
+      const data = message.data;
+      eventConsumer.push(() =>
+        Promise.resolve(data)
+          .then((serialized): unknown => JSON.parse(serialized))
+          .then(Schema.decodeUnknownPromise(schemas.ServerEvent)),
+      );
+    });
+    nextSocket.addEventListener("close", () => {
+      if (generation !== shellSocketGeneration) return;
+      shellSocket = null;
+      scheduleShellReconnect();
+    });
+  }
+
+  const disconnect = (): void => {
+    bootstrapGeneration += 1;
+    threadLoadGeneration += 1;
+    selectedThreadId = null;
+    snapshotLoading = false;
+    shellSnapshotLoading = false;
+    clearReconnectTimer();
+    clearShellReconnectTimer();
+    closeThreadSocket();
+    closeShellSocket();
+    if (mediaListenerAttached) {
+      systemPrefersDark.removeEventListener("change", updateSystemTheme);
+      mediaListenerAttached = false;
+    }
+  };
+
+  onScopeDispose(disconnect);
 
   const persistConversationDrafts = (): void => {
     window.localStorage.setItem(
@@ -389,6 +543,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     toggleTheme,
     bootstrap,
     loadThread,
+    disconnect,
     createProject,
     draftForProject,
     updateConversationDraft,

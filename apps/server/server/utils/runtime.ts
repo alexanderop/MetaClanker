@@ -9,6 +9,11 @@ import { checkpointsLayer, projectFilesLayer } from "@metaclanker/git/checkpoint
 import type { CheckpointsService } from "@metaclanker/git/checkpoints";
 import { databaseLayer } from "@metaclanker/persistence/database";
 
+import type { AgentWork } from "./agent-work.js";
+import { agentWorkLayer } from "./agent-work.js";
+import type { LocalDiagnostics } from "./local-diagnostics.js";
+import { localDiagnosticsLayer } from "./local-diagnostics.js";
+
 const createRuntime = (dataDirectory: string) => {
   mkdirSync(join(dataDirectory, "checkpoints"), { recursive: true });
   return ManagedRuntime.make(
@@ -16,6 +21,8 @@ const createRuntime = (dataDirectory: string) => {
       databaseLayer(join(dataDirectory, "metaclanker.sqlite")),
       projectFilesLayer,
       checkpointsLayer(join(dataDirectory, "checkpoints")),
+      agentWorkLayer,
+      localDiagnosticsLayer(dataDirectory),
     ),
   );
 };
@@ -24,7 +31,7 @@ export let applicationDataDirectory = resolve(process.env["METACLANKER_DATA_DIR"
 let runtime = createRuntime(applicationDataDirectory);
 
 export const runApplication = <A, E>(
-  effect: Effect.Effect<A, E, Store | Files | CheckpointsService>,
+  effect: Effect.Effect<A, E, Store | Files | CheckpointsService | AgentWork | LocalDiagnostics>,
 ): Promise<A> => runtime.runPromise(effect);
 
 export const closeApplicationRuntime = (): Promise<void> => runtime.dispose();

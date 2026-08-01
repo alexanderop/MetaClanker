@@ -57,11 +57,11 @@ onBeforeUnmount(() => {
       @open-review="reviewOpen = true"
       @toggle-theme="workspace.toggleTheme"
     />
-    <template v-if="surface === 'conversation'">
+    <div v-show="surface === 'conversation'" class="contents">
       <Transcript :detail="workspace.detail" />
       <Composer :thread="workspace.detail.thread" />
-    </template>
-    <AgentMap v-else :agent-nodes="workspace.detail.agentNodes" />
+    </div>
+    <AgentMap v-if="surface === 'map'" :agent-nodes="workspace.detail.agentNodes" />
     <ReviewPanel
       v-if="reviewOpen"
       :thread-id="workspace.detail.thread.id"

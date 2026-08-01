@@ -6,6 +6,7 @@ import { ThreadId } from "@metaclanker/contracts/ids";
 import { UpdateThreadRequest } from "@metaclanker/contracts/wire";
 
 import { decodeBody, publicError } from "../../utils/http.js";
+import { publishShellEvent, publishThreadEvent } from "../../utils/hub.js";
 import { runApplication } from "../../utils/runtime.js";
 
 export default defineEventHandler(async (event) => {
@@ -13,23 +14,32 @@ export default defineEventHandler(async (event) => {
   if (rawId === undefined)
     throw createError({ statusCode: 400, statusMessage: "Thread ID required" });
   const input = await decodeBody(event, UpdateThreadRequest);
-  return runApplication(
+  const result = await runApplication(
     Effect.gen(function* () {
       const store = yield* Store;
       const id = ThreadId.make(rawId);
-      let thread = yield* store.getThread(id);
-      if (thread === null) return yield* Effect.fail({ message: "Thread not found" });
+      const existing = yield* store.getThread(id);
+      if (existing === null) return yield* Effect.fail({ message: "Thread not found" });
+      const mutations = [];
       if (input.title !== undefined) {
-        yield* store.renameThread(id, input.title);
+        mutations.push(yield* store.renameThread(id, input.title));
       }
       if (input.archived !== undefined) {
-        yield* store.setThreadArchived(id, input.archived);
+        mutations.push(yield* store.setThreadArchived(id, input.archived));
       }
-      thread = yield* store.getThread(id);
-      if (thread === null) return yield* Effect.fail({ message: "Thread not found" });
-      return thread.thread;
+      return { thread: mutations.at(-1)?.record ?? existing.thread, mutations };
     }),
   ).catch((cause: unknown) => {
     throw publicError(cause);
   });
+  for (const mutation of result.mutations) {
+    const liveEvent = {
+      type: "thread-upserted",
+      sequence: mutation.eventSequence,
+      thread: mutation.record,
+    } as const;
+    publishShellEvent(liveEvent);
+    publishThreadEvent(result.thread.id, liveEvent);
+  }
+  return result.thread;
 });

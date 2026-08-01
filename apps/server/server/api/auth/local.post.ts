@@ -1,11 +1,19 @@
-import { createError, defineEventHandler, getRequestIP, setCookie } from "h3";
+import { createError, defineEventHandler, getHeader, getRequestIP, setCookie } from "h3";
 
-import { createEnvironmentSession, isLoopbackRequest } from "../../utils/auth.js";
+import { createEnvironmentSession, isTrustedLocalBootstrap } from "../../utils/auth.js";
 
 export default defineEventHandler((event) => {
   const address = getRequestIP(event, { xForwardedFor: false });
   const forwardedAddress = getRequestIP(event, { xForwardedFor: true });
-  if (!isLoopbackRequest(address, forwardedAddress, process.env["NITRO_DEV_WORKER_ID"])) {
+  if (
+    !isTrustedLocalBootstrap({
+      address,
+      forwardedAddress,
+      nitroDevWorkerId: process.env["NITRO_DEV_WORKER_ID"],
+      host: getHeader(event, "host"),
+      origin: getHeader(event, "origin"),
+    })
+  ) {
     throw createError({ statusCode: 403, statusMessage: "Local bootstrap is loopback-only" });
   }
   const session = createEnvironmentSession();

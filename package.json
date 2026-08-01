@@ -10,7 +10,7 @@
     "package:desktop": "pnpm build && node scripts/package-desktop.mjs",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
-    "lint": "oxlint . --deny-warnings && eslint .",
+    "lint": "oxlint . --deny-warnings && eslint . && node --test scripts/lint-architecture.test.mjs && node scripts/lint-architecture.mjs && node scripts/check-test-integrity.mjs",
     "test": "vitest run",
     "test:unit": "vitest run --project node-unit",
     "test:contract": "pnpm --filter @metaclanker/testing build && vitest run --project node-contract",

@@ -91,6 +91,7 @@ export const ToolCall = Schema.Struct({
   kind: Schema.String,
   status: Schema.Literal("pending", "running", "completed", "failed", "cancelled"),
   content: Schema.String,
+  sequence: Sequence,
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });
@@ -114,6 +115,7 @@ export const PendingInteraction = Schema.Struct({
   description: Schema.String,
   options: Schema.Array(PermissionOption),
   status: Schema.Literal("pending", "resolved", "cancelled", "stale"),
+  sequence: Sequence,
   createdAt: Schema.String,
 });
 export type PendingInteraction = typeof PendingInteraction.Type;
@@ -139,10 +141,30 @@ export const ServerEvent = Schema.Union(
     reason: Schema.String,
   }),
   Schema.Struct({
+    type: Schema.Literal("project-upserted"),
+    sequence: Sequence,
+    project: Project,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("project-removed"),
+    sequence: Sequence,
+    projectId: ProjectId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("thread-status"),
     sequence: Sequence,
     threadId: ThreadId,
     status: ThreadStatus,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread-upserted"),
+    sequence: Sequence,
+    thread: Thread,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread-removed"),
+    sequence: Sequence,
+    threadId: ThreadId,
   }),
   Schema.Struct({
     type: Schema.Literal("message-upserted"),

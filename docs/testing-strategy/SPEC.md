@@ -85,15 +85,15 @@ contract.
 
 ## 4. Current state
 
-The repository currently has the complete lane topology but a small initial body of tests:
+The repository has the complete lane topology and exercises the principal cross-layer contracts:
 
 | Lane                | Current implementation                                           | Main gap                                                                       |
 | ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Static and types    | Strict TypeScript, `vue-tsc`, lint, one branded-ID type contract | More public union and preload bridge contracts                                 |
-| Node unit/property  | Domain graph/thread, auth policy, and thread-title tests         | More recovery, normalization, permission, and path policies                    |
-| ACP contract        | One real-stdio happy-path session test                           | Capability variants, failures, concurrency, malformed input, and crash points  |
-| Backend integration | SQLite event store and Git checkpoint tests                      | Full orchestration, Nitro, WebSocket, recovery, and ACP collaboration          |
-| Browser integration | One add-project feature test in Chromium                         | Conversation, permission, review, reconnect, draft, map, and keyboard behavior |
+| Static and types    | Strict TypeScript, `vue-tsc`, import-boundary lint, branded IDs, focused-test guard | Continue expanding public union and preload bridge contracts                   |
+| Node unit/property  | Domain graph/thread/events, live reducers, auth, title, and lifecycle workers | More generated recovery and permission-policy sequences                        |
+| ACP contract        | Real production supervisor over deterministic stdio scenarios    | Add new provider capability variants whenever adapters expand                  |
+| Backend integration | SQLite journal/projection replay, orchestration, recovery, Git checkpoints | Add Nitro/WebSocket edge cases only where lower lanes cannot own them           |
+| Browser integration | Project/draft navigation, conversation live status, keyboard and accessibility | Add reconnect and long-transcript behavior as visible regressions are found    |
 | Production web E2E  | Two critical fake-provider journeys                              | Keep narrow; strengthen assertions rather than adding breadth                  |
 | Packaged Electron   | Startup, native SQLite, renderer, readiness, and shutdown smoke  | Minimal prompt path and explicit preload surface verification                  |
 | Mutation            | Scheduled graph/thread baseline                                  | Expand only as new critical pure policy modules appear                         |

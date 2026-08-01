@@ -22,19 +22,19 @@ const start = async (): Promise<void> => {
 
 <template>
   <section
-    class="grid h-full w-[min(42rem,100%)] content-start justify-items-start p-[clamp(2rem,8vw,6rem)] text-left text-text-muted"
+    class="mx-auto grid h-full w-[min(48rem,100%)] content-center justify-items-center p-[clamp(2rem,8vw,6rem)] text-center text-text-muted"
     aria-labelledby="welcome-title"
   >
     <h1
       id="welcome-title"
-      class="m-0 mb-[0.55rem] max-w-[28rem] text-[clamp(1.5rem,3vw,2.2rem)] leading-[1.1] tracking-[-0.035em] text-text"
+      class="m-0 mb-[0.55rem] max-w-[28rem] text-[clamp(1.5rem,3vw,2.2rem)] font-normal leading-[1.1] tracking-[-0.035em] text-text"
     >
       {{ projects.length === 0 ? $t("welcome.noProjectsTitle") : $t("welcome.readyTitle") }}
     </h1>
     <p class="m-0 max-w-[30rem] leading-[1.55]">
       {{ projects.length === 0 ? $t("welcome.noProjectsBody") : $t("welcome.readyBody") }}
     </p>
-    <div class="mt-[1.2rem] flex flex-wrap justify-start gap-[0.65rem]">
+    <div class="mt-[1.2rem] flex flex-wrap justify-center gap-[0.65rem]">
       <Button variant="primary" type="button" @click="start">
         {{ projects.length === 0 ? $t("projects.add") : $t("navigation.newChat") }}
       </Button>

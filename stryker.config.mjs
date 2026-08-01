@@ -13,6 +13,7 @@ export default {
     "/artifacts/**",
     "/.packaging/**",
     "/apps/*/dist/**",
+    "/apps/server/.data/**",
     "/apps/server/.output/**",
     "/test-results/**",
   ],

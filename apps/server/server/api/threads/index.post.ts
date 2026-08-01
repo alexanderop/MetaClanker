@@ -6,11 +6,12 @@ import { ThreadId } from "@metaclanker/contracts/ids";
 import { CreateThreadRequest } from "@metaclanker/contracts/wire";
 
 import { decodeBody, publicError } from "../../utils/http.js";
+import { publishShellEvent } from "../../utils/hub.js";
 import { runApplication } from "../../utils/runtime.js";
 
 export default defineEventHandler(async (event) => {
   const input = await decodeBody(event, CreateThreadRequest);
-  return runApplication(
+  const result = await runApplication(
     Effect.gen(function* () {
       const store = yield* Store;
       const now = new Date().toISOString();
@@ -27,4 +28,12 @@ export default defineEventHandler(async (event) => {
   ).catch((cause: unknown) => {
     throw publicError(cause);
   });
+  if (result.eventSequence !== null) {
+    publishShellEvent({
+      type: "thread-upserted",
+      sequence: result.eventSequence,
+      thread: result.record,
+    });
+  }
+  return result.record;
 });

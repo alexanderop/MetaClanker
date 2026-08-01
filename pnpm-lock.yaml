@@ -129,6 +129,9 @@ importers:
       '@metaclanker/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@metaclanker/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@metaclanker/git':
         specifier: workspace:*
         version: link:../../packages/git
@@ -270,6 +273,9 @@ importers:
       '@metaclanker/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@metaclanker/domain':
+        specifier: workspace:*
+        version: link:../domain
       effect:
         specifier: 'catalog:'
         version: 3.22.1
@@ -328,6 +334,9 @@ importers:
       '@metaclanker/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@metaclanker/domain':
+        specifier: workspace:*
+        version: link:../domain
       effect:
         specifier: 'catalog:'
         version: 3.22.1

@@ -18,6 +18,7 @@
     "@effect/sql-sqlite-node": "catalog:",
     "@metaclanker/application": "workspace:*",
     "@metaclanker/contracts": "workspace:*",
+    "@metaclanker/domain": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

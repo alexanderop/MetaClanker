@@ -306,7 +306,7 @@ watch(
           >
             <span class="text-base text-sidebar-text-dim" aria-hidden="true">▱</span>
             <strong
-              class="overflow-hidden text-[0.74rem] font-[620] text-ellipsis whitespace-nowrap"
+              class="overflow-hidden text-[0.82rem] font-[600] text-ellipsis whitespace-nowrap"
             >
               {{ project.name }}
             </strong>

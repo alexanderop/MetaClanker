@@ -6,11 +6,21 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 import { userEvent } from "vitest/browser";
 
 import { ProjectId, ThreadId, TurnId } from "@metaclanker/contracts/ids";
+import type { Thread } from "@metaclanker/contracts/wire";
 import { defaultUserSettings } from "@metaclanker/contracts/wire";
 import { renderFeature } from "@metaclanker/testing/vue/render-feature";
 
 import App from "../../App.vue";
 import { i18n } from "../../shared/i18n.js";
+import { useWorkspaceStore } from "../../shared/workspaceStore.js";
+
+const deferred = (): { readonly promise: Promise<void>; readonly resolve: () => void } => {
+  let resolvePromise!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
+};
 import { router } from "../../views/router.js";
 
 const project = {
@@ -24,7 +34,7 @@ const project = {
   createdAt: "2026-08-01T00:00:00.000Z",
 };
 
-const thread = {
+const thread: Thread = {
   id: ThreadId.make("thread:browser-first-send"),
   projectId: project.id,
   provider: "codex" as const,
@@ -37,6 +47,31 @@ const thread = {
   updatedAt: "2026-08-01T00:00:01.000Z",
 };
 
+const slowerThread = {
+  ...thread,
+  id: ThreadId.make("thread:browser-slower"),
+  title: "Slower conversation",
+};
+
+const threadDetail = (value: typeof thread) => ({
+  thread: value,
+  messages: [
+    {
+      id: `message:${value.id}`,
+      threadId: value.id,
+      turnId: "turn:browser",
+      role: "user" as const,
+      content: value.title,
+      sequence: 1,
+      createdAt: value.createdAt,
+    },
+  ],
+  toolCalls: [],
+  interactions: [],
+  agentNodes: [],
+  latestSequence: 1,
+});
+
 let startRequests: unknown[] = [];
 let eventClient: { send: (data: string) => void } | null = null;
 const threadEvents = ws
@@ -45,9 +80,13 @@ const threadEvents = ws
     eventClient = client;
     client.send("pong");
   });
+const shellEvents = ws.link("/api/shell/events").addEventListener("connection", ({ client }) => {
+  client.send("pong");
+});
 
 const worker = setupWorker(
   threadEvents,
+  shellEvents,
   http.post("/api/auth/local", () => HttpResponse.json({ authenticated: true })),
   http.get("/api/shell", () => HttpResponse.json({ projects: [], threads: [], latestSequence: 0 })),
   http.get("/api/settings", () => HttpResponse.json(defaultUserSettings)),
@@ -225,6 +264,78 @@ test("a completed live turn updates its sidebar status without a reload", async 
   await expect
     .element(screen.getByRole("link", { name: new RegExp(`${thread.title}.*completed`, "i") }))
     .toBeVisible();
+});
+
+test("a slower previous thread load cannot replace the latest conversation", async () => {
+  worker.use(
+    http.get("/api/shell", () =>
+      HttpResponse.json({
+        projects: [project],
+        threads: [thread, slowerThread],
+        latestSequence: 1,
+      }),
+    ),
+  );
+  await router.push({ name: "thread", params: { threadId: thread.id } });
+  await router.isReady();
+  const pinia = createPinia();
+  const screen = await renderFeature(App, { global: { plugins: [pinia, router, i18n] } });
+  const workspace = useWorkspaceStore(pinia);
+  await expect.element(screen.getByRole("heading", { name: thread.title })).toBeVisible();
+
+  const slowerLoadGate = deferred();
+  const slowerRequestStarted = deferred();
+  worker.use(
+    http.get("/api/threads/:id", async ({ params }) => {
+      if (params["id"] === slowerThread.id) {
+        slowerRequestStarted.resolve();
+        await slowerLoadGate.promise;
+        return HttpResponse.json(threadDetail(slowerThread));
+      }
+      return HttpResponse.json(threadDetail(thread));
+    }),
+  );
+
+  const slowerLoad = workspace.loadThread(slowerThread.id);
+  await slowerRequestStarted.promise;
+  const latestLoad = workspace.loadThread(thread.id);
+  await latestLoad;
+  slowerLoadGate.resolve();
+  await slowerLoad;
+
+  await expect.element(screen.getByRole("heading", { name: thread.title })).toBeVisible();
+  await expect
+    .element(screen.getByRole("heading", { name: slowerThread.title }))
+    .not.toBeInTheDocument();
+});
+
+test("a required thread snapshot replaces the cursor and resumes the live view", async () => {
+  let snapshotRequests = 0;
+  worker.use(
+    http.get("/api/shell", () =>
+      HttpResponse.json({ projects: [project], threads: [thread], latestSequence: 1 }),
+    ),
+    http.get("/api/threads/:id", () => {
+      snapshotRequests += 1;
+      return HttpResponse.json({
+        ...threadDetail({ ...thread, status: snapshotRequests === 1 ? "running" : "completed" }),
+        latestSequence: snapshotRequests === 1 ? 1 : 3,
+      });
+    }),
+  );
+  await router.push({ name: "thread", params: { threadId: thread.id } });
+  await router.isReady();
+  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
+  await expect
+    .element(screen.getByRole("status", { name: "Thread status: running" }))
+    .toBeVisible();
+
+  eventClient?.send(JSON.stringify({ type: "snapshot-required", reason: "cursor-too-old" }));
+
+  await expect
+    .element(screen.getByRole("status", { name: "Thread status: completed" }))
+    .toBeVisible();
+  expect(snapshotRequests).toBe(2);
 });
 
 test("a rejected first send preserves every local draft field and reuses its command identity", async () => {

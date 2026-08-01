@@ -24,6 +24,7 @@ import type {
   ToolCall,
   UserSettings,
 } from "@metaclanker/contracts/wire";
+import type { DomainEvent } from "@metaclanker/domain/events";
 
 export interface CreateProjectRecord {
   readonly id: ProjectId;
@@ -56,7 +57,36 @@ export interface StartedThreadRecord {
   readonly thread: Thread;
   readonly turnId: TurnId;
   readonly acceptedNow: boolean;
+  readonly threadEventSequence: Sequence | null;
 }
+
+export interface StartTurnRecord {
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId;
+  readonly userMessageId: MessageId;
+  readonly prompt: string;
+  readonly attachments: ReadonlyArray<string>;
+  readonly rootNode: AgentNode;
+  readonly createdAt: string;
+}
+
+export type StartedTurnRecord =
+  | {
+      readonly acceptedNow: false;
+      readonly thread: Thread;
+      readonly turnId: TurnId;
+    }
+  | {
+      readonly acceptedNow: true;
+      readonly thread: Thread;
+      readonly turnId: TurnId;
+      readonly userMessage: Message;
+      readonly rootNode: AgentNode;
+      readonly statusEventSequence: Sequence;
+      readonly messageEventSequence: Sequence;
+      readonly nodeEventSequence: Sequence;
+    };
 
 export type TurnCompletionStatus =
   | "completed"
@@ -74,7 +104,10 @@ export interface AppendMessageRecord {
   readonly createdAt: string;
 }
 
-export interface UpsertToolCallRecord extends Omit<ToolCall, "createdAt" | "updatedAt"> {
+export interface UpsertToolCallRecord extends Omit<
+  ToolCall,
+  "sequence" | "createdAt" | "updatedAt"
+> {
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -85,10 +118,25 @@ export interface StoreError {
   readonly message: string;
 }
 
+export interface PersistedMutation<A> {
+  readonly record: A;
+  readonly eventSequence: Sequence;
+}
+
+export interface CommandMutation<A> {
+  readonly record: A;
+  readonly eventSequence: Sequence | null;
+}
+
 export interface MetaClankerStore {
   readonly shellSnapshot: Effect.Effect<ShellSnapshot, StoreError>;
-  readonly createProject: (input: CreateProjectRecord) => Effect.Effect<Project, StoreError>;
-  readonly renameProject: (id: ProjectId, name: string) => Effect.Effect<Project, StoreError>;
+  readonly createProject: (
+    input: CreateProjectRecord,
+  ) => Effect.Effect<CommandMutation<Project>, StoreError>;
+  readonly renameProject: (
+    id: ProjectId,
+    name: string,
+  ) => Effect.Effect<PersistedMutation<Project>, StoreError>;
   readonly updateProject: (
     id: ProjectId,
     input: {
@@ -96,24 +144,32 @@ export interface MetaClankerStore {
       readonly hidden?: boolean | undefined;
       readonly order?: number | undefined;
     },
-  ) => Effect.Effect<Project, StoreError>;
-  readonly removeProject: (id: ProjectId) => Effect.Effect<void, StoreError>;
-  readonly createThread: (input: CreateThreadRecord) => Effect.Effect<Thread, StoreError>;
+  ) => Effect.Effect<PersistedMutation<Project>, StoreError>;
+  readonly removeProject: (
+    id: ProjectId,
+  ) => Effect.Effect<PersistedMutation<ProjectId>, StoreError>;
+  readonly createThread: (
+    input: CreateThreadRecord,
+  ) => Effect.Effect<CommandMutation<Thread>, StoreError>;
   readonly startThread: (
     input: StartThreadRecord,
   ) => Effect.Effect<StartedThreadRecord, StoreError>;
+  readonly startTurn: (input: StartTurnRecord) => Effect.Effect<StartedTurnRecord, StoreError>;
   readonly completeTurn: (
     turnId: TurnId,
     status: TurnCompletionStatus,
     completedAt: string,
   ) => Effect.Effect<void, StoreError>;
   readonly getThread: (id: ThreadId) => Effect.Effect<ThreadDetail | null, StoreError>;
-  readonly renameThread: (id: ThreadId, title: string) => Effect.Effect<Thread, StoreError>;
+  readonly renameThread: (
+    id: ThreadId,
+    title: string,
+  ) => Effect.Effect<PersistedMutation<Thread>, StoreError>;
   readonly setThreadArchived: (
     id: ThreadId,
     archived: boolean,
-  ) => Effect.Effect<Thread, StoreError>;
-  readonly deleteThread: (id: ThreadId) => Effect.Effect<void, StoreError>;
+  ) => Effect.Effect<PersistedMutation<Thread>, StoreError>;
+  readonly deleteThread: (id: ThreadId) => Effect.Effect<PersistedMutation<ThreadId>, StoreError>;
   readonly setThreadStatus: (
     id: ThreadId,
     status: ThreadStatus,
@@ -121,22 +177,27 @@ export interface MetaClankerStore {
   readonly setProviderSession: (
     id: ThreadId,
     providerSessionId: string,
-  ) => Effect.Effect<Thread, StoreError>;
-  readonly appendMessage: (input: AppendMessageRecord) => Effect.Effect<Message, StoreError>;
-  readonly upsertToolCall: (input: UpsertToolCallRecord) => Effect.Effect<ToolCall, StoreError>;
+  ) => Effect.Effect<PersistedMutation<Thread>, StoreError>;
+  readonly appendMessage: (
+    input: AppendMessageRecord,
+  ) => Effect.Effect<PersistedMutation<Message>, StoreError>;
+  readonly upsertToolCall: (
+    input: UpsertToolCallRecord,
+  ) => Effect.Effect<PersistedMutation<ToolCall>, StoreError>;
   readonly upsertInteraction: (
-    input: PendingInteraction,
-  ) => Effect.Effect<PendingInteraction, StoreError>;
+    input: Omit<PendingInteraction, "sequence">,
+  ) => Effect.Effect<PersistedMutation<PendingInteraction>, StoreError>;
   readonly resolveInteraction: (
     id: PendingInteractionId,
     status: "resolved" | "cancelled" | "stale",
-  ) => Effect.Effect<PendingInteraction, StoreError>;
-  readonly upsertAgentNode: (input: AgentNode) => Effect.Effect<AgentNode, StoreError>;
-  readonly appendEvent: (
-    threadId: ThreadId,
-    type: string,
-    payload: string,
-  ) => Effect.Effect<Sequence, StoreError>;
+  ) => Effect.Effect<PersistedMutation<PendingInteraction>, StoreError>;
+  readonly upsertAgentNode: (
+    input: AgentNode,
+  ) => Effect.Effect<PersistedMutation<AgentNode>, StoreError>;
+  readonly readEvents: (
+    afterSequence: Sequence,
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<DomainEvent>, StoreError>;
   readonly findReceipt: (commandId: CommandId) => Effect.Effect<CommandReceipt | null, StoreError>;
   readonly saveReceipt: (receipt: CommandReceipt) => Effect.Effect<void, StoreError>;
   readonly backup: (destination: string) => Effect.Effect<void, StoreError>;
@@ -257,7 +318,10 @@ export type NormalizedAgentEvent =
   | { readonly type: "plan"; readonly content: string }
   | { readonly type: "usage"; readonly inputTokens: number; readonly outputTokens: number }
   | { readonly type: "agent-node"; readonly node: AgentNode }
-  | { readonly type: "permission"; readonly interaction: PendingInteraction }
+  | {
+      readonly type: "permission";
+      readonly interaction: Omit<PendingInteraction, "sequence">;
+    }
   | { readonly type: "runtime-failure"; readonly message: string };
 
 export interface AcpRuntimeError {

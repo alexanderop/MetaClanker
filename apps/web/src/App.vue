@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterView } from "vue-router";
 
 import ProjectSidebar from "./features/projects/ProjectSidebar.vue";
@@ -23,6 +23,8 @@ const toggleSidebarCollapse = (): void => {
 onMounted(() => {
   void workspace.bootstrap();
 });
+
+onBeforeUnmount(() => workspace.disconnect());
 </script>
 
 <template>

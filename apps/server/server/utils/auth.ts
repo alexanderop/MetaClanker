@@ -21,10 +21,45 @@ export const isLoopbackRequest = (
   forwardedAddress: string | undefined,
   nitroDevWorkerId: string | undefined,
 ): boolean => {
-  if (address !== undefined) return isLoopbackAddress(address);
+  if (address !== undefined) {
+    if (!isLoopbackAddress(address)) return false;
+    return forwardedAddress === undefined || isLoopbackAddress(forwardedAddress);
+  }
   return nitroDevWorkerId !== undefined && forwardedAddress !== undefined
     ? isLoopbackAddress(forwardedAddress)
     : false;
+};
+
+const isLoopbackHostname = (hostname: string): boolean =>
+  hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+
+const hostnameFromHost = (host: string | undefined): string | null => {
+  if (host === undefined) return null;
+  try {
+    return new URL(`http://${host}`).hostname;
+  } catch {
+    return null;
+  }
+};
+
+export const isTrustedLocalBootstrap = (input: {
+  readonly address: string | undefined;
+  readonly forwardedAddress: string | undefined;
+  readonly nitroDevWorkerId: string | undefined;
+  readonly host: string | undefined;
+  readonly origin: string | undefined;
+}): boolean => {
+  if (!isLoopbackRequest(input.address, input.forwardedAddress, input.nitroDevWorkerId)) {
+    return false;
+  }
+  const hostname = hostnameFromHost(input.host);
+  if (hostname === null || !isLoopbackHostname(hostname)) return false;
+  if (input.origin === undefined) return true;
+  try {
+    return isLoopbackHostname(new URL(input.origin).hostname);
+  } catch {
+    return false;
+  }
 };
 
 const equal = (left: string, right: string): boolean => {

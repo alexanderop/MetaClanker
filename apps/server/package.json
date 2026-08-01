@@ -12,6 +12,7 @@
     "@metaclanker/acp-client": "workspace:*",
     "@metaclanker/application": "workspace:*",
     "@metaclanker/contracts": "workspace:*",
+    "@metaclanker/domain": "workspace:*",
     "@metaclanker/git": "workspace:*",
     "@metaclanker/persistence": "workspace:*",
     "effect": "catalog:",

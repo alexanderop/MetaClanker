@@ -5,6 +5,7 @@ import { expect, test } from "vitest";
 import { CommandId, ProjectId } from "@metaclanker/contracts/ids";
 
 import { withOrchestrationHarness } from "../test-support/orchestration.js";
+import { dispatchPrompt } from "./orchestrator.js";
 
 test("first send rejects before persistence and preserves an accepted provider failure exactly once", async () => {
   await withOrchestrationHarness(
@@ -101,4 +102,53 @@ test("an accepted first send streams through the production ACP supervisor exact
       "Integration fake completed",
     );
   });
+});
+
+test("a prompt after an adapter disconnect opens a fresh resumable session", async () => {
+  await withOrchestrationHarness(
+    async (harness) => {
+      const projectId = ProjectId.make("project:orchestrator-reconnect");
+      await harness.createProject({
+        id: projectId,
+        commandId: CommandId.make("command:orchestrator-reconnect-project"),
+        name: "Orchestrator reconnect project",
+        path: harness.projectDirectory,
+        gitBranch: null,
+        gitStatus: "unavailable",
+        createdAt: "2026-08-01T00:00:00.000Z",
+      });
+      const accepted = await harness.startThreadWithPrompt({
+        commandId: CommandId.make("command:orchestrator-disconnect"),
+        projectId,
+        provider: "codex",
+        model: null,
+        effort: null,
+        permissionMode: null,
+        prompt: "Crash this deterministic turn",
+        attachments: [],
+      });
+      await harness.drain();
+      expect((await harness.threadDetail(accepted.thread.id))?.thread.status).toBe(
+        "recovery-required",
+      );
+
+      process.env["METACLANKER_FAKE_ACP_SCENARIO"] = JSON.stringify({
+        prompt: { mode: "complete", message: "Fresh session completed" },
+      });
+      await dispatchPrompt(
+        CommandId.make("command:orchestrator-after-disconnect"),
+        accepted.thread.id,
+        "Continue through a fresh adapter",
+        [],
+      );
+      await harness.drain();
+
+      const recovered = await harness.threadDetail(accepted.thread.id);
+      expect(recovered?.thread.status).toBe("completed");
+      expect(recovered?.messages.map((message) => message.content).join(" ")).toContain(
+        "Fresh session completed",
+      );
+    },
+    { fakeAcpScenario: JSON.stringify({ prompt: { mode: "crash" } }) },
+  );
 });

@@ -82,7 +82,11 @@ pnpm start
 
 Submit that code to `POST /api/auth/pair` as `{ "code": "..." }`. The resulting session is HTTP-only and revocable with `POST /api/auth/logout`. A locally authenticated caller can read the current code from `GET /api/auth/pairing-code`; the route rejects non-loopback callers. Do not expose the server directly to the public internet.
 
+If HTTPS terminates in a same-host reverse proxy, preserve the real client address in `X-Forwarded-For` and the public `Host` and `Origin` headers. Local bootstrap deliberately rejects forwarded non-loopback clients and non-loopback origins; remote clients must use pairing even though the proxy itself connects over loopback.
+
 No telemetry leaves the machine. Server logs and public API errors avoid prompt attachments, credentials, environment variables, absolute project paths, and raw provider envelopes. Unsent conversation drafts are not transmitted to Nitro.
+
+Optional local diagnostics are disabled by default. Set `METACLANKER_DIAGNOSTICS=1` to record structured operation timing and correlation IDs under `<data-directory>/diagnostics/`. The trace excludes prompts, attachments, environment values, raw provider envelopes, and project paths; it rotates at 1 MiB and expires after seven days.
 
 ## Backup and recovery
 

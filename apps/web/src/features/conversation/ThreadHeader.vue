@@ -32,16 +32,20 @@ const selectedSurface = computed({
 
 <template>
   <header
-    class="grid min-h-[4.5rem] grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-[1.2rem] border-b border-border bg-[color-mix(in_srgb,var(--color-surface)_92%,transparent)] px-[1.2rem] py-[0.7rem] backdrop-blur-[16px] max-narrow:grid-cols-[minmax(0,1fr)_auto]"
+    class="grid min-h-[3.25rem] grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 bg-[color-mix(in_srgb,var(--color-canvas)_88%,transparent)] px-4 py-1.5 backdrop-blur-[16px] max-narrow:grid-cols-[minmax(0,1fr)_auto]"
   >
-    <div class="flex min-w-0 items-center gap-3">
-      <ProviderMark :provider="thread.provider">
+    <div class="flex min-w-0 items-center gap-2.5">
+      <ProviderMark :provider="thread.provider" size="sm">
         {{ thread.provider === "codex" ? "C" : "A" }}
       </ProviderMark>
       <div class="min-w-0">
-        <div class="flex items-center gap-[0.6rem]">
+        <div class="flex items-center gap-2">
+          <span v-if="project" class="max-w-40 truncate text-[0.78rem] font-[560] text-text-muted">
+            {{ project.name }}
+          </span>
+          <span v-if="project" aria-hidden="true" class="text-text-muted/50">/</span>
           <h1
-            class="m-0 overflow-hidden text-[0.9rem] font-[680] tracking-[-0.015em] text-ellipsis whitespace-nowrap"
+            class="m-0 overflow-hidden text-[0.82rem] font-[600] tracking-[-0.01em] text-ellipsis whitespace-nowrap"
           >
             {{ thread.title }}
           </h1>
@@ -53,7 +57,7 @@ const selectedSurface = computed({
             {{ thread.status }}
           </StatusBadge>
         </div>
-        <p class="mt-[0.2rem] mb-0 text-[0.65rem] text-text-muted capitalize max-narrow:hidden">
+        <p class="mt-0.5 mb-0 text-[0.58rem] text-text-muted capitalize max-narrow:hidden">
           <span>{{ thread.provider }}</span>
           <span v-if="thread.model">· {{ thread.model }}</span>
           <span v-if="project?.gitBranch">· {{ $t("thread.branch") }} {{ project.gitBranch }}</span>
