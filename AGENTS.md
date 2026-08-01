@@ -4,11 +4,12 @@
 
 MetaClanker is a private, local-first control surface for Codex and Claude coding agents. It ships the same conversation-first workspace through a Vue web app and a packaged Electron app. The Nitro server owns authentication, ACP subprocesses, durable SQLite state, Git checkpoints, recovery, and event delivery.
 
-Read the relevant part of [SPEC.md](SPEC.md) before changing product behavior or architecture. Read [docs/testing-strategy/SPEC.md](docs/testing-strategy/SPEC.md) before changing tests, test infrastructure, asynchronous orchestration, or CI behavior. Use [README.md](README.md) for current setup, provider, privacy, backup, and operational details. Do not silently resolve a conflict between a specification and the implementation: preserve the stated contract or call out the discrepancy. The root specification is authoritative when specifications conflict.
+Read the relevant part of [SPEC.md](SPEC.md) before changing product behavior or architecture. Read [docs/testing-strategy/SPEC.md](docs/testing-strategy/SPEC.md) before changing tests, test infrastructure, asynchronous orchestration, or CI behavior. Read [docs/ui-components/SPEC.md](docs/ui-components/SPEC.md) before adding a UI component, changing `apps/web/src/ui`, or editing `apps/web/src/shared/styles.css`. Use [README.md](README.md) for current setup, provider, privacy, backup, and operational details. Do not silently resolve a conflict between a specification and the implementation: preserve the stated contract or call out the discrepancy. The root specification is authoritative when specifications conflict.
 
 ## Repository map
 
 - `apps/web`: Vue 3 presentation, routing, features, shared client state, and API client.
+- `apps/web/src/ui`: owned presentational primitives; reka-ui behavior, `cva` variants, token-only styling.
 - `apps/server`: Nitro routes, authentication, orchestration, subscriptions, and the composition root.
 - `apps/desktop`: Electron lifecycle and the narrow sandboxed preload bridge.
 - `packages/contracts`: branded IDs and public Effect Schema wire contracts only.
@@ -28,7 +29,8 @@ Work in source directories. Never edit generated `dist`, `.output`, `.nitro`, `.
 - Provider-specific JSON-RPC, metadata, capabilities, and subprocess details stay inside `packages/acp-client`. Everywhere else consumes normalized events and provider-neutral interfaces.
 - Decode external input at its boundary with Effect Schema. Keep public wire schemas separate from internal persisted-event schemas.
 - Backend resources and failure-producing workflows use Effect scopes, layers, streams/queues, interruption, and typed errors. Vue components do not execute Effect programs.
-- In `apps/web`, views compose features; features do not import other features; shared code imports neither features nor views. Components render state and emit intent; domain decisions remain in pure modules.
+- In `apps/web`, views compose features; features do not import other features; shared code imports neither features nor views; `ui` imports none of them. Components render state and emit intent; domain decisions remain in pure modules.
+- UI primitives own appearance only. Focus, portal, dismissal, and roving-tabindex behavior is delegated to reka-ui. Every primitive last-merges a `class` prop; `data-slot` is a styling hook and never a test selector.
 - Every mutation carries a stable `commandId`. Accepted/rejected receipts, durable events, and projections remain transactionally consistent. Never blindly retry an uncertain prompt dispatch or destructive filesystem action.
 - Crash recovery is explicit: interrupted active threads become recovery-required, live interactions become stale, and provider continuation follows advertised resume/load capabilities.
 - Git and filesystem operations are constrained to registered project roots. Destructive restore requires preview, confirmation, an idle root session, and an undo checkpoint.

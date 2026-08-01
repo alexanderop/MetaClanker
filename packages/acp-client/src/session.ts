@@ -269,6 +269,20 @@ const openSession = (
         }
       };
 
+      /**
+       * Drains queued session updates until no new work was appended while
+       * awaiting. `updateQueue` is reassigned as each update arrives, so a
+       * single await can return while a newly queued update is still pending —
+       * and ending the turn at that moment silently drops it.
+       */
+      const drainUpdates = async (): Promise<void> => {
+        let awaited: Promise<void>;
+        do {
+          awaited = updateQueue;
+          await awaited;
+        } while (awaited !== updateQueue);
+      };
+
       const client = acp
         .client({ name: "MetaClanker" })
         .onNotification(acp.methods.client.session.update, ({ params }) => {
@@ -359,7 +373,7 @@ const openSession = (
         });
         setupModes = loaded.modes;
         setupConfigOptions = loaded.configOptions;
-        await updateQueue;
+        await drainUpdates();
         ignoreReplay = false;
       } else {
         connection.close();
@@ -425,7 +439,13 @@ const openSession = (
         }
         permissions.clear();
       };
-      connection.closed.then(expirePermissions, expirePermissions);
+      /** Losing the adapter unbinds the turn and cancels anything still pending. */
+      const releaseSessionResources = (): void => {
+        activeTurnId = null;
+        activeEmitter = noopEmitter;
+        expirePermissions();
+      };
+      connection.closed.then(releaseSessionResources, releaseSessionResources);
 
       return {
         providerSessionId: sessionId,
@@ -451,18 +471,16 @@ const openSession = (
                 acp.PromptResponse,
                 acp.PromptRequest
               >(acp.methods.agent.session.prompt, { sessionId, prompt: blocks });
-              await updateQueue;
+              await drainUpdates();
               return { stopReason: outcome(response.stopReason) };
             },
             catch: (cause) => runtimeFailure("disconnected", cause),
           }).pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                promptActive = false;
-                activeTurnId = null;
-                activeEmitter = noopEmitter;
-              }),
-            ),
+            // The turn's emitter stays installed after the response resolves.
+            // An adapter may deliver a trailing `session/update` alongside the
+            // `session/prompt` response; unbinding here would silently discard
+            // it. The next prompt replaces the binding, and close clears it.
+            Effect.ensuring(Effect.sync(() => (promptActive = false))),
           );
         },
         requestCancel: () =>
@@ -485,6 +503,8 @@ const openSession = (
           try: async () => {
             if (closed) return;
             closed = true;
+            activeTurnId = null;
+            activeEmitter = noopEmitter;
             expirePermissions();
             if (capabilities.close) {
               await connection.agent.request(acp.methods.agent.session.close, { sessionId });

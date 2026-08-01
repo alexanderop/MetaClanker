@@ -6,13 +6,23 @@ import { ProjectId } from "@metaclanker/contracts/ids";
 import type { Provider } from "@metaclanker/contracts/wire";
 import type { ConversationDraft } from "../shared/workspaceStore.js";
 
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogEyebrow,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog/index.js";
+import { Button } from "../ui/button/index.js";
 import { useWorkspaceStore } from "../shared/workspaceStore.js";
 
 const workspace = useWorkspaceStore();
 const route = useRoute();
 const router = useRouter();
 const promptInput = useTemplateRef<HTMLTextAreaElement>("promptInput");
-const discardDialog = useTemplateRef<HTMLDialogElement>("discardDialog");
+const discardOpen = ref(false);
 const sending = ref(false);
 const sendError = ref<string | null>(null);
 const attachmentValue = ref("");
@@ -146,13 +156,13 @@ const onKeydown = (event: KeyboardEvent): void => {
 
 const confirmDiscard = async (): Promise<void> => {
   workspace.discardConversationDraft(projectId.value);
-  discardDialog.value?.close();
+  discardOpen.value = false;
   await router.push({ name: "home" });
 };
 
 const discard = async (): Promise<void> => {
   if (draft.value.prompt.trim().length > 0 || draft.value.attachments.length > 0) {
-    discardDialog.value?.showModal();
+    discardOpen.value = true;
     return;
   }
   await confirmDiscard();
@@ -258,18 +268,20 @@ watch(
               <option value="full-access">{{ $t("draft.fullAccess") }}</option>
             </select>
           </label>
-          <button class="button quiet" type="button" @click="discard">
+          <Button variant="ghost" type="button" @click="discard">
             {{ $t("draft.discard") }}
-          </button>
-          <button
-            class="send-button"
+          </Button>
+          <Button
+            variant="primary"
+            size="icon"
             type="button"
+            class="size-10 shrink-0 justify-self-end"
             :aria-label="$t('thread.send')"
             :disabled="sending || !sendReady"
             @click="send"
           >
             <span aria-hidden="true">↑</span>
-          </button>
+          </Button>
         </div>
         <p
           v-if="selectedProviderReadiness?.status === 'unavailable'"
@@ -293,9 +305,9 @@ watch(
                 placeholder="file:///srv/project/notes.md"
                 @keydown.enter.prevent="addAttachment"
               />
-              <button class="button secondary" type="button" @click="addAttachment">
+              <Button variant="secondary" type="button" @click="addAttachment">
                 {{ $t("draft.attach") }}
-              </button>
+              </Button>
             </span>
           </label>
           <ul v-if="draft.attachments.length > 0" :aria-label="$t('draft.attachments')">
@@ -317,26 +329,26 @@ watch(
   </section>
   <section v-else class="center-state" role="alert">
     <h1>{{ $t("draft.unavailableProject") }}</h1>
-    <RouterLink class="button secondary" :to="{ name: 'home' }">
-      {{ $t("draft.chooseProject") }}
-    </RouterLink>
+    <Button as-child variant="secondary">
+      <RouterLink :to="{ name: 'home' }">{{ $t("draft.chooseProject") }}</RouterLink>
+    </Button>
   </section>
 
-  <dialog ref="discardDialog" class="modal" aria-labelledby="discard-draft-title">
-    <form method="dialog" @submit.prevent="confirmDiscard">
-      <div class="modal-heading">
-        <div>
-          <p class="eyebrow">{{ $t("draft.unsent") }}</p>
-          <h2 id="discard-draft-title">{{ $t("draft.discardTitle") }}</h2>
-        </div>
-      </div>
-      <p>{{ $t("draft.discardBody") }}</p>
-      <div class="modal-actions">
-        <button class="button secondary" type="button" @click="discardDialog?.close()">
-          {{ $t("draft.keep") }}
-        </button>
-        <button class="button danger" type="submit">{{ $t("draft.discard") }}</button>
-      </div>
-    </form>
-  </dialog>
+  <Dialog v-model:open="discardOpen">
+    <DialogContent>
+      <form class="grid gap-4" @submit.prevent="confirmDiscard">
+        <DialogHeader>
+          <DialogEyebrow>{{ $t("draft.unsent") }}</DialogEyebrow>
+          <DialogTitle>{{ $t("draft.discardTitle") }}</DialogTitle>
+        </DialogHeader>
+        <DialogDescription>{{ $t("draft.discardBody") }}</DialogDescription>
+        <DialogFooter>
+          <Button variant="secondary" type="button" @click="discardOpen = false">
+            {{ $t("draft.keep") }}
+          </Button>
+          <Button variant="danger" type="submit">{{ $t("draft.discard") }}</Button>
+        </DialogFooter>
+      </form>
+    </DialogContent>
+  </Dialog>
 </template>

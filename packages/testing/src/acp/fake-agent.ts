@@ -51,6 +51,25 @@ const app = acp
     if (!sessions.has(params.sessionId)) {
       throw new Error("Unknown fake session");
     }
+    const promptText = params.prompt
+      .map((block) => (block.type === "text" ? block.text : ""))
+      .join(" ");
+
+    if (promptText.includes("trailing update")) {
+      // Deliberately writes the final update after the prompt response so a
+      // client that unbinds its turn on the response is caught dropping it.
+      setTimeout(() => {
+        void client.notify(acp.methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "trailing chunk" },
+          },
+        });
+      }, 0);
+      return { stopReason: "end_turn" };
+    }
+
     await client.notify(acp.methods.client.session.update, {
       sessionId: params.sessionId,
       update: {

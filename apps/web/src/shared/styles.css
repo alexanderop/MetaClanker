@@ -1,7 +1,13 @@
 @import "tailwindcss";
 
-:root {
-  color-scheme: light;
+/*
+ * Design tokens. `@theme` both generates Tailwind utilities (bg-surface, rounded-md,
+ * shadow-soft) and emits each token as a custom property on :root, so the legacy
+ * hand-written CSS below keeps resolving var(--color-*) unchanged during migration.
+ * Non-inline is deliberate: utilities reference the var, so the dark-mode blocks
+ * further down flip every utility for free.
+ */
+@theme {
   --color-canvas: #f3f4ef;
   --color-surface: #ffffff;
   --color-surface-raised: #fafbf7;
@@ -26,6 +32,26 @@
   --radius-md: 0.75rem;
   --radius-lg: 1rem;
   --radius-xl: 1.35rem;
+}
+
+/*
+ * Semantic aliases matching the shadcn token contract, so upstream patterns and
+ * snippets drop in unchanged. `inline` is correct here: the alias resolves to
+ * var(--color-*) at build time and still flips with the theme at runtime.
+ */
+@theme inline {
+  --color-background: var(--color-canvas);
+  --color-foreground: var(--color-text);
+  --color-muted-foreground: var(--color-text-muted);
+  --color-card: var(--color-surface);
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: var(--color-accent-ink);
+  --color-destructive: var(--color-danger);
+  --color-ring: var(--color-accent-strong);
+}
+
+:root {
+  color-scheme: light;
   --sidebar-width: 17.5rem;
   font-family:
     Inter,
@@ -744,8 +770,7 @@ kbd {
   cursor: pointer;
 }
 
-.button:disabled,
-.send-button:disabled {
+.button:disabled {
   cursor: not-allowed;
   opacity: 0.42;
 }
@@ -1076,44 +1101,6 @@ kbd {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-}
-
-.composer-control {
-  min-height: 1.8rem;
-  padding: 0.25rem 0.48rem;
-  border: 0;
-  border-radius: 0.4rem;
-  background: transparent;
-  color: var(--color-text-muted);
-  font-size: 0.62rem;
-  text-transform: capitalize;
-  cursor: pointer;
-}
-
-.composer-control:hover {
-  background: var(--color-canvas);
-  color: var(--color-text);
-}
-
-.send-button {
-  display: grid;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  padding: 0;
-  border: 0;
-  border-radius: 0.52rem;
-  background: var(--color-accent);
-  color: var(--color-accent-ink);
-  font-size: 1rem;
-  font-weight: 850;
-  cursor: pointer;
-}
-
-.send-button.stop {
-  background: var(--color-danger);
-  color: var(--color-text-inverse);
-  font-size: 0.65rem;
 }
 
 .composer-wrap > p {
@@ -2154,12 +2141,6 @@ kbd {
   font-size: 0.68rem;
 }
 
-.draft-controls .send-button {
-  flex: 0 0 2.5rem;
-  width: 2.5rem;
-  height: 2.5rem;
-}
-
 .draft-privacy {
   color: var(--color-text-muted);
   font-size: 0.62rem;
@@ -2501,10 +2482,6 @@ kbd {
   .draft-controls label,
   .draft-controls .button {
     min-width: 0;
-  }
-
-  .draft-controls .send-button {
-    justify-self: end;
   }
 
   .directory-browser-heading,

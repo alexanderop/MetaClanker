@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 
 import type { Thread, ThreadStatus } from "@metaclanker/contracts/wire";
 
+import { Button } from "../../ui/button/index.js";
 import { useWorkspaceStore } from "../../shared/workspaceStore.js";
 
 const props = defineProps<{ thread: Thread }>();
@@ -60,31 +61,36 @@ const onKeydown = (event: KeyboardEvent): void => {
       />
       <div class="composer-toolbar">
         <div>
-          <button class="icon-button" type="button" aria-label="Attach a file">
+          <Button variant="outline" size="icon" type="button" aria-label="Attach a file">
             <span aria-hidden="true">＋</span>
-          </button>
-          <button class="composer-control" type="button">{{ thread.provider }}</button>
-          <button class="composer-control" type="button">Default permissions</button>
+          </Button>
+          <Button variant="ghost" size="sm" type="button" class="capitalize">
+            {{ thread.provider }}
+          </Button>
+          <Button variant="ghost" size="sm" type="button">Default permissions</Button>
         </div>
-        <button
+        <Button
           v-if="active"
-          class="send-button stop"
+          variant="danger"
+          size="icon"
           type="button"
+          class="text-[0.65rem]"
           :aria-label="$t('thread.stop')"
           @click="workspace.cancelPrompt"
         >
           <span aria-hidden="true">■</span>
-        </button>
-        <button
+        </Button>
+        <Button
           v-else
-          class="send-button"
+          variant="primary"
+          size="icon"
           type="button"
           :aria-label="$t('thread.send')"
           :disabled="sending || draft.trim().length === 0"
           @click="send"
         >
           <span aria-hidden="true">↑</span>
-        </button>
+        </Button>
       </div>
     </div>
     <p>Enter to send · Shift+Enter for a new line · MetaClanker runs locally</p>

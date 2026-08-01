@@ -8,6 +8,8 @@ import { ProjectId, ThreadId, TurnId } from "@metaclanker/contracts/ids";
 
 import { makeAcpSessions } from "./session.js";
 
+const notObservedYet = (): void => undefined;
+
 describe("ACP process supervision", () => {
   it("negotiates v1, streams updates, and resolves one live permission", async () => {
     const fakeAgent = fileURLToPath(
@@ -69,5 +71,53 @@ describe("ACP process supervision", () => {
     );
     expect(resumed.providerSessionId).toBe(handle.providerSessionId);
     await Effect.runPromise(resumed.close);
+  });
+
+  it("keeps a session update that arrives after the prompt response", async () => {
+    const fakeAgent = fileURLToPath(
+      new URL("../../testing/dist/acp/fake-agent.js", import.meta.url),
+    );
+    const sessions = makeAcpSessions({
+      codex: { command: process.execPath, args: [fakeAgent] },
+      claude: { command: process.execPath, args: [fakeAgent] },
+    });
+    const handle = await Effect.runPromise(
+      sessions.open({
+        provider: "codex",
+        cwd: process.cwd(),
+        projectId: ProjectId.make("project:trailing"),
+        threadId: ThreadId.make("thread:trailing"),
+        providerSessionId: null,
+        model: null,
+        effort: null,
+        permissionMode: null,
+      }),
+    );
+    const chunks: string[] = [];
+    let observeTrailing = notObservedYet;
+    const trailing = new Promise<void>((resolve) => {
+      observeTrailing = resolve;
+    });
+
+    const result = await Effect.runPromise(
+      handle.prompt(
+        {
+          turnId: TurnId.make("turn:trailing"),
+          text: "send a trailing update",
+          attachments: [],
+        },
+        (event) =>
+          Effect.sync(() => {
+            if (event.type !== "agent-message-chunk") return;
+            chunks.push(event.chunk);
+            if (event.chunk.includes("trailing chunk")) observeTrailing();
+          }),
+      ),
+    );
+    expect(result.stopReason).toBe("completed");
+
+    await trailing;
+    await Effect.runPromise(handle.close);
+    expect(chunks.join("")).toBe("trailing chunk");
   });
 });
