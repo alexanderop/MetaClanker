@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 const dataDirectory = resolve(".e2e-data");
@@ -14,6 +15,7 @@ const child = spawn(process.execPath, [resolve("apps/server/.output/server/index
     PORT: "4401",
     METACLANKER_DATA_DIR: dataDirectory,
     METACLANKER_FAKE_ACP_ENTRY: resolve("packages/testing/dist/acp/fake-agent.js"),
+    METACLANKER_PROJECT_BROWSER_ROOTS: tmpdir(),
   },
   shell: false,
   stdio: "inherit",

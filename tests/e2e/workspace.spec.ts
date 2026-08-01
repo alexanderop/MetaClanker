@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
 import { expect, test as base, type Page } from "@playwright/test";
@@ -47,12 +47,15 @@ const capturePageErrors = (page: Page): string[] => {
 };
 
 const addProject = async (page: Page, projectPath: string, name: string): Promise<void> => {
-  await page.getByRole("button", { name: "Add project" }).click();
-  const dialog = page.getByRole("dialog", { name: "Open a server-side project" });
-  await dialog.getByLabel("Absolute project path").fill(projectPath);
+  await page.getByRole("button", { name: "Add project" }).first().click();
+  const dialog = page.getByRole("dialog", { name: "Choose a server project directory" });
+  await dialog.getByRole("button", { name: basename(projectPath), exact: true }).click();
+  await dialog.getByText("Advanced", { exact: true }).click();
   await dialog.getByLabel("Display name").fill(name);
   await dialog.getByRole("button", { name: "Add project" }).click();
-  await expect(page.getByText(name)).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: new RegExp(`What should we work on in.*${name}`) }),
+  ).toBeVisible();
 };
 
 test("a user streams a Codex-like turn, approves work, and opens review", async ({
@@ -63,12 +66,10 @@ test("a user streams a Codex-like turn, approves work, and opens review", async 
 
   await page.goto("/");
   await addProject(page, projectPath, "E2E workspace");
-  await page.getByRole("button", { name: "New thread" }).click();
-  await page.getByRole("button", { name: "Codex", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "New conversation" })).toBeVisible();
 
   await page.getByLabel("Ask the agent to build, investigate, or explain…").fill("Inspect it");
   await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByRole("heading", { name: "Inspect it" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Write implementation file" })).toBeVisible();
   await page.getByRole("button", { name: "Allow once" }).click();
   await expect(page.getByText(/Permission granted.*deterministic task is complete/u)).toBeVisible();
@@ -87,19 +88,17 @@ test("a restored application reloads a durable thread and interrupts its active 
 
   await page.goto("/");
   await addProject(page, projectPath, "Recovery workspace");
-  await page
-    .getByRole("region", { name: "Recovery workspace project" })
-    .getByRole("button", { name: "New thread" })
-    .click();
-  await page.getByRole("button", { name: "Claude", exact: true }).click();
+  await page.getByLabel("Provider").selectOption("claude");
 
   await page.getByLabel("Ask the agent to build, investigate, or explain…").fill("Keep working");
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByRole("heading", { name: "Write implementation file" })).toBeVisible();
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: "New conversation" })).toBeVisible();
-  await expect(page.getByText("Keep working", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Keep working" })).toBeVisible();
+  await expect(
+    page.getByLabel("user message").getByText("Keep working", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("heading", { name: "Write implementation file" })).toBeVisible();
   await page.getByRole("button", { name: "Stop turn" }).click();
   await expect(page.getByRole("status", { name: "Thread status: cancelled" })).toBeVisible();

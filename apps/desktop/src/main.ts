@@ -129,6 +129,9 @@ const installPrivilegedHandlers = (): void => {
   ipcMain.handle("desktop:select-project-directory", async (event) => {
     const sender = event.senderFrame;
     if (sender === null || !validSender(sender.url)) throw new Error("Untrusted renderer sender");
+    if (process.env["METACLANKER_PACKAGE_SMOKE"] === "1") {
+      return process.env["METACLANKER_PACKAGE_SMOKE_PROJECT"] ?? null;
+    }
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
     return result.canceled ? null : (result.filePaths[0] ?? null);
   });
@@ -178,6 +181,37 @@ const createWindow = async (origin: string): Promise<BrowserWindow> => {
       .then((value: unknown) => value === true);
     if (bridgeReady !== true) throw new Error("Electron preload bridge did not initialize");
     smokeLog("preload-ready");
+    const smokeProject = process.env["METACLANKER_PACKAGE_SMOKE_PROJECT"];
+    if (smokeProject === undefined) throw new Error("Packaged smoke project was not configured");
+    const pickerReachedDraft: unknown = await window.webContents.executeJavaScript(`(async () => {
+      const waitFor = (check) => new Promise((resolveWait, rejectWait) => {
+        const immediate = check();
+        if (immediate) {
+          resolveWait(immediate);
+          return;
+        }
+        const observer = new MutationObserver(() => {
+          const result = check();
+          if (!result) return;
+          clearTimeout(timeout);
+          observer.disconnect();
+          resolveWait(result);
+        });
+        const timeout = setTimeout(() => {
+          observer.disconnect();
+          rejectWait(new Error("Timed out waiting for packaged picker journey"));
+        }, 8000);
+        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+      });
+      const addButton = await waitFor(() => document.querySelector("button.folder-add-button"));
+      addButton.click();
+      const draftTextarea = await waitFor(() => location.pathname.startsWith("/new/") ? document.querySelector("textarea") : null);
+      await new Promise(requestAnimationFrame);
+      return document.activeElement === draftTextarea;
+    })()`);
+    if (pickerReachedDraft !== true)
+      throw new Error("Native picker did not reach the focused draft");
+    smokeLog("native-picker-draft");
   }
   return window;
 };

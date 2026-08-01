@@ -24,6 +24,9 @@ describe("ACP process supervision", () => {
         projectId: ProjectId.make("project:test"),
         threadId: ThreadId.make("thread:test"),
         providerSessionId: null,
+        model: null,
+        effort: null,
+        permissionMode: null,
       }),
     );
     const events: NormalizedAgentEvent[] = [];
@@ -59,6 +62,9 @@ describe("ACP process supervision", () => {
         projectId: ProjectId.make("project:test"),
         threadId: ThreadId.make("thread:test"),
         providerSessionId: handle.providerSessionId,
+        model: null,
+        effort: null,
+        permissionMode: null,
       }),
     );
     expect(resumed.providerSessionId).toBe(handle.providerSessionId);

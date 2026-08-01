@@ -2,21 +2,51 @@ import { Schema } from "effect";
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef } from "vue";
 
-import { CommandId } from "@metaclanker/contracts/ids";
-import type { ProjectId, ThreadId } from "@metaclanker/contracts/ids";
+import { CommandId, ProjectId } from "@metaclanker/contracts/ids";
+import type { ThreadId } from "@metaclanker/contracts/ids";
 import type {
   PendingInteraction,
-  Provider,
+  Project,
+  ProviderReadiness,
   ServerEvent,
   ShellSnapshot,
   ThreadDetail,
   UserSettings,
 } from "@metaclanker/contracts/wire";
-import { defaultUserSettings } from "@metaclanker/contracts/wire";
+import { Provider as ProviderSchema, defaultUserSettings } from "@metaclanker/contracts/wire";
 
 import { api, schemas } from "./apiClient.js";
 
 const emptyShell: ShellSnapshot = { projects: [], threads: [], latestSequence: 0 };
+const conversationDraftStorageKey = "metaclanker:conversation-drafts:v2";
+
+const ConversationDraftSchema = Schema.Struct({
+  projectId: ProjectId,
+  commandId: CommandId,
+  prompt: Schema.String,
+  provider: ProviderSchema,
+  model: Schema.NullOr(Schema.String),
+  effort: Schema.NullOr(Schema.Literal("low", "medium", "high")),
+  permissionMode: Schema.NullOr(Schema.Literal("read-only", "workspace-write", "full-access")),
+  attachments: Schema.Array(Schema.String),
+  cursorStart: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  cursorEnd: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+});
+export type ConversationDraft = typeof ConversationDraftSchema.Type;
+const ConversationDraftRecordSchema = Schema.Record({
+  key: Schema.String,
+  value: ConversationDraftSchema,
+});
+
+const loadConversationDrafts = (): Record<string, ConversationDraft> => {
+  try {
+    const serialized = window.localStorage.getItem(conversationDraftStorageKey);
+    if (serialized === null) return {};
+    return Schema.decodeUnknownSync(ConversationDraftRecordSchema)(JSON.parse(serialized));
+  } catch {
+    return {};
+  }
+};
 
 const applyTheme = (theme: UserSettings["theme"]): void => {
   if (theme === "system") delete document.documentElement.dataset["theme"];
@@ -26,10 +56,12 @@ const applyTheme = (theme: UserSettings["theme"]): void => {
 export const useWorkspaceStore = defineStore("workspace", () => {
   const shell = ref<ShellSnapshot>(emptyShell);
   const detail = shallowRef<ThreadDetail | null>(null);
-  const loading = ref(false);
+  const loading = ref(true);
   const error = ref<string | null>(null);
   const drafts = ref<Record<string, string>>({});
+  const conversationDrafts = ref<Record<string, ConversationDraft>>(loadConversationDrafts());
   const settings = ref<UserSettings>(defaultUserSettings);
+  const providerReadiness = ref<ReadonlyArray<ProviderReadiness>>([]);
   let socket: WebSocket | null = null;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -47,9 +79,14 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     error.value = null;
     try {
       await api.authenticateLocal();
-      const [nextShell, nextSettings] = await Promise.all([api.shell(), api.settings()]);
+      const [nextShell, nextSettings, nextProviderReadiness] = await Promise.all([
+        api.shell(),
+        api.settings(),
+        api.providerReadiness(),
+      ]);
       shell.value = nextShell;
       settings.value = nextSettings;
+      providerReadiness.value = nextProviderReadiness;
       applyTheme(nextSettings.theme);
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause);
@@ -179,28 +216,29 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     });
   };
 
-  const createProject = async (path: string, name?: string): Promise<void> => {
+  const persistConversationDrafts = (): void => {
+    window.localStorage.setItem(
+      conversationDraftStorageKey,
+      JSON.stringify(conversationDrafts.value),
+    );
+  };
+
+  const createProject = async (path: string, name?: string): Promise<Project> => {
     const project = await api.createProject({
       commandId: CommandId.make(crypto.randomUUID()),
       path,
       ...(name === undefined || name.length === 0 ? {} : { name }),
     });
-    shell.value = { ...shell.value, projects: [...shell.value.projects, project] };
+    shell.value = {
+      ...shell.value,
+      projects: [...shell.value.projects.filter((item) => item.id !== project.id), project],
+    };
+    return project;
   };
 
   const saveSettings = async (next: UserSettings): Promise<void> => {
     settings.value = await api.saveSettings(next);
     applyTheme(settings.value.theme);
-  };
-
-  const createThread = async (projectId: ProjectId, provider: Provider): Promise<ThreadId> => {
-    const thread = await api.createThread({
-      commandId: CommandId.make(crypto.randomUUID()),
-      projectId,
-      provider,
-    });
-    shell.value = { ...shell.value, threads: [thread, ...shell.value.threads] };
-    return thread.id;
   };
 
   const sendPrompt = async (text: string): Promise<void> => {
@@ -212,6 +250,74 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       threadId: current.thread.id,
       prompt: text,
     });
+  };
+
+  const draftForProject = (projectId: ProjectId): ConversationDraft => {
+    const existing = conversationDrafts.value[projectId];
+    if (existing !== undefined) return existing;
+    const draft: ConversationDraft = {
+      projectId,
+      commandId: CommandId.make(crypto.randomUUID()),
+      prompt: "",
+      provider: "codex",
+      model: settings.value.providerDefaults.codex.model,
+      effort: settings.value.providerDefaults.codex.effort,
+      permissionMode: settings.value.providerDefaults.codex.permissionMode,
+      attachments: [],
+      cursorStart: 0,
+      cursorEnd: 0,
+    };
+    conversationDrafts.value = { ...conversationDrafts.value, [projectId]: draft };
+    persistConversationDrafts();
+    return draft;
+  };
+
+  const updateConversationDraft = (
+    projectId: ProjectId,
+    patch: Partial<Omit<ConversationDraft, "projectId" | "commandId">>,
+  ): ConversationDraft => {
+    const current = draftForProject(projectId);
+    const next = { ...current, ...patch };
+    conversationDrafts.value = { ...conversationDrafts.value, [projectId]: next };
+    persistConversationDrafts();
+    return next;
+  };
+
+  const discardConversationDraft = (projectId: ProjectId): void => {
+    const next = { ...conversationDrafts.value };
+    delete next[projectId];
+    conversationDrafts.value = next;
+    persistConversationDrafts();
+  };
+
+  const startConversation = async (projectId: ProjectId): Promise<ThreadId> => {
+    const draft = draftForProject(projectId);
+    const readiness = providerReadiness.value.find((item) => item.provider === draft.provider);
+    if (readiness?.status !== "ready") {
+      throw new Error(readiness?.reason ?? `The ${draft.provider} provider is unavailable`);
+    }
+    const prompt = draft.prompt.trim();
+    if (prompt.length === 0 && draft.attachments.length === 0) {
+      throw new Error("Write a message or add an attachment before sending");
+    }
+    const result = await api.startThread({
+      commandId: draft.commandId,
+      projectId,
+      provider: draft.provider,
+      ...(draft.model === null || draft.model.trim().length === 0 ? {} : { model: draft.model }),
+      ...(draft.effort === null ? {} : { effort: draft.effort }),
+      ...(draft.permissionMode === null ? {} : { permissionMode: draft.permissionMode }),
+      prompt,
+      attachments: draft.attachments,
+    });
+    shell.value = {
+      ...shell.value,
+      threads: [
+        result.thread,
+        ...shell.value.threads.filter((item) => item.id !== result.thread.id),
+      ],
+    };
+    return result.thread.id;
   };
 
   const cancelPrompt = async (): Promise<void> => {
@@ -246,12 +352,17 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     loading,
     error,
     drafts,
+    conversationDrafts,
     settings,
+    providerReadiness,
     selectedProject,
     bootstrap,
     loadThread,
     createProject,
-    createThread,
+    draftForProject,
+    updateConversationDraft,
+    discardConversationDraft,
+    startConversation,
     saveSettings,
     sendPrompt,
     cancelPrompt,

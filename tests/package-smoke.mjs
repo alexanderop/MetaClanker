@@ -11,9 +11,14 @@ const executable =
     ? join(packageRoot, "MetaClanker.app/Contents/MacOS/MetaClanker")
     : join(packageRoot, platform === "win32" ? "MetaClanker.exe" : "MetaClanker");
 const profile = await mkdtemp(join(tmpdir(), "metaclanker-package-smoke-"));
+const smokeProject = await mkdtemp(join(tmpdir(), "metaclanker-picker-project-"));
 
 const child = spawn(executable, [`--user-data-dir=${profile}`], {
-  env: { ...process.env, METACLANKER_PACKAGE_SMOKE: "1" },
+  env: {
+    ...process.env,
+    METACLANKER_PACKAGE_SMOKE: "1",
+    METACLANKER_PACKAGE_SMOKE_PROJECT: smokeProject,
+  },
   shell: false,
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -37,6 +42,7 @@ const exitCode = await new Promise((resolveExit, reject) => {
 });
 clearTimeout(timeout);
 await rm(profile, { recursive: true, force: true });
+await rm(smokeProject, { recursive: true, force: true });
 
 const serverPidMatch = /METACLANKER_SMOKE server-pid (\d+)/u.exec(output);
 const serverPid = serverPidMatch === null ? null : Number(serverPidMatch[1]);
@@ -61,9 +67,14 @@ if (serverPid !== null) {
   }
 }
 
-if (exitCode !== 0 || !output.includes("METACLANKER_PACKAGE_READY") || serverPid === null) {
+if (
+  exitCode !== 0 ||
+  !output.includes("METACLANKER_PACKAGE_READY") ||
+  !output.includes("METACLANKER_SMOKE native-picker-draft") ||
+  serverPid === null
+) {
   throw new Error(`Packaged application smoke failed (${String(exitCode)}):\n${output}`);
 }
 process.stdout.write(
-  "Packaged Electron readiness, native SQLite, renderer load, and shutdown passed.\n",
+  "Packaged Electron readiness, native picker-to-draft, SQLite, renderer load, and shutdown passed.\n",
 );

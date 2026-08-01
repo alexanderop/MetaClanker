@@ -45,6 +45,26 @@ export interface CreateThreadRecord {
   readonly createdAt: string;
 }
 
+export interface StartThreadRecord extends CreateThreadRecord {
+  readonly turnId: TurnId;
+  readonly userMessageId: MessageId;
+  readonly prompt: string;
+  readonly attachments: ReadonlyArray<string>;
+}
+
+export interface StartedThreadRecord {
+  readonly thread: Thread;
+  readonly turnId: TurnId;
+  readonly acceptedNow: boolean;
+}
+
+export type TurnCompletionStatus =
+  | "completed"
+  | "cancelled"
+  | "interrupted"
+  | "failed"
+  | "recovery-required";
+
 export interface AppendMessageRecord {
   readonly id: MessageId;
   readonly threadId: ThreadId;
@@ -79,6 +99,14 @@ export interface MetaClankerStore {
   ) => Effect.Effect<Project, StoreError>;
   readonly removeProject: (id: ProjectId) => Effect.Effect<void, StoreError>;
   readonly createThread: (input: CreateThreadRecord) => Effect.Effect<Thread, StoreError>;
+  readonly startThread: (
+    input: StartThreadRecord,
+  ) => Effect.Effect<StartedThreadRecord, StoreError>;
+  readonly completeTurn: (
+    turnId: TurnId,
+    status: TurnCompletionStatus,
+    completedAt: string,
+  ) => Effect.Effect<void, StoreError>;
   readonly getThread: (id: ThreadId) => Effect.Effect<ThreadDetail | null, StoreError>;
   readonly renameThread: (id: ThreadId, title: string) => Effect.Effect<Thread, StoreError>;
   readonly setThreadArchived: (
@@ -259,6 +287,9 @@ export interface OpenAcpSessionInput {
   readonly projectId: ProjectId;
   readonly threadId: ThreadId;
   readonly providerSessionId: string | null;
+  readonly model: string | null;
+  readonly effort: string | null;
+  readonly permissionMode: string | null;
 }
 
 export interface AcpSessions {

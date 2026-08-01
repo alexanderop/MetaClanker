@@ -91,6 +91,11 @@ const MessageRow = Schema.Struct({
   created_at: Schema.String,
 });
 
+const TurnRow = Schema.Struct({
+  id: TurnId,
+  thread_id: ThreadId,
+});
+
 const ToolCallRow = Schema.Struct({
   id: ToolCallId,
   thread_id: ThreadId,
@@ -164,6 +169,7 @@ const CheckpointRow = Schema.Struct({
 type ProjectRow = typeof ProjectRow.Type;
 type ThreadRow = typeof ThreadRow.Type;
 type MessageRow = typeof MessageRow.Type;
+type TurnRow = typeof TurnRow.Type;
 type ToolCallRow = typeof ToolCallRow.Type;
 type InteractionRow = typeof InteractionRow.Type;
 type AgentNodeRow = typeof AgentNodeRow.Type;
@@ -268,7 +274,7 @@ const migrationStatements = [
   `CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, git_branch TEXT, git_status TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS provider_adapters (id TEXT PRIMARY KEY, provider TEXT NOT NULL, version TEXT NOT NULL, protocol_version INTEGER NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, provider TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, model TEXT, provider_session_id TEXT, archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, status TEXT NOT NULL, prompt TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, command_id TEXT UNIQUE, status TEXT NOT NULL, prompt TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS command_receipts (command_id TEXT PRIMARY KEY, status TEXT NOT NULL, aggregate_id TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS side_effect_intents (id TEXT PRIMARY KEY, command_id TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, schema_version INTEGER NOT NULL DEFAULT 1, event_id TEXT NOT NULL UNIQUE, thread_id TEXT, type TEXT NOT NULL, payload_json TEXT NOT NULL, received_at TEXT NOT NULL)`,
@@ -299,6 +305,12 @@ const makeStore = Effect.gen(function* () {
     .pipe(Effect.catchAll(() => Effect.void));
   yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at)
     VALUES (3, datetime('now'))`;
+  yield* sql
+    .unsafe(`ALTER TABLE turns ADD COLUMN command_id TEXT`)
+    .pipe(Effect.catchAll(() => Effect.void));
+  yield* sql.unsafe(`CREATE UNIQUE INDEX IF NOT EXISTS turns_command_id ON turns(command_id)`);
+  yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+    VALUES (4, datetime('now'))`;
   yield* sql`UPDATE pending_requests SET status = 'stale' WHERE status = 'pending'`;
   yield* sql`UPDATE threads SET status = 'recovery-required'
     WHERE status IN ('starting', 'running', 'waiting', 'needs-input', 'cancelling')`;
@@ -329,18 +341,45 @@ const makeStore = Effect.gen(function* () {
   const createProject: MetaClankerStore["createProject"] = (input) =>
     Effect.gen(function* () {
       const receipt = yield* findReceipt(input.commandId);
-      const projectId =
+      let projectId =
         receipt === null ? input.id : Schema.decodeUnknownSync(ProjectId)(receipt.aggregateId);
 
       if (receipt === null) {
-        yield* sql`INSERT INTO projects
-          (id, name, path, git_branch, git_status, hidden, sort_order, created_at)
-          VALUES (${input.id}, ${input.name}, ${input.path}, ${input.gitBranch}, ${input.gitStatus}, 0,
-            (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM projects), ${input.createdAt})`;
+        const pathRows = yield* sql<ProjectRow>`SELECT id, name, path, git_branch, git_status,
+          hidden, sort_order, created_at FROM projects WHERE path = ${input.path}`;
+        const existing = yield* decode(
+          "find project by normalized path",
+          Schema.Array(ProjectRow),
+          pathRows,
+        );
+        const existingProject = existing[0];
+        if (existingProject === undefined) {
+          yield* sql`INSERT OR IGNORE INTO projects
+            (id, name, path, git_branch, git_status, hidden, sort_order, created_at)
+            VALUES (${input.id}, ${input.name}, ${input.path}, ${input.gitBranch}, ${input.gitStatus}, 0,
+              (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM projects), ${input.createdAt})`;
+          const persistedRows =
+            yield* sql<ProjectRow>`SELECT id, name, path, git_branch, git_status,
+            hidden, sort_order, created_at FROM projects WHERE path = ${input.path}`;
+          const persisted = yield* decode(
+            "resolve project by normalized path",
+            Schema.Array(ProjectRow),
+            persistedRows,
+          );
+          const persistedProject = persisted[0];
+          if (persistedProject === undefined) {
+            return yield* Effect.fail(
+              storeError("create project", "Project path was not persisted"),
+            );
+          }
+          projectId = persistedProject.id;
+        } else {
+          projectId = existingProject.id;
+        }
         yield* saveReceipt({
           commandId: input.commandId,
           status: "accepted",
-          aggregateId: input.id,
+          aggregateId: projectId,
           reason: null,
           createdAt: input.createdAt,
         });
@@ -455,6 +494,83 @@ const makeStore = Effect.gen(function* () {
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("create thread", cause)),
+      ),
+    startThread: (input) =>
+      Effect.gen(function* () {
+        const receipt = yield* findReceipt(input.commandId);
+        if (receipt !== null) {
+          const replayedTurnId = yield* decode("replayed first turn", TurnId, receipt.aggregateId);
+          const rows = yield* sql<TurnRow>`SELECT id, thread_id FROM turns
+            WHERE id = ${replayedTurnId}`;
+          const turns = yield* decode("replayed first turn", Schema.Array(TurnRow), rows);
+          const replayed = turns[0];
+          if (replayed === undefined) {
+            return yield* Effect.fail(
+              storeError("start thread", "Accepted first-turn receipt has no durable turn"),
+            );
+          }
+          return {
+            thread: yield* getThreadRow(replayed.thread_id),
+            turnId: replayed.id,
+            acceptedNow: false,
+          };
+        }
+
+        yield* sql`INSERT INTO threads
+          (id, project_id, provider, title, status, model, archived, created_at, updated_at)
+          VALUES (${input.id}, ${input.projectId}, ${input.provider}, ${input.title}, 'running',
+            ${input.model}, 0, ${input.createdAt}, ${input.createdAt})`;
+        yield* sql`INSERT INTO turns
+          (id, thread_id, command_id, status, prompt, created_at, completed_at)
+          VALUES (${input.turnId}, ${input.id}, ${input.commandId}, 'running', ${input.prompt},
+            ${input.createdAt}, NULL)`;
+        const sequence = yield* appendEvent(
+          input.id,
+          "turn.started",
+          JSON.stringify({ turnId: input.turnId }),
+        );
+        yield* sql`INSERT INTO messages
+          (id, thread_id, turn_id, role, content, sequence, created_at)
+          VALUES (${input.userMessageId}, ${input.id}, ${input.turnId}, 'user', ${input.prompt},
+            ${sequence}, ${input.createdAt})`;
+        yield* sql`INSERT INTO side_effect_intents
+          (id, command_id, kind, state, payload_json, created_at, updated_at)
+          VALUES (${input.turnId}, ${input.commandId}, 'acp.prompt', 'pending',
+            ${JSON.stringify({ threadId: input.id, turnId: input.turnId })}, ${input.createdAt},
+            ${input.createdAt})`;
+        yield* saveReceipt({
+          commandId: input.commandId,
+          status: "accepted",
+          aggregateId: input.turnId,
+          reason: null,
+          createdAt: input.createdAt,
+        });
+        return {
+          thread: yield* getThreadRow(input.id),
+          turnId: input.turnId,
+          acceptedNow: true,
+        };
+      }).pipe(
+        sql.withTransaction,
+        Effect.mapError((cause) => storeError("start thread", cause)),
+      ),
+    completeTurn: (turnId, status, completedAt) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<TurnRow>`SELECT id, thread_id FROM turns WHERE id = ${turnId}`;
+        const turns = yield* decode("complete turn", Schema.Array(TurnRow), rows);
+        const turn = turns[0];
+        if (turn === undefined) {
+          return yield* Effect.fail(storeError("complete turn", "Turn not found"));
+        }
+        yield* sql`UPDATE turns SET status = ${status}, completed_at = ${completedAt}
+          WHERE id = ${turnId}`;
+        yield* sql`UPDATE side_effect_intents SET state = ${status}, updated_at = ${completedAt}
+          WHERE id = ${turnId}`;
+        yield* appendEvent(turn.thread_id, "turn.completed", JSON.stringify({ turnId, status }));
+      }).pipe(
+        sql.withTransaction,
+        Effect.asVoid,
+        Effect.mapError((cause) => storeError("complete turn", cause)),
       ),
     getThread: (id) =>
       Effect.gen(function* () {

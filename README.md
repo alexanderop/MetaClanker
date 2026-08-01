@@ -50,7 +50,15 @@ The lockfile pins the ACP v1 compatibility tuple:
 - `@agentclientprotocol/codex-acp` 1.1.7
 - `@agentclientprotocol/claude-agent-acp` 0.64.0
 
-Authenticate with Codex or Claude before starting MetaClanker, using the provider's normal local tooling. Add a Git repository in the sidebar, create a thread, and select Codex or Claude. MetaClanker starts one supervised adapter process per active root session and persists the provider session identifier for explicit resume semantics.
+Authenticate with Codex or Claude before starting MetaClanker, using the provider's normal local tooling. Add a project, open or return to its local draft, choose the provider settings, and send the first prompt. The first send atomically creates the titled thread and initial turn before MetaClanker starts one supervised adapter process. A repeated accepted command returns the original thread and is never blindly dispatched again.
+
+## Projects and new conversations
+
+In the Electron app, **Add project** opens the operating system folder picker immediately. Choosing a valid folder registers it using the folder name and opens a focused local draft; the normal path has no second confirmation form. Git repositories enable checkpoints and review. Non-Git directories are supported, with Git-dependent actions visibly unavailable.
+
+The browser surface cannot safely turn a client-machine folder handle into a server path. It therefore uses a constrained server-side directory browser. By default the browser is rooted at the server working directory. Set `METACLANKER_PROJECT_BROWSER_ROOTS` to a platform path-delimiter-separated list of allowed roots before starting Nitro to expose different server directories.
+
+New chat opens or returns to one unsent draft per project. Prompt text, attachments, cursor position, provider, model, effort, and permission mode remain in browser-local storage until the first send is accepted. Opening, navigating away from, or discarding an empty draft creates no server thread or provider session.
 
 For deterministic development without provider state, build the fake adapter and point Nitro at it:
 
@@ -74,7 +82,7 @@ pnpm start
 
 Submit that code to `POST /api/auth/pair` as `{ "code": "..." }`. The resulting session is HTTP-only and revocable with `POST /api/auth/logout`. A locally authenticated caller can read the current code from `GET /api/auth/pairing-code`; the route rejects non-loopback callers. Do not expose the server directly to the public internet.
 
-No telemetry leaves the machine. Server logs and public API errors avoid prompt attachments, credentials, environment variables, and raw provider envelopes.
+No telemetry leaves the machine. Server logs and public API errors avoid prompt attachments, credentials, environment variables, absolute project paths, and raw provider envelopes. Unsent conversation drafts are not transmitted to Nitro.
 
 ## Backup and recovery
 

@@ -4,7 +4,7 @@
 
 MetaClanker is a private, local-first control surface for Codex and Claude coding agents. It ships the same conversation-first workspace through a Vue web app and a packaged Electron app. The Nitro server owns authentication, ACP subprocesses, durable SQLite state, Git checkpoints, recovery, and event delivery.
 
-Read the relevant part of [SPEC.md](SPEC.md) before changing product behavior or architecture. Use [README.md](README.md) for current setup, provider, privacy, backup, and operational details. Do not silently resolve a conflict between the specification and implementation: preserve the stated contract or call out the discrepancy.
+Read the relevant part of [SPEC.md](SPEC.md) before changing product behavior or architecture. Read [docs/testing-strategy/SPEC.md](docs/testing-strategy/SPEC.md) before changing tests, test infrastructure, asynchronous orchestration, or CI behavior. Use [README.md](README.md) for current setup, provider, privacy, backup, and operational details. Do not silently resolve a conflict between a specification and the implementation: preserve the stated contract or call out the discrepancy. The root specification is authoritative when specifications conflict.
 
 ## Repository map
 
@@ -44,11 +44,38 @@ Work in source directories. Never edit generated `dist`, `.output`, `.nitro`, `.
 5. Never weaken or delete a test, assertion, type boundary, lint rule, fixture, security control, or mutation threshold without explaining the product-contract reason.
 6. Update documentation and migrations with the behavior they describe. Consider web and desktop, Codex and Claude, unsupported capabilities, accessibility, keyboard use, privacy, performance, and recovery.
 
+## Testing strategy
+
+MetaClanker follows a Testing Trophy: static analysis is the base, most behavioral confidence comes from integration tests, focused units protect pure decisions, browser tests own visible behavior, and only a few E2E journeys prove the production topology. Test for confidence per maintenance cost, not test count or a repository-wide coverage percentage.
+
+Every meaningful behavior has one primary owner at the cheapest layer that exercises its real contract:
+
+1. **Static and type contracts**: syntax, types, architecture boundaries, branded IDs, exhaustive public unions, and preload/API shapes. Use `*.test-d.ts` only for intentional compile-time contracts.
+2. **Node unit/property**: pure reducers, policies, normalization, state machines, layout, recovery decisions, path containment, and deterministic migrations. Use `*.unit.test.ts`; use `@fast-check/vitest` when generated sequences or inputs materially improve confidence.
+3. **Wire and ACP contract**: Effect Schema boundaries, HTTP/WebSocket payload compatibility, ACP framing, capabilities, ordering, cancellation, malformed input, process failure, and provider normalization. Use `*.contract.test.ts` and the real production ACP supervisor against the deterministic fake over stdio.
+4. **Backend integration**: collaboration between application commands and real temporary SQLite, Git, filesystem, ACP stdio, Nitro, recovery, and event delivery. Use `*.integration.test.ts`. Fake only external or nondeterministic boundaries such as provider processes, network, time, randomness, OS dialogs, and secure storage.
+5. **Browser feature integration**: user-visible Vue behavior in real Chromium. Use `*.browser.test.ts` with real parent/child components, Pinia, router, i18n, and browser APIs; MSW replaces only HTTP/WebSocket transport. Query by role and accessible name and assert visible outcomes.
+6. **Production web E2E**: only critical journeys requiring built Vue, Nitro, WebSocket, SQLite, Git, filesystem, and fake ACP together. Keep edge cases in lower lanes.
+7. **Packaged Electron smoke**: artifact startup, preload isolation, native ABI, server readiness, renderer loading, restart bounds, and child-process cleanup.
+
+When behavior crosses layers, select one primary owner and add only the supporting proof required at another boundary. Do not repeat the same edge cases across unit, browser, and E2E tests.
+
+Backend asynchronous tests wait on typed runtime milestones, stream events/cursors, captured process exits, or drainable workers. Browser and E2E tests wait on role-visible state. Arbitrary sleeps, `waitForTimeout`, `networkidle`, poll-until-timeout loops, test retries, and retry-to-green workflows are prohibited. A timeout may only guard a hung test and produce diagnostics; elapsed time is never the success condition.
+
+Tests and workers own unique temporary data directories, databases, repositories, ports, and subprocesses. Never point a test at the user's real MetaClanker, Codex, Claude, credential, or Git state. Cleanup must close scopes and assert that no process, socket, listener, database handle, MSW override, or browser state leaked.
+
+For every defect, first add a regression test that fails for the original behavior at the lowest realistic lane. For new backend mutations, cover accepted, rejected, duplicate/retried, interrupted, and recovery behavior where applicable. Review tests as product contracts: assert visible or durable outcomes instead of private calls, object internals, or implementation branches.
+
 ## Commands and verification
 
 Use Node 24+, Corepack, and the pinned pnpm version. Keep exact dependency versions and the committed lockfile. ACP adapter upgrades are explicit compatibility changes; do not float or casually update the pinned tuple.
 
 - `pnpm check`: canonical local gate—format, lint, strict TS/`vue-tsc`, unit, contract, integration, browser UI, and production builds.
+- `pnpm test:types`: compiler and Vue template contracts.
+- `pnpm test:unit`: pure Node unit and property tests.
+- `pnpm test:contract`: wire-schema and ACP protocol contracts.
+- `pnpm test:integration`: Effect-backed backend integration with isolated real infrastructure.
+- `pnpm test:browser`: real-Chromium Vue feature integration.
 - `pnpm test:e2e:web`: two production Nitro/Vue journeys using real SQLite, Git, filesystem, event transport, and fake ACP stdio.
 - `pnpm knip`: package, file, export, and dependency graph audit.
 - `pnpm test:mutation`: targeted graph/thread mutation baseline; run when critical domain behavior or its tests change.

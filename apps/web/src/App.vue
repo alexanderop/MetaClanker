@@ -1,11 +1,20 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { onMounted, ref } from "vue";
 import { RouterView } from "vue-router";
 
 import ProjectSidebar from "./features/projects/ProjectSidebar.vue";
 import { useWorkspaceStore } from "./shared/workspaceStore.js";
 
 const workspace = useWorkspaceStore();
+const sidebarOpen = ref(false);
+const sidebarCollapsed = ref(
+  window.localStorage.getItem("metaclanker:sidebar-collapsed") === "true",
+);
+
+const toggleSidebarCollapse = (): void => {
+  sidebarCollapsed.value = !sidebarCollapsed.value;
+  window.localStorage.setItem("metaclanker:sidebar-collapsed", String(sidebarCollapsed.value));
+};
 
 onMounted(() => {
   void workspace.bootstrap();
@@ -13,10 +22,31 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <a class="skip-link" href="#main-content">{{ $t("accessibility.skipToContent") }}</a>
-    <ProjectSidebar />
+    <ProjectSidebar
+      :open="sidebarOpen"
+      :collapsed="sidebarCollapsed"
+      @close="sidebarOpen = false"
+      @toggle-collapse="toggleSidebarCollapse"
+    />
+    <button
+      v-if="sidebarOpen"
+      class="sidebar-scrim"
+      type="button"
+      :aria-label="$t('navigation.close')"
+      @click="sidebarOpen = false"
+    />
     <main id="main-content" class="main-surface" tabindex="-1">
+      <button
+        class="mobile-menu-button"
+        type="button"
+        :aria-label="$t('navigation.open')"
+        :aria-expanded="sidebarOpen"
+        @click="sidebarOpen = true"
+      >
+        <span aria-hidden="true">☰</span>
+      </button>
       <div v-if="workspace.loading && workspace.shell.projects.length === 0" class="center-state">
         <div class="loading-mark" aria-hidden="true" />
         <p>{{ $t("common.loading") }}</p>

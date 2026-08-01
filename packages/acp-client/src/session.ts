@@ -36,7 +36,7 @@ export interface AdapterCommand {
   readonly environment?: Readonly<Record<string, string>>;
 }
 
-const adapterEntry = (provider: Provider): string => {
+export const adapterEntry = (provider: Provider): string => {
   const specifier =
     provider === "codex"
       ? "@agentclientprotocol/codex-acp"
@@ -163,9 +163,25 @@ const openSession = (
 ): Effect.Effect<AcpSessionHandle, AcpRuntimeError> =>
   Effect.tryPromise({
     try: async () => {
+      let permissionMode = input.permissionMode;
+      if (permissionMode === "workspace-write") permissionMode = "agent";
+      if (permissionMode === "full-access") permissionMode = "agent-full-access";
+      const codexConfig = {
+        ...(input.model === null ? {} : { model: input.model }),
+        ...(input.effort === null ? {} : { model_reasoning_effort: input.effort }),
+      };
+      const sessionEnvironment =
+        input.provider === "codex"
+          ? {
+              ...(Object.keys(codexConfig).length === 0
+                ? {}
+                : { CODEX_CONFIG: JSON.stringify(codexConfig) }),
+              ...(permissionMode === null ? {} : { INITIAL_AGENT_MODE: permissionMode }),
+            }
+          : {};
       const child = spawn(adapter.command, [...adapter.args], {
         cwd: input.cwd,
-        env: { ...process.env, ...adapter.environment },
+        env: { ...process.env, ...adapter.environment, ...sessionEnvironment },
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -316,6 +332,7 @@ const openSession = (
 
       const advertised = mapCapabilities(initialized);
       let setupModes: acp.SessionModeState | null | undefined;
+      let setupConfigOptions: ReadonlyArray<acp.SessionConfigOption> | null | undefined;
       if (providerSessionId === null) {
         const created = await connection.agent.request(acp.methods.agent.session.new, {
           cwd: input.cwd,
@@ -323,6 +340,7 @@ const openSession = (
         });
         providerSessionId = created.sessionId;
         setupModes = created.modes;
+        setupConfigOptions = created.configOptions;
         ignoreReplay = false;
       } else if (advertised.resume) {
         const resumed = await connection.agent.request(acp.methods.agent.session.resume, {
@@ -331,6 +349,7 @@ const openSession = (
           mcpServers: [],
         });
         setupModes = resumed.modes;
+        setupConfigOptions = resumed.configOptions;
         ignoreReplay = false;
       } else if (advertised.load) {
         const loaded = await connection.agent.request(acp.methods.agent.session.load, {
@@ -339,6 +358,7 @@ const openSession = (
           mcpServers: [],
         });
         setupModes = loaded.modes;
+        setupConfigOptions = loaded.configOptions;
         await updateQueue;
         ignoreReplay = false;
       } else {
@@ -354,8 +374,46 @@ const openSession = (
         throw runtimeFailure("protocol", "The provider returned no session identifier");
       }
       const sessionId: string = providerSessionId;
+      const requestedConfiguration = [
+        { categories: ["model"], value: input.model },
+        { categories: ["thought_level"], value: input.effort },
+        { categories: ["mode"], value: permissionMode },
+      ];
+      for (const requested of requestedConfiguration) {
+        if (requested.value === null) continue;
+        const option = setupConfigOptions?.find(
+          (candidate) =>
+            candidate.type === "select" &&
+            (requested.categories.includes(candidate.category ?? "") ||
+              requested.categories.includes(candidate.id)),
+        );
+        if (option === undefined) continue;
+        await connection.agent.request(acp.methods.agent.session.setConfigOption, {
+          sessionId,
+          configId: option.id,
+          value: requested.value,
+        });
+      }
+      if (
+        permissionMode !== null &&
+        setupModes?.availableModes.some((mode) => mode.id === permissionMode) === true &&
+        setupModes.currentModeId !== permissionMode
+      ) {
+        await connection.agent.request(acp.methods.agent.session.setMode, {
+          sessionId,
+          modeId: permissionMode,
+        });
+      }
+      const availableConfigValues = (category: string): ReadonlyArray<string> =>
+        setupConfigOptions?.flatMap((option) => {
+          if (option.type !== "select" || option.category !== category) return [];
+          return option.options.flatMap((item) =>
+            "value" in item ? [item.value] : item.options.map((value) => value.value),
+          );
+        }) ?? [];
       const capabilities = {
         ...advertised,
+        models: availableConfigValues("model"),
         modes: setupModes?.availableModes.map((mode) => mode.id) ?? [],
       } satisfies SessionCapabilities;
       let promptActive = false;

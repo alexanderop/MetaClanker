@@ -1,18 +1,20 @@
 import { Schema } from "effect";
 
 import type { ThreadId } from "@metaclanker/contracts/ids";
-import type { CreateProjectRequest, CreateThreadRequest } from "@metaclanker/contracts/wire";
+import type { CreateProjectRequest, StartThreadRequest } from "@metaclanker/contracts/wire";
 import {
   AgentNode,
+  DirectoryBrowserResponse,
   Message,
   PendingInteraction,
   PersistedCheckpointWire,
   Project,
+  ProviderReadinessResponse,
   RestorePreviewResponse,
   ReviewResponse,
   ServerEvent,
   ShellSnapshot,
-  Thread,
+  StartThreadResponse,
   ThreadDetail,
   ToolCall,
   UserSettings,
@@ -60,10 +62,19 @@ const Authentication = Schema.Struct({ authenticated: Schema.Boolean });
 export const api = {
   authenticateLocal: () => request("/api/auth/local", Authentication, { method: "POST" }),
   shell: () => request("/api/shell", ShellSnapshot),
+  providerReadiness: () => request("/api/providers", ProviderReadinessResponse),
   createProject: (input: CreateProjectRequest) =>
     request("/api/projects", Project, { method: "POST", body: JSON.stringify(input) }),
-  createThread: (input: CreateThreadRequest) =>
-    request("/api/threads", Thread, { method: "POST", body: JSON.stringify(input) }),
+  browseProjectDirectories: (path?: string) =>
+    request(
+      `/api/projects/directories${path === undefined ? "" : `?path=${encodeURIComponent(path)}`}`,
+      DirectoryBrowserResponse,
+    ),
+  startThread: (input: StartThreadRequest) =>
+    request("/api/threads/start", StartThreadResponse, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   thread: (id: ThreadId) => request(`/api/threads/${encodeURIComponent(id)}`, ThreadDetail),
   prompt: (id: ThreadId, input: object) =>
     request(`/api/threads/${encodeURIComponent(id)}/prompts`, AcceptedTurn, {

@@ -125,16 +125,16 @@ The MVP has one trusted user.
 The critical journey is:
 
 1. Start the desktop application or local server.
-2. Open or add a Git repository.
-3. Create a thread and choose Codex or Claude.
-4. Select model, effort, and permission mode when the provider supports them.
-5. Send a prompt and watch messages, plans, tool calls, and terminal activity stream in.
-6. Respond to permissions or requested input.
-7. Open the map to see the root agent and any native subagents.
-8. Select a subagent to inspect its transcript or available activity.
+2. Add a project with the native desktop folder picker or constrained server-side browser.
+3. Arrive in a focused local draft without creating a durable thread or provider session.
+4. Choose Codex or Claude and select model, effort, and permission mode when supported.
+5. Send the first prompt to atomically create the titled thread and initial turn.
+6. Watch messages, plans, tool calls, and terminal activity stream in.
+7. Respond to permissions or requested input.
+8. Open the map to see the root agent and any native subagents.
 9. Review changed files and diffs.
 10. Continue the conversation, interrupt it, or restore a checkpoint.
-11. Restart MetaClanker and recover the project, thread, transcript, and graph.
+11. Restart MetaClanker and recover durable state while unsent local drafts remain client-local.
 
 ## 6. Information architecture and UX
 
@@ -142,7 +142,7 @@ The critical journey is:
 
 The shared Vue application contains:
 
-- A project and thread sidebar.
+- A quiet project tree with nested conversations, a distinct Add project action, and contextual New chat.
 - A thread header with provider, model, status, Git branch, map, and review actions.
 - A central transcript.
 - A composer with attachments, provider controls, permission mode, and stop/send action.
@@ -223,7 +223,10 @@ they must not read arbitrary persisted JSON.
 ### 7.2 Projects
 
 - Add a project from an absolute local directory.
+- On desktop, open the native folder picker immediately and register a valid selection without a
+  redundant confirmation form. The browser surface uses a constrained server-side directory browser.
 - Validate that the directory exists and detect its Git repository when present.
+- Accept non-Git directories while visibly disabling Git-dependent checkpoint and review actions.
 - List, rename, reorder, hide, and remove project records without deleting source files.
 - Show Git branch and working-tree status.
 - Preserve multiple projects independently.
@@ -254,9 +257,13 @@ they must not read arbitrary persisted JSON.
 - Capture stdout exclusively as newline-delimited ACP. Stderr diagnostics are separately bounded and
   redacted.
 
-### 7.4 Threads and turns
+### 7.4 Drafts, threads, and turns
 
-- Create a thread for a project and provider.
+- Keep at most one unsent local draft per project. Drafts preserve prompt, attachments, cursor, provider,
+  model, effort, and permission settings across navigation and local restart without server transmission.
+- Create the durable thread and initial turn together on first send under one stable command ID. Persist
+  the title, user message, intent, events, projections, and receipt atomically before ACP dispatch.
+- Replaying the same accepted first-send command returns the original thread and never redispatches it.
 - Stream user messages, agent messages, thought summaries, plans, tool calls, and usage information.
 - Send follow-ups and attachments supported by the negotiated prompt capabilities.
 - Interrupt an active prompt. Sending ACP cancel moves the turn to `cancelling`; it becomes
@@ -1131,6 +1138,10 @@ The MVP is complete when:
     flakes, and no test depends on implementation-only Vue APIs or selectors.
 14. Mutation testing has a reviewed baseline for the critical domain modules named in Section 10.8;
     surviving mutants are triaged rather than hidden by broad exclusions.
+15. Add project opens the native desktop picker directly; successful selection continues to a focused
+    local draft without an intermediate confirmation form or durable empty thread.
+16. First-send rejection preserves the complete local draft and creates no thread, while failure after
+    acceptance is represented as a durable failed or recovery-required turn.
 
 ## 16. Definition of done for every feature
 

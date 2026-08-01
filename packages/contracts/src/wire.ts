@@ -178,6 +178,28 @@ export const CreateProjectRequest = Schema.Struct({
 });
 export type CreateProjectRequest = typeof CreateProjectRequest.Type;
 
+export const DirectoryBrowserResponse = Schema.Struct({
+  currentPath: Schema.String,
+  parentPath: Schema.NullOr(Schema.String),
+  entries: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      path: Schema.String,
+    }),
+  ),
+});
+export type DirectoryBrowserResponse = typeof DirectoryBrowserResponse.Type;
+
+export const ProviderReadiness = Schema.Struct({
+  provider: Provider,
+  status: Schema.Literal("ready", "unavailable"),
+  reason: Schema.NullOr(Schema.String),
+});
+export type ProviderReadiness = typeof ProviderReadiness.Type;
+
+export const ProviderReadinessResponse = Schema.Array(ProviderReadiness);
+export type ProviderReadinessResponse = typeof ProviderReadinessResponse.Type;
+
 export const UpdateProjectRequest = Schema.Struct({
   name: Schema.optional(Schema.NonEmptyTrimmedString),
   hidden: Schema.optional(Schema.Boolean),
@@ -207,6 +229,25 @@ export const SendPromptRequest = Schema.Struct({
   attachments: Schema.optional(Schema.Array(Schema.String)),
 });
 export type SendPromptRequest = typeof SendPromptRequest.Type;
+
+export const StartThreadRequest = Schema.Struct({
+  commandId: CommandId,
+  projectId: ProjectId,
+  provider: Provider,
+  model: Schema.optional(Schema.String),
+  effort: Schema.optional(Schema.Literal("low", "medium", "high")),
+  permissionMode: Schema.optional(Schema.Literal("read-only", "workspace-write", "full-access")),
+  prompt: Schema.String,
+  attachments: Schema.optional(Schema.Array(Schema.NonEmptyTrimmedString)),
+});
+export type StartThreadRequest = typeof StartThreadRequest.Type;
+
+export const StartThreadResponse = Schema.Struct({
+  accepted: Schema.Literal(true),
+  thread: Thread,
+  turnId: TurnId,
+});
+export type StartThreadResponse = typeof StartThreadResponse.Type;
 
 export const RespondInteractionRequest = Schema.Struct({
   commandId: CommandId,
@@ -254,8 +295,8 @@ export type Theme = typeof Theme.Type;
 
 const ProviderDefaults = Schema.Struct({
   model: Schema.NullOr(Schema.String),
-  effort: Schema.NullOr(Schema.String),
-  permissionMode: Schema.NullOr(Schema.String),
+  effort: Schema.NullOr(Schema.Literal("low", "medium", "high")),
+  permissionMode: Schema.NullOr(Schema.Literal("read-only", "workspace-write", "full-access")),
 });
 
 export const UserSettings = Schema.Struct({

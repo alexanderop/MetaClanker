@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 
 import { Effect } from "effect";
 import { defineEventHandler } from "h3";
@@ -16,12 +16,13 @@ export default defineEventHandler(async (event) => {
     Effect.gen(function* () {
       const files = yield* Files;
       const store = yield* Store;
-      const status = yield* files.validateProject(input.path);
+      const normalizedPath = resolve(input.path);
+      const status = yield* files.validateProject(normalizedPath);
       return yield* store.createProject({
         id: ProjectId.make(crypto.randomUUID()),
         commandId: input.commandId,
-        name: input.name ?? basename(input.path),
-        path: input.path,
+        name: input.name ?? basename(normalizedPath),
+        path: normalizedPath,
         gitBranch: status.branch,
         gitStatus: status.status,
         createdAt: new Date().toISOString(),

@@ -35,6 +35,7 @@ defineEmits<{
           <span>{{ thread.provider }}</span>
           <span v-if="thread.model">· {{ thread.model }}</span>
           <span v-if="project?.gitBranch">· {{ $t("thread.branch") }} {{ project.gitBranch }}</span>
+          <span v-if="project?.gitStatus === 'unavailable'">· Git unavailable</span>
         </p>
       </div>
     </div>
@@ -54,7 +55,17 @@ defineEmits<{
         <span aria-hidden="true">⌘</span>{{ $t("thread.map") }}
       </button>
     </div>
-    <button class="button secondary review-button" type="button" @click="$emit('openReview')">
+    <button
+      class="button secondary review-button"
+      type="button"
+      :disabled="project?.gitStatus === 'unavailable'"
+      :title="
+        project?.gitStatus === 'unavailable'
+          ? 'Git review is unavailable for this project'
+          : undefined
+      "
+      @click="$emit('openReview')"
+    >
       <span aria-hidden="true">±</span>{{ $t("thread.review") }}
     </button>
   </header>
