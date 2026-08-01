@@ -114,6 +114,10 @@ const messages = {
       compact: "Compact",
       open: "Open settings",
       description: "Choose the workspace theme and how densely the agent map is drawn.",
+      switchTo: {
+        light: "Switch to light theme",
+        dark: "Switch to dark theme",
+      },
     },
     thread: {
       emptyTitle: "Your agent workspace",

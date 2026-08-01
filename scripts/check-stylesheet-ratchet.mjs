@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
  * Raising this number is not a routine edit: a new rule belongs in a `src/ui`
  * primitive unless it is a token, a reset, shell layout, or a third-party override.
  */
-const ceiling = 761;
+const ceiling = 766;
 
 const stylesheet = fileURLToPath(new URL("../apps/web/src/shared/styles.css", import.meta.url));
 const contents = await readFile(stylesheet, "utf8");

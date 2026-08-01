@@ -6,17 +6,20 @@ import type { Project, Thread } from "@metaclanker/contracts/wire";
 import { Button } from "../../ui/button/index.js";
 import { ProviderMark } from "../../ui/provider-mark/index.js";
 import { StatusBadge } from "../../ui/status-badge/index.js";
+import { ThemeToggle } from "../../ui/theme-toggle/index.js";
 import { ToggleGroup, ToggleGroupItem } from "../../ui/toggle-group/index.js";
 
 const props = defineProps<{
   thread: Thread;
   project: Project | null;
   surface: "conversation" | "map";
+  theme: "light" | "dark";
 }>();
 
 const emit = defineEmits<{
   changeSurface: [surface: "conversation" | "map"];
   openReview: [];
+  toggleTheme: [];
 }>();
 
 // reka's single-selection group refuses to deselect the active item, so the model
@@ -66,18 +69,25 @@ const selectedSurface = computed({
         <span aria-hidden="true">⌘</span>{{ $t("thread.map") }}
       </ToggleGroupItem>
     </ToggleGroup>
-    <Button
-      variant="secondary"
-      type="button"
-      :disabled="project?.gitStatus === 'unavailable'"
-      :title="
-        project?.gitStatus === 'unavailable'
-          ? 'Git review is unavailable for this project'
-          : undefined
-      "
-      @click="$emit('openReview')"
-    >
-      <span aria-hidden="true">±</span>{{ $t("thread.review") }}
-    </Button>
+    <!--
+      The trailing controls share one grid track so the header keeps the three
+      columns its narrow-viewport fallback is written against.
+    -->
+    <div class="flex items-center gap-[0.4rem]">
+      <ThemeToggle :theme="theme" @toggle="$emit('toggleTheme')" />
+      <Button
+        variant="secondary"
+        type="button"
+        :disabled="project?.gitStatus === 'unavailable'"
+        :title="
+          project?.gitStatus === 'unavailable'
+            ? 'Git review is unavailable for this project'
+            : undefined
+        "
+        @click="$emit('openReview')"
+      >
+        <span aria-hidden="true">±</span>{{ $t("thread.review") }}
+      </Button>
+    </div>
   </header>
 </template>

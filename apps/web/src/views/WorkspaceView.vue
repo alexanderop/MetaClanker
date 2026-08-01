@@ -52,8 +52,10 @@ onBeforeUnmount(() => {
       :thread="workspace.detail.thread"
       :project="workspace.selectedProject"
       :surface="surface"
+      :theme="workspace.resolvedTheme"
       @change-surface="changeSurface"
       @open-review="reviewOpen = true"
+      @toggle-theme="workspace.toggleTheme"
     />
     <template v-if="surface === 'conversation'">
       <Transcript :detail="workspace.detail" />

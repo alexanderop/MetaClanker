@@ -7,42 +7,49 @@
  * Non-inline is deliberate: utilities reference the var, so the dark-mode blocks
  * further down flip every utility for free.
  */
+/*
+ * The palette is shared with the blog (content/blog-astro/src/styles/tokens.css):
+ * navy #212737 fill, #eaedf3 text, #ff6bed accent, #2a3146 card, #3c445c card-muted,
+ * #5a6074 border. The blog ships dark-only, so those exact values live in the dark
+ * blocks below and the light theme here is the derived counterpart on the same hues.
+ */
 @theme {
-  --color-canvas: #f3f4ef;
+  --color-canvas: #f1f2f7;
   --color-surface: #ffffff;
-  --color-surface-raised: #fafbf7;
-  --color-sidebar: #171a16;
-  --color-sidebar-hover: #242922;
-  --color-text: #1c211b;
-  --color-text-muted: #687067;
-  --color-text-inverse: #f4f7f0;
-  --color-border: #dfe3dc;
-  --color-border-subtle: #e9ece6;
-  --color-accent: #b7f34a;
-  --color-accent-strong: #79b715;
-  --color-accent-ink: #1b2a07;
+  --color-surface-raised: #f8f9fc;
+  --color-sidebar: #ffffff;
+  --color-sidebar-hover: #e9ecf4;
+  --color-text: #212737;
+  --color-text-muted: #5a6074;
+  --color-text-inverse: #eaedf3;
+  --color-border: #d7dae4;
+  --color-border-subtle: #e5e8ef;
+  --color-accent: #ff6bed;
+  --color-accent-strong: #c01ba5;
+  --color-accent-ink: #212737;
   --color-warning: #f1b643;
   --color-danger: #dd655c;
   --color-info: #7c9df3;
   --color-codex: #86bcea;
   --color-claude: #d99b70;
   /*
-   * The sidebar is a fixed dark surface in both themes, so its foreground scale is
-   * its own tier rather than a tint of --color-text.
+   * The sidebar paints its own foreground scale as alphas of --sidebar-fg rather
+   * than of --color-text, because every tier of it (labels, timestamps, rules,
+   * control borders) has to invert together when the theme flips.
    */
-  --color-sidebar-text: rgb(244 247 240 / 0.68);
-  --color-sidebar-text-dim: rgb(244 247 240 / 0.35);
-  --color-sidebar-text-faint: rgb(244 247 240 / 0.28);
-  --color-sidebar-row: rgb(255 255 255 / 0.025);
-  --color-sidebar-rule: rgb(255 255 255 / 0.06);
+  --color-sidebar-text: rgb(var(--sidebar-fg) / 0.78);
+  --color-sidebar-text-dim: rgb(var(--sidebar-fg) / 0.5);
+  --color-sidebar-text-faint: rgb(var(--sidebar-fg) / 0.46);
+  --color-sidebar-row: rgb(var(--sidebar-fg) / 0.03);
+  --color-sidebar-rule: rgb(var(--sidebar-fg) / 0.09);
   --font-mono: "SFMono-Regular", Consolas, monospace;
-  --color-scrim: rgb(5 8 4 / 0.62);
-  --shadow-soft: 0 12px 40px rgb(25 31 22 / 0.08);
-  --shadow-popover: 0 20px 60px rgb(10 16 8 / 0.2);
+  --color-scrim: rgb(10 13 20 / 0.62);
+  --shadow-soft: 0 12px 40px rgb(22 26 38 / 0.08);
+  --shadow-popover: 0 20px 60px rgb(12 15 24 / 0.2);
   /* The accent halo that marks the focused or selected control. */
-  --shadow-ring: 0 0 0 3px rgb(183 243 74 / 0.09);
-  --shadow-ring-sm: 0 0 0 2px rgb(183 243 74 / 0.08);
-  --shadow-raised: 0 4px 18px rgb(20 26 18 / 0.07);
+  --shadow-ring: 0 0 0 3px rgb(255 107 237 / 0.14);
+  --shadow-ring-sm: 0 0 0 2px rgb(255 107 237 / 0.12);
+  --shadow-raised: 0 4px 18px rgb(22 26 38 / 0.07);
   --shadow-inset: 0 1px 3px rgb(0 0 0 / 0.08);
   --radius-xs: 0.4rem;
   --radius-sm: 0.5rem;
@@ -72,6 +79,8 @@
 :root {
   color-scheme: light;
   --sidebar-width: 17.5rem;
+  /* Bare channels so the sidebar scale above can take alphas of it. */
+  --sidebar-fg: 33 39 55;
   font-family:
     Inter,
     ui-sans-serif,
@@ -87,19 +96,20 @@
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --color-canvas: #0e110e;
-    --color-surface: #151915;
-    --color-surface-raised: #1a1f1a;
-    --color-sidebar: #090b09;
-    --color-sidebar-hover: #171c17;
-    --color-text: #e7ece4;
-    --color-text-muted: #99a198;
-    --color-text-inverse: #f6f9f2;
-    --color-border: #30372f;
-    --color-border-subtle: #252b24;
-    --color-accent: #b7f34a;
-    --color-accent-strong: #c6ff63;
-    --color-accent-ink: #132004;
+    --color-canvas: #212737;
+    --color-surface: #2a3146;
+    --color-surface-raised: #3c445c;
+    --color-sidebar: #1a1f2c;
+    --color-sidebar-hover: #2a3146;
+    --sidebar-fg: 234 237 243;
+    --color-text: #eaedf3;
+    --color-text-muted: #a2a9bd;
+    --color-text-inverse: #eaedf3;
+    --color-border: #5a6074;
+    --color-border-subtle: #3c445c;
+    --color-accent: #ff6bed;
+    --color-accent-strong: #ff8ef2;
+    --color-accent-ink: #212737;
     --shadow-soft: 0 12px 40px rgb(0 0 0 / 0.22);
     --shadow-popover: 0 20px 60px rgb(0 0 0 / 0.52);
   }
@@ -107,30 +117,34 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --color-canvas: #f3f4ef;
+  --color-canvas: #f1f2f7;
   --color-surface: #ffffff;
-  --color-surface-raised: #fafbf7;
-  --color-sidebar: #171a16;
-  --color-sidebar-hover: #242922;
-  --color-text: #1c211b;
-  --color-text-muted: #687067;
-  --color-text-inverse: #f4f7f0;
-  --color-border: #dfe3dc;
-  --color-border-subtle: #e9ece6;
+  --color-surface-raised: #f8f9fc;
+  --color-sidebar: #ffffff;
+  --color-sidebar-hover: #e9ecf4;
+  --sidebar-fg: 33 39 55;
+  --color-text: #212737;
+  --color-text-muted: #5a6074;
+  --color-text-inverse: #eaedf3;
+  --color-border: #d7dae4;
+  --color-border-subtle: #e5e8ef;
+  --color-accent-strong: #c01ba5;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --color-canvas: #0e110e;
-  --color-surface: #151915;
-  --color-surface-raised: #1a1f1a;
-  --color-sidebar: #090b09;
-  --color-sidebar-hover: #171c17;
-  --color-text: #e7ece4;
-  --color-text-muted: #99a198;
-  --color-text-inverse: #f6f9f2;
-  --color-border: #30372f;
-  --color-border-subtle: #252b24;
+  --color-canvas: #212737;
+  --color-surface: #2a3146;
+  --color-surface-raised: #3c445c;
+  --color-sidebar: #1a1f2c;
+  --color-sidebar-hover: #2a3146;
+  --sidebar-fg: 234 237 243;
+  --color-text: #eaedf3;
+  --color-text-muted: #a2a9bd;
+  --color-text-inverse: #eaedf3;
+  --color-border: #5a6074;
+  --color-border-subtle: #3c445c;
+  --color-accent-strong: #ff8ef2;
 }
 
 /*
@@ -211,10 +225,9 @@
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 15% 0%, rgb(183 243 74 / 0.09), transparent 28%), var(--color-sidebar);
-  color: var(--color-text-inverse);
-  border-right: 1px solid rgb(255 255 255 / 0.07);
+  background: var(--color-sidebar);
+  color: rgb(var(--sidebar-fg));
+  border-right: 1px solid var(--color-border);
 }
 
 .brand {
@@ -223,7 +236,7 @@
   gap: 0.7rem;
   min-height: 4.5rem;
   padding: 0.85rem 1rem;
-  border-bottom: 1px solid rgb(255 255 255 / 0.07);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .brand strong,
@@ -238,12 +251,8 @@
 
 .brand span {
   margin-top: 0.1rem;
-  color: rgb(244 247 240 / 0.48);
+  color: rgb(var(--sidebar-fg) / 0.62);
   font-size: 0.7rem;
-}
-
-.project-group + .project-group {
-  margin-top: 0.45rem;
 }
 
 .thread-list {
@@ -262,7 +271,7 @@
   min-height: 2.2rem;
   padding: 0.45rem 0.55rem 0.45rem 0.72rem;
   border-radius: 0.48rem;
-  color: rgb(244 247 240 / 0.58);
+  color: rgb(var(--sidebar-fg) / 0.7);
   font-size: 0.72rem;
   text-decoration: none;
 }
@@ -270,7 +279,7 @@
 .thread-list a:hover,
 .thread-list a.active {
   background: var(--color-sidebar-hover);
-  color: var(--color-text-inverse);
+  color: rgb(var(--sidebar-fg));
 }
 
 .thread-list a.active {
@@ -284,7 +293,7 @@
 }
 
 .thread-list small {
-  color: rgb(244 247 240 / 0.32);
+  color: rgb(var(--sidebar-fg) / 0.48);
   font-size: 0.58rem;
   text-transform: uppercase;
 }
@@ -293,7 +302,7 @@
   display: grid;
   gap: 0.2rem;
   padding: 0.7rem;
-  border-top: 1px solid rgb(255 255 255 / 0.07);
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 .sidebar-footer button {
@@ -305,7 +314,7 @@
   border: 0;
   border-radius: 0.45rem;
   background: transparent;
-  color: rgb(244 247 240 / 0.48);
+  color: rgb(var(--sidebar-fg) / 0.62);
   font-size: 0.68rem;
   text-align: left;
   cursor: pointer;
@@ -313,14 +322,14 @@
 
 .sidebar-footer button:hover {
   background: var(--color-sidebar-hover);
-  color: var(--color-text-inverse);
+  color: rgb(var(--sidebar-fg));
 }
 
 kbd {
   padding: 0.12rem 0.3rem;
-  border: 1px solid rgb(255 255 255 / 0.12);
+  border: 1px solid rgb(var(--sidebar-fg) / 0.2);
   border-radius: 0.25rem;
-  color: rgb(244 247 240 / 0.36);
+  color: rgb(var(--sidebar-fg) / 0.5);
   font-size: 0.56rem;
 }
 
@@ -359,8 +368,8 @@ kbd {
 .markdown code {
   padding: 0.1rem 0.25rem;
   border-radius: 0.35rem;
-  background: var(--color-sidebar);
-  color: var(--color-text-inverse);
+  background: var(--color-canvas);
+  color: var(--color-text);
   font-family: var(--font-mono);
   font-size: 0.75em;
 }
@@ -423,10 +432,6 @@ kbd {
   grid-template-columns: 4.5rem minmax(0, 1fr);
 }
 
-.sidebar {
-  background: var(--color-sidebar);
-}
-
 .brand {
   position: relative;
   gap: 0.35rem;
@@ -455,14 +460,14 @@ kbd {
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: rgb(255 255 255 / 0.5);
+  color: rgb(var(--sidebar-fg) / 0.64);
   cursor: pointer;
 }
 
 .sidebar-compose-button:hover,
 .sidebar-compose-button:focus-visible {
   background: var(--color-sidebar-hover);
-  color: var(--color-text-inverse);
+  color: rgb(var(--sidebar-fg));
 }
 
 .sidebar-collapse-button,
@@ -472,10 +477,10 @@ kbd {
   min-width: 2rem;
   min-height: 2rem;
   padding: 0;
-  border: 1px solid rgb(255 255 255 / 0.1);
+  border: 1px solid rgb(var(--sidebar-fg) / 0.18);
   border-radius: var(--radius-sm);
   background: transparent;
-  color: rgb(255 255 255 / 0.66);
+  color: rgb(var(--sidebar-fg) / 0.75);
   cursor: pointer;
 }
 
@@ -489,7 +494,7 @@ kbd {
   min-width: 2.4rem;
   min-height: 2.4rem;
   padding: 0;
-  border: 1px solid rgb(255 255 255 / 0.1);
+  border: 1px solid rgb(var(--sidebar-fg) / 0.18);
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-accent);
@@ -502,7 +507,7 @@ kbd {
   justify-content: space-between;
   min-height: 2.5rem;
   padding: 1rem 0.75rem 0.35rem 0.85rem;
-  color: rgb(244 247 240 / 0.38);
+  color: rgb(var(--sidebar-fg) / 0.52);
   font-size: 0.62rem;
   font-weight: 690;
   letter-spacing: 0.1em;
@@ -513,14 +518,14 @@ kbd {
   min-width: 2rem;
   min-height: 2rem;
   border: 0;
-  color: rgb(244 247 240 / 0.42);
+  color: rgb(var(--sidebar-fg) / 0.55);
   font-size: 1rem;
 }
 
 .projects-heading .folder-add-button:hover,
 .projects-heading .folder-add-button:focus-visible {
   background: var(--color-sidebar-hover);
-  color: var(--color-text-inverse);
+  color: rgb(var(--sidebar-fg));
 }
 
 .conversation-list {
@@ -541,7 +546,7 @@ kbd {
 .project-group .thread-list {
   margin-left: 0.75rem;
   padding-left: 0.6rem;
-  border-left: 1px solid rgb(255 255 255 / 0.06);
+  border-left: 1px solid rgb(var(--sidebar-fg) / 0.14);
 }
 
 .project-group .thread-list a {
@@ -551,11 +556,11 @@ kbd {
 }
 
 .project-group .thread-list a.active {
-  box-shadow: inset 1px 0 rgb(255 255 255 / 0.28);
+  box-shadow: inset 1px 0 rgb(var(--sidebar-fg) / 0.28);
 }
 
 .project-group .thread-list time {
-  color: rgb(244 247 240 / 0.24);
+  color: rgb(var(--sidebar-fg) / 0.44);
   font-size: 0.57rem;
 }
 
@@ -569,7 +574,7 @@ kbd {
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: rgb(244 247 240 / 0.46);
+  color: rgb(var(--sidebar-fg) / 0.6);
   font-size: 0.7rem;
   text-align: left;
   cursor: pointer;
@@ -577,7 +582,7 @@ kbd {
 
 .sidebar-empty-project:hover {
   background: var(--color-sidebar-hover);
-  color: var(--color-text-inverse);
+  color: rgb(var(--sidebar-fg));
 }
 
 .thread-row-copy,
@@ -598,7 +603,7 @@ kbd {
 
 .thread-row-copy small {
   margin-top: 0.16rem;
-  color: rgb(244 247 240 / 0.37);
+  color: rgb(var(--sidebar-fg) / 0.5);
   font-size: 0.58rem;
   text-transform: none;
 }

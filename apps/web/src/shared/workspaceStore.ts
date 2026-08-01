@@ -53,6 +53,8 @@ const applyTheme = (theme: UserSettings["theme"]): void => {
   else document.documentElement.dataset["theme"] = theme;
 };
 
+const systemPrefersDark = window.matchMedia("(prefers-color-scheme: dark)");
+
 export const useWorkspaceStore = defineStore("workspace", () => {
   const shell = ref<ShellSnapshot>(emptyShell);
   const detail = shallowRef<ThreadDetail | null>(null);
@@ -73,6 +75,27 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     const projectId = detail.value?.thread.projectId;
     return shell.value.projects.find((project) => project.id === projectId) ?? null;
   });
+
+  // `theme` is the stored preference; this is the scheme actually on screen, which
+  // the header toggle needs so that flipping out of "system" lands on the opposite
+  // of what the user is currently looking at rather than on a no-op.
+  const prefersDark = ref(systemPrefersDark.matches);
+  systemPrefersDark.addEventListener("change", (event) => {
+    prefersDark.value = event.matches;
+  });
+
+  const resolvedTheme = computed<"light" | "dark">(() => {
+    const theme = settings.value.theme;
+    if (theme !== "system") return theme;
+    return prefersDark.value ? "dark" : "light";
+  });
+
+  const toggleTheme = async (): Promise<void> => {
+    await saveSettings({
+      ...settings.value,
+      theme: resolvedTheme.value === "dark" ? "light" : "dark",
+    });
+  };
 
   const bootstrap = async (): Promise<void> => {
     loading.value = true;
@@ -356,6 +379,8 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     settings,
     providerReadiness,
     selectedProject,
+    resolvedTheme,
+    toggleTheme,
     bootstrap,
     loadThread,
     createProject,
