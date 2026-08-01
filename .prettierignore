@@ -1,0 +1,6 @@
+SPEC.md
+apps/server/.nitro/
+apps/server/.output/
+apps/server/.data/
+apps/web/dist/
+apps/desktop/dist/

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "eslint.config.js",
+        "playwright.config.ts",
+        "vitest.config.ts",
+        "vitest.mutation.config.ts",
+        "scripts/**/*.mjs",
+        "tests/**/*.ts",
+        "tests/**/*.mjs"
+      ],
+      "project": ["*.{ts,js,mjs}", "scripts/**/*.{ts,js,mjs}", "tests/**/*.{ts,js,mjs}"]
+    },
+    "apps/desktop": {
+      "entry": ["src/main.ts", "src/preload.cts"],
+      "project": ["src/**/*.ts"]
+    },
+    "apps/server": {
+      "entry": ["server/**/*.ts"],
+      "project": ["server/**/*.ts", "nitro.config.ts"]
+    },
+    "apps/web": {
+      "entry": ["src/main.ts", "src/**/*.browser.test.ts"],
+      "project": ["src/**/*.{ts,vue}", "vite.config.ts"]
+    },
+    "packages/*": {
+      "entry": ["src/**/*.ts"],
+      "project": ["src/**/*.ts"]
+    }
+  },
+  "ignore": ["tests/e2e/start-server.mjs"],
+  "ignoreDependencies": [
+    "@agentclientprotocol/claude-agent-acp",
+    "@agentclientprotocol/codex-acp",
+    "@anthropic-ai/sdk",
+    "@modelcontextprotocol/sdk",
+    "tailwindcss"
+  ]
+}

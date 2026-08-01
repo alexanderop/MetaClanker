@@ -1,0 +1,17 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: format staged files
+      glob: "*.{js,mjs,json,md,ts,cts,vue,yaml,yml}"
+      run: pnpm exec oxfmt --check {staged_files}
+    - name: oxlint staged sources
+      glob: "*.{js,mjs,ts,cts,vue}"
+      run: pnpm exec oxlint --deny-warnings {staged_files}
+    - name: eslint staged sources
+      glob: "*.{js,mjs,ts,cts,vue}"
+      run: pnpm exec eslint {staged_files}
+
+pre-push:
+  jobs:
+    - name: repository confidence suite
+      run: pnpm check

@@ -1,40 +1,126 @@
 # MetaClanker
 
-MetaClanker is a private, local-first control surface for coding agents. It
-provides one conversation-first interface for working with Codex and Claude
-across local Git repositories, with an optional spatial map for navigating
-agent and subagent activity.
+MetaClanker is a private, local-first control surface for Codex and Claude coding agents. It combines a conversation-first workspace, ACP subprocess supervision, durable transcripts, Git checkpoints and review, and an on-demand Vue Flow agent map in one shared web and Electron application.
 
-## Vision
+The implementation follows [SPEC.md](SPEC.md). Provider-specific packages are confined to the ACP client package; Vue talks only to the authenticated Nitro contract.
 
-The normal experience is a focused chat workspace: create a thread, select an
-agent provider, and follow streaming messages, tool activity, permissions,
-terminal output, and file changes. When needed, the agent map provides a
-high-level view of the active hierarchy without turning the application into a
-workflow editor.
+## Requirements
 
-## Planned MVP
+- Node.js 24 or newer
+- pnpm 11.18.0 through Corepack
+- Git
+- Chromium for browser tests (`pnpm exec playwright install chromium`)
+- Existing local Codex and/or Claude authentication for real-provider sessions
 
-- Support Codex and Claude through the Agent Client Protocol (ACP).
-- Share a Vue application between web and Electron desktop surfaces.
-- Stream conversations, tool calls, terminal activity, plans, and permissions.
-- Visualize native agent/subagent hierarchies with Vue Flow.
-- Persist projects, threads, transcripts, graph state, and Git checkpoints
-  locally.
-- Review file changes and diffs, interrupt work, and restore checkpoints.
+MetaClanker never reads provider credential files. The pinned ACP adapters discover authentication through their own supported flows.
 
-## Status
+## Install and run
 
-This repository currently contains the product and technical specification for
-the MVP. See [SPEC.md](SPEC.md) for the full architecture, scope, and delivery
-plan.
+```sh
+corepack enable
+pnpm install --frozen-lockfile
+pnpm dev
+```
 
-## Principles
+Open `http://127.0.0.1:4318`. Vite serves the shared Vue application and proxies same-origin API and WebSocket traffic to Nitro on port 4317.
 
-- **Conversation first:** the map is an on-demand navigation surface.
-- **Local first:** provider processes, repositories, terminals, and
-  persistence remain under the user's control.
-- **ACP at the boundary:** provider-specific integrations stay behind stable
-  ACP adapters.
-- **Quality as back pressure:** types, schemas, linting, tests, and builds are
-  part of the product's development workflow.
+For a production web build:
+
+```sh
+pnpm build
+HOST=127.0.0.1 PORT=4317 pnpm start
+```
+
+Then open `http://127.0.0.1:4317`. The Nitro artifact includes the Vue assets and SPA history fallback.
+
+To build and run the private Electron artifact:
+
+```sh
+pnpm package:desktop
+open artifacts/MetaClanker-darwin-arm64/MetaClanker.app
+```
+
+The artifact name follows the current operating system and CPU architecture. Electron owns one dynamic loopback server, validates readiness with a private token, uses an isolated/sandboxed renderer, and stops the child server on shutdown.
+
+## Provider setup
+
+The lockfile pins the ACP v1 compatibility tuple:
+
+- `@agentclientprotocol/sdk` 1.3.0
+- `@agentclientprotocol/codex-acp` 1.1.7
+- `@agentclientprotocol/claude-agent-acp` 0.64.0
+
+Authenticate with Codex or Claude before starting MetaClanker, using the provider's normal local tooling. Add a Git repository in the sidebar, create a thread, and select Codex or Claude. MetaClanker starts one supervised adapter process per active root session and persists the provider session identifier for explicit resume semantics.
+
+For deterministic development without provider state, build the fake adapter and point Nitro at it:
+
+```sh
+pnpm --filter @metaclanker/testing build
+METACLANKER_FAKE_ACP_ENTRY="$PWD/packages/testing/dist/acp/fake-agent.js" pnpm dev
+```
+
+## Data, pairing, and privacy
+
+Desktop data lives in Electron's platform application-data directory. A manually started server defaults to `apps/server/.data`; set `METACLANKER_DATA_DIR` to an absolute directory to choose another location.
+
+Loopback browsers authenticate automatically. For a browser on a trusted network, bind Nitro deliberately, use HTTPS at the network boundary, and configure a strong short-lived pairing secret:
+
+```sh
+HOST=0.0.0.0 PORT=4317 \
+METACLANKER_PAIRING_CODE="$(openssl rand -base64 32)" \
+METACLANKER_DATA_DIR=/absolute/private/metaclanker-data \
+pnpm start
+```
+
+Submit that code to `POST /api/auth/pair` as `{ "code": "..." }`. The resulting session is HTTP-only and revocable with `POST /api/auth/logout`. A locally authenticated caller can read the current code from `GET /api/auth/pairing-code`; the route rejects non-loopback callers. Do not expose the server directly to the public internet.
+
+No telemetry leaves the machine. Server logs and public API errors avoid prompt attachments, credentials, environment variables, and raw provider envelopes.
+
+## Backup and recovery
+
+Create a transactionally consistent SQLite backup while MetaClanker is running:
+
+```sh
+cookie_jar=$(mktemp)
+curl -sS -c "$cookie_jar" -X POST http://127.0.0.1:4317/api/auth/local
+curl -sS -b "$cookie_jar" -X POST http://127.0.0.1:4317/api/maintenance/backup
+```
+
+The response names a file under `<data-directory>/backups/`. The SQLite backup contains projects, settings, durable events and projections, transcripts, interactions, graph state, command receipts, and checkpoint metadata. For a complete disaster-recovery copy, also preserve the immutable `<data-directory>/checkpoints/` directory.
+
+To restore, quit every MetaClanker process, preserve the damaged data directory, replace `metaclanker.sqlite` with a selected backup, restore the matching `checkpoints/` directory, and restart. SQLite migrations run transactionally on startup. Threads that were active during a crash are never blindly resent; durable history remains readable and continuation follows the adapter's advertised resume/load capability.
+
+File restoration inside a thread is separate from database recovery. The review panel shows a destructive preview, captures an undo checkpoint, and restores project files only while the root session is idle. It does not claim to rewind provider conversation state.
+
+## Architecture
+
+```text
+apps/web       Vue 3, Pinia, Vue Router, Vue Flow, browser-only presentation
+    │ HTTP + authenticated WebSocket (Effect Schema wire contracts)
+apps/server    Nitro Node server, Effect composition root, auth and orchestration
+    ├── packages/persistence  SQLite events, projections, migrations, receipts, backups
+    ├── packages/git          scoped checkpoints, diff, preview, restore
+    └── packages/acp-client   ACP v1 framing, normalization, supervised adapters
+apps/desktop   Electron lifecycle, preload bridge, native packaging and fuse hardening
+```
+
+`packages/contracts` contains only branded identifiers and public wire schemas. `packages/application` defines commands and narrow ports. `packages/domain` owns pure transitions and graph layout. Provider internals, SQLite ordering, filesystem operations, and Git plumbing do not leak into Vue.
+
+## Quality commands
+
+```sh
+pnpm check                 # format, lint, types, all Vitest lanes, browser UI, builds
+pnpm test:e2e:web          # two production Nitro/Vue/fake-ACP journeys
+pnpm package:desktop       # build the private packaged artifact
+pnpm test:smoke:package    # launch, readiness, SQLite/native ABI, renderer, shutdown
+pnpm knip                  # package/file/dependency graph audit
+pnpm test:mutation         # targeted graph/thread mutation baseline
+```
+
+Vitest projects are named `node-unit`, `node-contract`, `node-integration`, and `browser-ui`. Playwright E2E and the packaged Electron smoke remain separate. The deterministic ACP fake uses real stdio framing; production E2E uses real Nitro, WebSocket, SQLite, Git, and filesystem boundaries without MSW or provider credentials.
+
+Lefthook checks staged formatting and linting before commits and runs the confidence suite before pushes. GitHub Actions use frozen installs, full-SHA action pins, least-privilege permissions, zero test retries, production web journeys, a macOS package smoke, Gitleaks, and a scheduled mutation lane.
+
+## Mutation baseline
+
+The initial targeted baseline mutates only `packages/domain/src/graph.ts` and `packages/domain/src/thread.ts`. It scores 73.29%, with a 70% break threshold. Surviving mutations are concentrated in equivalent default-value changes, unexercised defensive branches, and multi-child layout arithmetic; they are visible in `reports/mutation/mutation.html` after a run and are not excluded from the target set.

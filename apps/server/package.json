@@ -1,0 +1,24 @@
+{
+  "name": "@metaclanker/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nitro build",
+    "dev": "nitro dev --host 127.0.0.1 --port 4317",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@metaclanker/acp-client": "workspace:*",
+    "@metaclanker/application": "workspace:*",
+    "@metaclanker/contracts": "workspace:*",
+    "@metaclanker/git": "workspace:*",
+    "@metaclanker/persistence": "workspace:*",
+    "effect": "catalog:",
+    "h3": "1.15.11",
+    "nitropack": "2.13.4"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

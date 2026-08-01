@@ -1,0 +1,16 @@
+{
+  "name": "@metaclanker/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "pnpm build && electron .",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "devDependencies": {
+    "electron": "43.2.0",
+    "typescript": "catalog:"
+  }
+}

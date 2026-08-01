@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/contracts" },
+    { "path": "packages/domain" },
+    { "path": "packages/application" },
+    { "path": "packages/persistence" },
+    { "path": "packages/acp-client" },
+    { "path": "packages/git" },
+    { "path": "packages/testing" },
+    { "path": "apps/server" },
+    { "path": "apps/desktop" }
+  ]
+}

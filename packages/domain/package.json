@@ -1,0 +1,31 @@
+{
+  "name": "@metaclanker/domain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./events": {
+      "types": "./dist/events.d.ts",
+      "default": "./dist/events.js"
+    },
+    "./graph": {
+      "types": "./dist/graph.d.ts",
+      "default": "./dist/graph.js"
+    },
+    "./thread": {
+      "types": "./dist/thread.d.ts",
+      "default": "./dist/thread.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@metaclanker/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@fast-check/vitest": "0.4.1",
+    "typescript": "catalog:"
+  }
+}

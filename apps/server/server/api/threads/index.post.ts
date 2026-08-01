@@ -1,0 +1,30 @@
+import { Effect } from "effect";
+import { defineEventHandler } from "h3";
+
+import { Store } from "@metaclanker/application/commands";
+import { ThreadId } from "@metaclanker/contracts/ids";
+import { CreateThreadRequest } from "@metaclanker/contracts/wire";
+
+import { decodeBody, publicError } from "../../utils/http.js";
+import { runApplication } from "../../utils/runtime.js";
+
+export default defineEventHandler(async (event) => {
+  const input = await decodeBody(event, CreateThreadRequest);
+  return runApplication(
+    Effect.gen(function* () {
+      const store = yield* Store;
+      const now = new Date().toISOString();
+      return yield* store.createThread({
+        id: ThreadId.make(crypto.randomUUID()),
+        commandId: input.commandId,
+        projectId: input.projectId,
+        provider: input.provider,
+        title: input.title ?? "New conversation",
+        model: input.model ?? null,
+        createdAt: now,
+      });
+    }),
+  ).catch((cause: unknown) => {
+    throw publicError(cause);
+  });
+});

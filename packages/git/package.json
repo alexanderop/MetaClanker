@@ -1,0 +1,23 @@
+{
+  "name": "@metaclanker/git",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./checkpoints": {
+      "types": "./dist/checkpoints.d.ts",
+      "default": "./dist/checkpoints.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@metaclanker/application": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

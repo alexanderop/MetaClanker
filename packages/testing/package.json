@@ -1,0 +1,23 @@
+{
+  "name": "@metaclanker/testing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./acp/fake-agent": "./dist/acp/fake-agent.js",
+    "./fixtures": {
+      "types": "./dist/fixtures.d.ts",
+      "default": "./dist/fixtures.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

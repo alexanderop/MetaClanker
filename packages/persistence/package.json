@@ -1,0 +1,26 @@
+{
+  "name": "@metaclanker/persistence",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./database": {
+      "types": "./dist/database.d.ts",
+      "default": "./dist/database.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@effect/sql": "catalog:",
+    "@effect/sql-sqlite-node": "catalog:",
+    "@metaclanker/application": "workspace:*",
+    "@metaclanker/contracts": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

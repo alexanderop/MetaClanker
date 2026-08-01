@@ -1,0 +1,22 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "schedule": ["before 5am on monday"],
+  "rangeStrategy": "pin",
+  "packageRules": [
+    {
+      "description": "Review the ACP compatibility tuple as one deliberate change",
+      "matchPackageNames": [
+        "@agentclientprotocol/sdk",
+        "@agentclientprotocol/codex-acp",
+        "@agentclientprotocol/claude-agent-acp"
+      ],
+      "groupName": "ACP compatibility tuple"
+    },
+    {
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "development tooling"
+    }
+  ]
+}

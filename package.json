@@ -1,0 +1,61 @@
+{
+  "name": "metaclanker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --recursive --filter '!@metaclanker/server' --if-present build && pnpm --filter @metaclanker/server build",
+    "dev": "pnpm --parallel --filter @metaclanker/server --filter @metaclanker/web dev",
+    "start": "cd apps/server && node .output/server/index.mjs",
+    "dev:desktop": "pnpm --filter @metaclanker/desktop dev",
+    "package:desktop": "pnpm build && node scripts/package-desktop.mjs",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint . --deny-warnings && eslint .",
+    "test": "vitest run",
+    "test:unit": "vitest run --project node-unit",
+    "test:contract": "pnpm --filter @metaclanker/testing build && vitest run --project node-contract",
+    "test:e2e:web": "pnpm build && playwright test",
+    "test:integration": "vitest run --project node-integration",
+    "test:browser": "vitest run --project browser-ui",
+    "test:mutation": "stryker run",
+    "test:smoke:package": "node tests/package-smoke.mjs",
+    "test:types": "tsc -b && pnpm --filter @metaclanker/web typecheck",
+    "knip": "knip",
+    "check": "pnpm format:check && pnpm lint && pnpm test:types && pnpm test:unit && pnpm test:contract && pnpm test:integration && pnpm test:browser && pnpm build"
+  },
+  "devDependencies": {
+    "@electron/fuses": "2.1.3",
+    "@electron/packager": "20.0.4",
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.1",
+    "@stryker-mutator/core": "9.6.1",
+    "@stryker-mutator/vitest-runner": "9.6.1",
+    "@types/node": "26.1.2",
+    "@vitejs/plugin-vue": "6.0.8",
+    "@vitest/browser-playwright": "4.1.10",
+    "@vitest/coverage-v8": "4.1.10",
+    "eslint": "10.0.1",
+    "eslint-plugin-vue": "10.8.0",
+    "knip": "6.30.0",
+    "lefthook": "2.1.10",
+    "msw": "2.15.0",
+    "oxfmt": "0.61.0",
+    "oxlint": "1.76.0",
+    "playwright": "1.62.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.65.0",
+    "vitest": "4.1.10",
+    "vitest-browser-vue": "2.1.0",
+    "vue-eslint-parser": "10.4.1"
+  },
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "packageManager": "pnpm@11.18.0",
+  "msw": {
+    "workerDirectory": [
+      "apps/web/public"
+    ]
+  }
+}

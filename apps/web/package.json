@@ -1,0 +1,35 @@
+{
+  "name": "@metaclanker/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "typecheck": "vue-tsc -p tsconfig.app.json --noEmit"
+  },
+  "dependencies": {
+    "@metaclanker/contracts": "workspace:*",
+    "@metaclanker/domain": "workspace:*",
+    "@vue-flow/background": "1.3.2",
+    "@vue-flow/controls": "1.1.3",
+    "@vue-flow/core": "1.48.2",
+    "@vue-flow/minimap": "1.5.4",
+    "dompurify": "3.4.12",
+    "effect": "catalog:",
+    "marked": "18.0.7",
+    "pinia": "4.0.2",
+    "vue": "catalog:",
+    "vue-i18n": "11.4.8",
+    "vue-router": "5.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@vitejs/plugin-vue": "6.0.8",
+    "@vue/compiler-sfc": "3.5.40",
+    "tailwindcss": "4.3.3",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vue-tsc": "3.3.9"
+  }
+}

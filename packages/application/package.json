@@ -1,0 +1,27 @@
+{
+  "name": "@metaclanker/application",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./ports": {
+      "types": "./dist/ports.d.ts",
+      "default": "./dist/ports.js"
+    },
+    "./commands": {
+      "types": "./dist/commands.d.ts",
+      "default": "./dist/commands.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@metaclanker/contracts": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}
