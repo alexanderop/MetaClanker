@@ -16,6 +16,13 @@ import type { AgentNode, AgentState, Provider } from "@metaclanker/contracts/wir
 import { createDeterministicLayout } from "@metaclanker/domain/graph";
 
 import AgentTree from "./AgentTree.vue";
+import { Button } from "../../ui/button/index.js";
+import { EmptyState } from "../../ui/empty-state/index.js";
+import { Eyebrow } from "../../ui/eyebrow/index.js";
+import { NativeSelect } from "../../ui/native-select/index.js";
+import { ProviderMark } from "../../ui/provider-mark/index.js";
+import { StatusBadge } from "../../ui/status-badge/index.js";
+import { ToggleGroup, ToggleGroupItem } from "../../ui/toggle-group/index.js";
 
 const props = defineProps<{ agentNodes: ReadonlyArray<AgentNode> }>();
 const mode = ref<"canvas" | "tree">("canvas");
@@ -62,6 +69,16 @@ watchEffect(() => {
   );
 });
 
+const inspectorRows = computed(() => [
+  { label: "Status", value: selected.value?.state ?? "" },
+  { label: "Current activity", value: selected.value?.activity ?? "" },
+  { label: "Changed files", value: String(selected.value?.changedFileCount ?? 0) },
+]);
+
+const filterClass = "min-h-[2.15rem] pr-[1.7rem] text-[0.65rem]";
+const inspectorRowClass =
+  "grid grid-cols-[6rem_1fr] gap-2 border-t border-border-subtle pt-[0.55rem] text-[0.65rem]";
+
 const selectNode = (node: AgentNode): void => {
   selectedId.value = node.id;
 };
@@ -73,51 +90,51 @@ const onNodeClick = (event: NodeMouseEvent): void => {
 </script>
 
 <template>
-  <section class="map-surface" aria-labelledby="agent-map-title">
-    <div class="map-toolbar">
+  <section
+    class="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] bg-canvas"
+    aria-labelledby="agent-map-title"
+  >
+    <div
+      class="flex items-center justify-between gap-4 border-b border-border bg-surface px-4 py-[0.85rem] max-narrow:flex-col max-narrow:items-stretch"
+    >
       <div>
-        <p class="eyebrow">Live hierarchy</p>
-        <h2 id="agent-map-title">{{ $t("map.title") }}</h2>
+        <Eyebrow>Live hierarchy</Eyebrow>
+        <h2 id="agent-map-title" class="mt-[0.1rem] mb-0 text-base">{{ $t("map.title") }}</h2>
       </div>
-      <div class="map-filters">
+      <div class="flex items-center gap-[0.45rem] max-narrow:flex-wrap max-narrow:items-stretch">
         <label>
           <span class="sr-only">Provider filter</span>
-          <select v-model="provider">
+          <NativeSelect v-model="provider" size="sm" :class="filterClass">
             <option value="all">{{ $t("map.allProviders") }}</option>
             <option value="codex">Codex</option>
             <option value="claude">Claude</option>
-          </select>
+          </NativeSelect>
         </label>
         <label>
           <span class="sr-only">State filter</span>
-          <select v-model="state">
+          <NativeSelect v-model="state" size="sm" :class="filterClass">
             <option value="all">{{ $t("map.allStates") }}</option>
             <option value="running">Running</option>
             <option value="needs-input">Needs input</option>
             <option value="completed">Completed</option>
             <option value="failed">Failed</option>
-          </select>
+          </NativeSelect>
         </label>
-        <div class="view-toggle" role="group" aria-label="Map representation">
-          <button type="button" :aria-pressed="mode === 'canvas'" @click="mode = 'canvas'">
-            {{ $t("map.canvas") }}
-          </button>
-          <button type="button" :aria-pressed="mode === 'tree'" @click="mode = 'tree'">
-            {{ $t("map.tree") }}
-          </button>
-        </div>
-        <button class="button secondary" type="button" @click="fitView({ padding: 0.24 })">
+        <ToggleGroup v-model="mode" aria-label="Map representation">
+          <ToggleGroupItem value="canvas">{{ $t("map.canvas") }}</ToggleGroupItem>
+          <ToggleGroupItem value="tree">{{ $t("map.tree") }}</ToggleGroupItem>
+        </ToggleGroup>
+        <Button variant="secondary" type="button" @click="fitView({ padding: 0.24 })">
           {{ $t("map.fit") }}
-        </button>
+        </Button>
       </div>
     </div>
 
-    <div v-if="filteredNodes.length === 0" class="map-empty">
-      <span aria-hidden="true">⌘</span>
+    <EmptyState v-if="filteredNodes.length === 0" glyph="⌘">
       <p>{{ $t("map.empty") }}</p>
-    </div>
+    </EmptyState>
 
-    <div v-else class="map-body">
+    <div v-else class="relative min-h-0">
       <VueFlow
         v-if="mode === 'canvas'"
         class="agent-flow"
@@ -130,22 +147,30 @@ const onNodeClick = (event: NodeMouseEvent): void => {
       >
         <template #node-agent="{ data }">
           <button
-            class="agent-node"
+            class="grid w-60 cursor-pointer gap-[0.55rem] rounded-lg border border-border bg-surface p-[0.8rem] text-left text-text shadow-[var(--shadow-soft)] hover:border-accent-strong hover:shadow-[var(--shadow-ring),var(--shadow-soft)]"
             type="button"
-            :class="{ selected: data.id === selectedId }"
+            :class="
+              data.id === selectedId
+                ? 'border-accent-strong shadow-[var(--shadow-ring),var(--shadow-soft)]'
+                : undefined
+            "
             @click="selectNode(data)"
           >
-            <span class="agent-node-topline">
-              <span class="tree-provider" :data-provider="data.provider" aria-hidden="true">
+            <span class="flex items-center justify-between gap-[0.4rem]">
+              <ProviderMark :provider="data.provider" size="sm">
                 {{ data.provider === "codex" ? "C" : "A" }}
-              </span>
-              <span class="status-badge" :data-status="data.state"
-                ><span aria-hidden="true" />{{ data.state }}</span
-              >
+              </ProviderMark>
+              <StatusBadge :status="data.state">{{ data.state }}</StatusBadge>
             </span>
-            <strong>{{ data.name }}</strong>
-            <small>{{ data.activity }}</small>
-            <span class="agent-node-metrics">
+            <strong class="text-[0.78rem]">{{ data.name }}</strong>
+            <small
+              class="overflow-hidden text-[0.65rem] text-ellipsis whitespace-nowrap text-text-muted"
+            >
+              {{ data.activity }}
+            </small>
+            <span
+              class="flex items-center justify-start gap-[0.4rem] text-[0.55rem] text-text-muted"
+            >
               <span>{{ data.childCount }} children</span>
               <span v-if="data.pendingApproval">Needs approval</span>
               <span v-if="data.changedFileCount">{{ data.changedFileCount }} files</span>
@@ -159,36 +184,35 @@ const onNodeClick = (event: NodeMouseEvent): void => {
 
       <AgentTree v-else :nodes="filteredNodes" :selected-id="selectedId" @select="selectNode" />
 
-      <aside v-if="selected" class="node-inspector" aria-live="polite">
-        <div class="node-inspector-heading">
-          <span class="tree-provider" :data-provider="selected.provider" aria-hidden="true">
+      <aside
+        v-if="selected"
+        class="absolute top-4 right-4 z-[5] w-[min(20rem,calc(100%-2rem))] rounded-lg border border-border bg-[color-mix(in_srgb,var(--color-surface)_94%,transparent)] p-[0.85rem] shadow-[var(--shadow-popover)] backdrop-blur-[14px]"
+        aria-live="polite"
+      >
+        <div class="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[0.65rem]">
+          <ProviderMark :provider="selected.provider" size="sm">
             {{ selected.provider === "codex" ? "C" : "A" }}
-          </span>
+          </ProviderMark>
           <div>
-            <strong>{{ selected.name }}</strong
-            ><small>{{ selected.provider }} · {{ selected.model ?? "default model" }}</small>
+            <strong class="block text-[0.75rem]">{{ selected.name }}</strong
+            ><small class="mt-[0.15rem] block text-[0.6rem] text-text-muted capitalize"
+              >{{ selected.provider }} · {{ selected.model ?? "default model" }}</small
+            >
           </div>
-          <button
-            class="icon-button"
+          <Button
+            variant="outline"
+            size="icon"
             type="button"
             aria-label="Close activity panel"
             @click="selectedId = null"
           >
             ×
-          </button>
+          </Button>
         </div>
-        <dl>
-          <div>
-            <dt>Status</dt>
-            <dd>{{ selected.state }}</dd>
-          </div>
-          <div>
-            <dt>Current activity</dt>
-            <dd>{{ selected.activity }}</dd>
-          </div>
-          <div>
-            <dt>Changed files</dt>
-            <dd>{{ selected.changedFileCount }}</dd>
+        <dl class="m-0 mt-4 grid gap-[0.55rem]">
+          <div v-for="row in inspectorRows" :key="row.label" :class="inspectorRowClass">
+            <dt class="text-text-muted">{{ row.label }}</dt>
+            <dd class="m-0 capitalize">{{ row.value }}</dd>
           </div>
         </dl>
       </aside>

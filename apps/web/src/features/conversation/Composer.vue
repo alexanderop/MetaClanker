@@ -4,6 +4,7 @@ import { computed, ref, watch } from "vue";
 import type { Thread, ThreadStatus } from "@metaclanker/contracts/wire";
 
 import { Button } from "../../ui/button/index.js";
+import { Textarea } from "../../ui/textarea/index.js";
 import { useWorkspaceStore } from "../../shared/workspaceStore.js";
 
 const props = defineProps<{ thread: Thread }>();
@@ -41,6 +42,10 @@ const send = async (): Promise<void> => {
   }
 };
 
+const updateDraft = (event: Event): void => {
+  draft.value = (event.target as HTMLTextAreaElement).value;
+};
+
 const onKeydown = (event: KeyboardEvent): void => {
   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
   event.preventDefault();
@@ -49,18 +54,27 @@ const onKeydown = (event: KeyboardEvent): void => {
 </script>
 
 <template>
-  <footer class="composer-wrap">
-    <div class="composer" :class="{ active }">
-      <textarea
-        v-model="draft"
+  <footer
+    class="border-t border-border-subtle bg-surface px-[max(1.3rem,calc((100%-52rem)/2))] pt-3 pb-[0.6rem]"
+  >
+    <div
+      class="rounded-lg border border-border bg-surface-raised shadow-raised transition-[border-color,box-shadow] duration-150 focus-within:border-[color-mix(in_srgb,var(--color-accent-strong)_55%,var(--color-border))] focus-within:shadow-[var(--shadow-ring),var(--shadow-soft)]"
+      :class="
+        active ? 'border-[color-mix(in_srgb,var(--color-info)_48%,var(--color-border))]' : undefined
+      "
+    >
+      <Textarea
+        :value="draft"
+        class="max-h-48 min-h-[3.35rem] px-[0.85rem] pt-[0.8rem] pb-[0.3rem] text-[0.82rem] leading-[1.5]"
         rows="2"
         :placeholder="$t('thread.composerPlaceholder')"
         :aria-label="$t('thread.composerPlaceholder')"
         :disabled="sending"
+        @input="updateDraft"
         @keydown="onKeydown"
       />
-      <div class="composer-toolbar">
-        <div>
+      <div class="flex items-center justify-between px-[0.45rem] pt-[0.35rem] pb-[0.45rem]">
+        <div class="flex items-center gap-1">
           <Button variant="outline" size="icon" type="button" aria-label="Attach a file">
             <span aria-hidden="true">＋</span>
           </Button>
@@ -93,6 +107,8 @@ const onKeydown = (event: KeyboardEvent): void => {
         </Button>
       </div>
     </div>
-    <p>Enter to send · Shift+Enter for a new line · MetaClanker runs locally</p>
+    <p class="mt-[0.35rem] mb-0 text-center text-[0.55rem] text-text-muted">
+      Enter to send · Shift+Enter for a new line · MetaClanker runs locally
+    </p>
   </footer>
 </template>

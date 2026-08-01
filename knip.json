@@ -35,7 +35,6 @@
     "@agentclientprotocol/claude-agent-acp",
     "@agentclientprotocol/codex-acp",
     "@anthropic-ai/sdk",
-    "@modelcontextprotocol/sdk",
-    "tailwindcss"
+    "@modelcontextprotocol/sdk"
   ]
 }

@@ -3,6 +3,7 @@ import { onMounted, ref } from "vue";
 import { RouterView } from "vue-router";
 
 import ProjectSidebar from "./features/projects/ProjectSidebar.vue";
+import { Button } from "./ui/button/index.js";
 import { useWorkspaceStore } from "./shared/workspaceStore.js";
 
 const workspace = useWorkspaceStore();
@@ -10,6 +11,9 @@ const sidebarOpen = ref(false);
 const sidebarCollapsed = ref(
   window.localStorage.getItem("metaclanker:sidebar-collapsed") === "true",
 );
+
+const centerStateClass =
+  "grid h-full place-items-center content-center gap-[0.8rem] text-center text-text-muted";
 
 const toggleSidebarCollapse = (): void => {
   sidebarCollapsed.value = !sidebarCollapsed.value;
@@ -47,15 +51,21 @@ onMounted(() => {
       >
         <span aria-hidden="true">☰</span>
       </button>
-      <div v-if="workspace.loading && workspace.shell.projects.length === 0" class="center-state">
-        <div class="loading-mark" aria-hidden="true" />
+      <div
+        v-if="workspace.loading && workspace.shell.projects.length === 0"
+        :class="centerStateClass"
+      >
+        <div
+          class="size-[1.7rem] animate-spin rounded-full border-2 border-border border-t-accent-strong"
+          aria-hidden="true"
+        />
         <p>{{ $t("common.loading") }}</p>
       </div>
-      <div v-else-if="workspace.error" class="center-state" role="alert">
+      <div v-else-if="workspace.error" :class="centerStateClass" role="alert">
         <p>{{ workspace.error }}</p>
-        <button class="button secondary" type="button" @click="workspace.bootstrap">
+        <Button variant="secondary" type="button" @click="workspace.bootstrap">
           {{ $t("common.retry") }}
-        </button>
+        </Button>
       </div>
       <RouterView v-else />
     </main>

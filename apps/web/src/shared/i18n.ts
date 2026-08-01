@@ -22,6 +22,8 @@ const messages = {
       newChatIn: "New chat in…",
       projects: "Projects",
       newChatInProject: "New chat in {project}",
+      toggleProject: "Show or hide conversations in {project}",
+      paletteDescription: "Jump to a workspace action or start a chat in a project.",
     },
     app: { name: "MetaClanker", tagline: "Local agent control" },
     common: {
@@ -57,6 +59,8 @@ const messages = {
       advanced: "Advanced",
       inferredName: "Defaults to the directory name",
       adding: "Adding…",
+      addDescription: "Open a directory on the machine running MetaClanker as a project.",
+      retryBrowse: "Retry",
     },
     welcome: {
       eyebrow: "Conversation-first agent workspace",
@@ -109,6 +113,7 @@ const messages = {
       comfortable: "Comfortable",
       compact: "Compact",
       open: "Open settings",
+      description: "Choose the workspace theme and how densely the agent map is drawn.",
     },
     thread: {
       emptyTitle: "Your agent workspace",

@@ -3,6 +3,9 @@ import { computed, nextTick, ref, useTemplateRef } from "vue";
 
 import type { AgentNode, Provider } from "@metaclanker/contracts/wire";
 
+import { ProviderMark } from "../../ui/provider-mark/index.js";
+import { StatusBadge } from "../../ui/status-badge/index.js";
+
 const props = defineProps<{
   nodes: ReadonlyArray<AgentNode>;
   selectedId: string | null;
@@ -61,13 +64,14 @@ const providerLetter = (provider: Provider) => (provider === "codex" ? "C" : "A"
 </script>
 
 <template>
-  <div class="agent-tree" role="tree" aria-label="Agent hierarchy">
+  <div class="h-full overflow-auto p-4" role="tree" aria-label="Agent hierarchy">
     <button
       v-for="(entry, index) in entries"
       ref="treeItems"
       :key="entry.node.id"
       role="treeitem"
       type="button"
+      class="grid w-full min-h-[3.2rem] cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[0.7rem] border-0 border-b border-border-subtle bg-transparent text-left text-text hover:bg-surface aria-selected:bg-surface"
       :aria-level="entry.depth"
       :aria-selected="entry.node.id === selectedId"
       :tabindex="index === focusedIndex ? 0 : -1"
@@ -75,16 +79,16 @@ const providerLetter = (provider: Provider) => (provider === "codex" ? "C" : "A"
       @click="$emit('select', entry.node)"
       @keydown="onKeydown($event, entry, index)"
     >
-      <span class="tree-provider" :data-provider="entry.node.provider" aria-hidden="true">
+      <ProviderMark :provider="entry.node.provider" size="sm">
         {{ providerLetter(entry.node.provider) }}
-      </span>
+      </ProviderMark>
       <span
-        ><strong>{{ entry.node.name }}</strong
-        ><small>{{ entry.node.activity }}</small></span
+        ><strong class="block text-[0.73rem]">{{ entry.node.name }}</strong
+        ><small class="mt-[0.12rem] block text-[0.62rem] text-text-muted">{{
+          entry.node.activity
+        }}</small></span
       >
-      <span class="status-badge" :data-status="entry.node.state">
-        <span aria-hidden="true" />{{ entry.node.state }}
-      </span>
+      <StatusBadge :status="entry.node.state">{{ entry.node.state }}</StatusBadge>
     </button>
   </div>
 </template>

@@ -1,6 +1,6 @@
 # MetaClanker core UI component library
 
-- Status: Foundation implemented and verified (2026-08-01); migration in progress
+- Status: Implemented and verified (2026-08-01); all five slices landed
 - Owner: Frontend
 - Audience: Frontend, design, and test owners
 - Related contract: [MetaClanker product and architecture specification](../../SPEC.md)
@@ -89,11 +89,15 @@ Directory shape follows one directory per component, with a barrel:
 
 ```
 src/ui/utils.ts                 cn()
+src/ui/control-variants.ts      the box shared by Input and NativeSelect
 src/ui/button/index.ts          buttonVariants (cva) + re-export
 src/ui/button/Button.vue
 src/ui/dialog/index.ts          barrel
 src/ui/dialog/DialogContent.vue
 ```
+
+The shipped set is `button`, `card`, `collapsible`, `dialog`, `empty-state`, `eyebrow`, `field`,
+`input`, `native-select`, `provider-mark`, `status-badge`, `textarea`, and `toggle-group`.
 
 ## 5. Token model
 
@@ -121,7 +125,24 @@ A second `@theme inline` block maps the shadcn token contract onto the base tier
 `inline` is correct here: the alias resolves to `var(--color-*)` at build time and still flips at
 runtime. This tier exists so upstream patterns and examples drop in without translation.
 
-### 5.3 Domain tokens
+### 5.3 Elevation and sidebar tiers
+
+Two further base-tier groups were added while migrating, both because acceptance criterion 1
+forbids a component from declaring a colour, radius, or shadow value of its own:
+
+- `--shadow-ring`, `--shadow-ring-sm`, `--shadow-raised`, `--shadow-inset`, and `--color-scrim`.
+  These are the accent halo on a focused or selected control, the composer's resting elevation,
+  the pressed-in look of the active toggle, and the dialog backdrop.
+- `--color-sidebar-text`, `--color-sidebar-text-dim`, `--color-sidebar-text-faint`,
+  `--color-sidebar-row`, and `--color-sidebar-rule`. The sidebar is a fixed dark surface in both
+  themes, so its foreground scale is its own tier rather than a tint of `--color-text`.
+
+`--radius-xs` (0.4rem) was added and the assorted one-off radii between 0.3rem and 0.58rem were
+snapped onto the scale. `--font-mono` and `--breakpoint-narrow` (51.25rem, the one viewport at
+which the shell stops being two columns) are declared for the same reason: they were previously
+repeated literals.
+
+### 5.4 Domain tokens
 
 Provider and status colours (`--color-codex`, `--color-claude`, `--color-warning`, `--color-danger`)
 stay in the base tier and are consumed through `data-*` attribute variants. A provider identity is not
@@ -130,7 +151,10 @@ a semantic role and must not be aliased into the semantic tier.
 ## 6. Component authoring rules
 
 1. Variants are a `cva` table exported from the component's `index.ts`, separately from the component,
-   so a non-component consumer can request the same classes.
+   so a non-component consumer can request the same classes. Where one table describes a family
+   rather than a component — `controlVariants` in `src/ui/control-variants.ts`, shared by `Input`
+   and `NativeSelect` — it lives beside `cn` instead. An input and a select in the same row have to
+   be the same object; owning the table twice is how they drift apart.
 2. `defaultVariants` in the `cva` table is the single source of truth for fallback appearance. Vue prop
    defaults for `variant` and `size` are explicitly `undefined`.
 3. Every component accepts `class?: HTMLAttributes["class"]` and merges it last through `cn`.
@@ -166,6 +190,13 @@ from `@vueuse/core` together with `useForwardPropsEmits` from reka-ui, withholdi
 Forwarding through `$attrs` is not acceptable for these wrappers: it silently accepts a misspelled
 handler that `vue-tsc` would otherwise reject.
 
+Where the app needs one shape of a primitive rather than its whole surface, a narrow typed contract
+is used instead of a forward. `ToggleGroup` declares `modelValue`/`update:modelValue` and fixes
+`type="single"` rather than forwarding `ToggleGroupRootProps`, which is a discriminated union over
+`type` that no caller here varies. This satisfies the rule's purpose more strictly than forwarding
+would: a misspelled handler still fails to compile, and an unsupported mode cannot be requested at
+all.
+
 ## 8. Known constraints
 
 ### 8.1 Native select must be preserved
@@ -199,6 +230,10 @@ The remedy is a concrete `withDefaults` value matching the reka primitive's own 
 not relaxing the compiler flag. If this recurs beyond roughly four wrappers, replace it with one shared
 `forwardProps` helper that drops undefined keys, and record that decision here.
 
+Outcome: it did not recur. `DialogContent` remains the only wrapper that forwards a full reka prop
+surface. Every other wrapper either takes a narrow typed contract (section 7.3) or forwards only
+`as`/`as-child`, so no shared helper was needed.
+
 ### 8.4 Barrel exports must have consumers
 
 `pnpm knip` reports an unused barrel export as dead code. Barrels list parts that are actually consumed;
@@ -216,100 +251,123 @@ The testing strategy is unchanged. This library adds three constraints:
    or keyboard path changes, that is a product change requiring its own justification.
 3. Accessible names are a contract. Replacing `aria-labelledby` with a reka `DialogTitle` is acceptable
    precisely because the resulting accessible name is identical; the existing assertion proves it.
+4. Appearance is not covered by any lane. A utility can be present on an element and still not apply
+   — the unlayered-reset defect in section 10.3 is the proof — so every migrated surface is opened in
+   a real browser and compared against the surface it replaced.
 
 ## 10. Delivery status
 
-### 10.1 Complete: foundation
+All five slices have landed. `apps/web/src/shared/styles.css` is 761 lines, down from 2,516, and
+holds only tokens, resets, shell layout, rendered-markdown prose, and vue-flow overrides.
+
+### 10.1 Foundation
 
 Dependencies added to `apps/web` at exact pinned versions: `reka-ui` 2.10.1, `@vueuse/core` 14.4.0,
 `class-variance-authority` 0.7.1, `clsx` 2.1.1, `tailwind-merge` 3.6.0.
 
-Delivered:
+Delivered: `cn`, `Button` with `buttonVariants`, the `Dialog` family, and the two-tier token blocks.
+Migrated `features/conversation/Composer.vue` and `views/DraftView.vue`.
 
-- `src/ui/utils.ts` — `cn`.
-- `src/ui/button/` — `Button.vue`, `buttonVariants` with `primary`, `secondary`, `outline`, `ghost`,
-  and `danger` variants and `default`, `sm`, `icon`, `icon-sm` sizes.
-- `src/ui/dialog/` — `DialogContent`, `DialogOverlay`, `DialogHeader`, `DialogTitle`,
-  `DialogDescription`, `DialogFooter`, `DialogEyebrow`, and the reka `DialogRoot` re-export.
-- Two-tier token blocks in `shared/styles.css`.
-
-Migrated: `features/conversation/Composer.vue`, `views/DraftView.vue` including its discard dialog.
-
-Removed from `shared/styles.css`: `.composer-control`, `.composer-control:hover`, `.send-button`,
-`.send-button.stop`, and both `.draft-controls .send-button` rules. The file moved from 2,516 to 2,493
-lines with 29 lines added and 52 removed.
-
-Verified with `pnpm check`, `pnpm knip`, and `pnpm test:e2e:web`, all passing with no test file changed.
-
-Surfaces added after the foundation are authored on the library directly rather than migrated later:
-they consume the primitives, style themselves with token-backed utilities, and add no rule to
-`shared/styles.css`.
+`tailwindcss` has been removed from `knip.json`'s `ignoreDependencies`: the suppression existed only
+because Tailwind was installed and unused, and `pnpm knip` now reports it as genuinely consumed.
 
 ### 10.2 Slice 2: ProjectSidebar
 
-The highest-value remaining migration. `features/projects/ProjectSidebar.vue` is 461 lines with roughly
-40 legacy class uses, contains the last three native `<dialog>` elements, and is the sole remaining
-consumer of `.modal`, `.modal-heading`, `.modal-actions`, and `.command-palette`.
+The add-project, command palette, and settings dialogs moved from imperative `showModal()`/`close()`
+to reka `Dialog` with `v-model:open`. `DialogClose` joined the barrel; `DialogTrigger` did not,
+because no dialog here opens from a plain trigger — each opens from an async flow, a route query, or
+a keyboard chord. The manual `keydown` pair became two `onKeyStroke` calls.
 
-- Convert the add-project, command palette, and settings dialogs from imperative `showModal()` and
-  `close()` to reka `Dialog` with `v-model:open`.
-- Add `DialogClose` and `DialogTrigger` to the dialog barrel as consumers appear.
-- Introduce `NativeSelect` for the settings theme and density controls.
-- Replace the manual `onMounted`/`onBeforeUnmount` `keydown` pair with `useEventListener`, and the
-  hand-rolled `metaKey || ctrlKey` palette handling with `onKeyStroke`.
-- Delete `.modal`, `.modal-heading`, `.modal-actions`, `.command-palette`, `.palette-actions`, and
-  `.palette-projects`.
+`Field`, `FieldHint`, `FieldError`, `Input`, and `NativeSelect` were pulled forward from slice 3:
+deleting `.modal` orphans `.modal form`, `.modal label`, `.modal input`, and `.modal select` in the
+same commit, and those rules have nowhere to go but a primitive.
 
-### 10.3 Slice 3: remaining button and control surfaces
+Deleted: `.modal` and its six descendant rules, `.modal-heading`, `.modal-actions`,
+`.command-palette`, `.palette-actions`, `.palette-projects`, and the whole `.directory-browser` and
+`.advanced-fields` families.
 
-Migrate the remaining `.button` and `.icon-button` consumers so both rules can be deleted:
-`App.vue`, `features/conversation/ThreadHeader.vue`, `features/conversation/ReviewPanel.vue`,
-`features/agent-map/AgentMap.vue`, and `views/WelcomeView.vue`.
+Each dialog gained a visually hidden `DialogDescription`. reka always emits `aria-describedby` on
+dialog content, so a dialog without a description points at an element that does not exist.
 
-Introduce `Field`, `Input`, `Textarea`, and `NativeSelect` and migrate the remaining form controls in
-`DraftView.vue` and `ProjectSidebar.vue`.
+### 10.3 Slice 3: buttons and form controls
 
-### 10.4 Slice 4: display primitives
+Migrated the remaining `.button` and `.icon-button` consumers — `App.vue`, `ThreadHeader.vue`,
+`ReviewPanel.vue`, `AgentMap.vue`, `WelcomeView.vue`, `PermissionCard.vue` — and the `DraftView`
+form controls. Added `Textarea` and a `size` variant to the shared control box.
 
-Introduce `Card`, `StatusBadge`, and `StatusDot` and migrate `PermissionCard.vue`, `Transcript.vue`,
-`AgentTree.vue`, and the `.tool-card` and `.status-badge` rules.
+This slice found and fixed a defect the foundation had shipped: the resets were unlayered, and an
+unlayered `button { font: inherit }` beats every Tailwind utility regardless of specificity, because
+utilities live in the `utilities` cascade layer. Every `Button` had been rendering at the inherited
+16px rather than its variant's size since the foundation landed, with no signal — the same failure
+mode as the undefined `.quiet` class in section 2.2. The resets now sit in `@layer base`.
 
-Adopt reka `Collapsible` for sidebar project groups, whose `.project-chevron` currently renders a
-non-functional affordance, and reka `ToggleGroup` for `.surface-switch` and `.view-toggle`, which today
-are `aria-pressed` buttons without roving tabindex.
+### 10.4 Slice 4: display primitives and delegated behavior
 
-### 10.5 Slice 5: shell
+Added `Card` (polymorphic, with a `warning` tone), `StatusBadge`, `Eyebrow`, `EmptyState`, and
+`ProviderMark`. Migrated `PermissionCard.vue`, `Transcript.vue`, `AgentTree.vue`, and the
+`.tool-card` family.
 
-`app-shell`, `sidebar`, and their collapsed and responsive variants migrate last. These are genuinely
-application-specific and are the least valuable to abstract. They may remain hand-written CSS
-indefinitely; that is an acceptable outcome, provided they consume tokens rather than raw values.
+`StatusDot` was specified but is not shipped: `.status-dot` had no consumer in any component, so it
+was deleted rather than reimplemented. The dot inside a status badge is now part of `StatusBadge`
+rather than markup each caller repeats.
+
+`DialogEyebrow` was replaced by `Eyebrow`. A dialog eyebrow and a panel eyebrow were the same
+element with the same styling, which is the duplication this library exists to remove.
+
+reka `Collapsible` now backs the sidebar project groups, so `.project-chevron` — previously a caret
+that did nothing — is a real disclosure with `aria-expanded`. reka `ToggleGroup` backs the surface
+switch and the map view toggle; both keep `role="group"` and `aria-pressed` exactly as before and
+gain roving tabindex, so no test or accessible name changed.
+
+### 10.5 Slice 5: the remaining surfaces
+
+A selector sweep removed 27 class families that had no markup left anywhere — `.project-heading`,
+`.project-label`, `.new-chat-button`, `.thread-search`, `.welcome-orbit`, and the rest of the
+pre-redesign vocabulary, including their `.sidebar.collapsed` and narrow-viewport variants.
+
+The remaining feature surfaces were then migrated to token-backed utilities: the review panel, the
+agent map and its inspector, the transcript, the composer, the draft view, the welcome view, and the
+thread header.
+
+Shell layout stayed hand-written, as section 10.5 of the original plan allowed. It now consumes
+tokens throughout rather than repeating `rgb(244 247 240 / …)` literals.
 
 ## 11. Ratchet
 
-Status: specified, not yet implemented.
+Status: implemented. `scripts/check-stylesheet-ratchet.mjs` runs as `pnpm check:styles` inside
+`pnpm check`.
 
-`apps/web/src/shared/styles.css` is to carry a line-count ceiling enforced in `pnpm check`. The ceiling
-is lowered whenever a slice lands and is never raised. Without it, migration predictably stalls partway
-and the repository carries two styling systems permanently.
+The ratchet is strict in both directions. Exceeding the ceiling fails, and so does falling under it,
+with an instruction to lower the constant. A one-directional ratchet lets a deletion go unrecorded,
+which leaves headroom for the next rule to be added silently.
 
-The ceiling at the point this specification was written is 2,493 lines. It must be added before Slice 2
-lands, so that the first large deletion is what sets the ratchet rather than the last.
+The ceiling was seeded at 2,493 before slice 2 landed and now stands at **761**.
 
 ## 12. Acceptance criteria
 
-The library is established when:
+| # | Criterion | Status |
+| - | --------- | ------ |
+| 1 | No component declares a colour, radius, or shadow value outside the token blocks | Met |
+| 2 | Every primitive accepts and last-merges a `class` prop | Met |
+| 3 | Focus, portal, and roving-tabindex behavior is delegated to reka-ui | Met |
+| 4 | `ui` imports nothing from `shared`, `features`, or `views` | Met |
+| 5 | No native `<dialog>` remains in `apps/web` | Met |
+| 6 | `.button`, `.icon-button`, `.modal`, `.send-button`, `.composer-control` are absent | Met |
+| 7 | `shared/styles.css` contains only tokens, resets, shell layout, and third-party overrides | Met, with one documented addition |
+| 8 | Every slice landed without modifying a test to accommodate markup | Met — no test file was changed |
+| 9 | `pnpm check`, `pnpm knip`, and `pnpm test:e2e:web` pass at every slice boundary | Met |
 
-1. No component in `apps/web` declares a colour, radius, or shadow value outside the token blocks.
-2. Every primitive accepts and last-merges a `class` prop.
-3. Every interactive primitive requiring focus, portal, or roving-tabindex behavior delegates it to
-   reka-ui rather than implementing it.
-4. `ui` imports nothing from `shared`, `features`, or `views`.
-5. No native `<dialog>` remains in `apps/web`.
-6. `.button`, `.icon-button`, `.modal`, `.send-button`, and `.composer-control` are absent from
-   `shared/styles.css`.
-7. `shared/styles.css` contains only tokens, resets, shell layout, and third-party overrides.
-8. Every migration slice landed without modifying a test to accommodate markup.
-9. `pnpm check`, `pnpm knip`, and `pnpm test:e2e:web` pass at every slice boundary.
+### 12.1 Amendment to criterion 7
+
+The stylesheet also retains the `.markdown` rules, roughly 30 lines that style the output of
+`renderMarkdown`. This is not an exception that can be closed by trying harder: the content is
+injected with `v-html`, so no utility class can reach the `<p>`, `<code>`, or `<pre>` elements
+inside it. Styling rendered prose from a stylesheet is the same reason Tailwind ships a typography
+plugin rather than utilities for it.
+
+Criterion 7 is therefore amended to read: **tokens, resets, shell layout, rendered-markdown prose,
+and third-party overrides**. Prose rules must consume tokens and must not be extended to cover
+anything a component could style itself.
 
 ## 13. Definition of done per slice
 

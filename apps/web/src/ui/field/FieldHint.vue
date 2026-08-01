@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type { HTMLAttributes } from "vue";
-import { DialogOverlay } from "reka-ui";
 
 import { cn } from "../utils.js";
 
@@ -8,8 +7,10 @@ const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 </script>
 
 <template>
-  <DialogOverlay
-    data-slot="dialog-overlay"
-    :class="cn('fixed inset-0 z-50 bg-scrim backdrop-blur-[3px]', props.class)"
-  />
+  <small
+    data-slot="field-hint"
+    :class="cn('text-[0.6rem] font-normal text-text-muted', props.class)"
+  >
+    <slot />
+  </small>
 </template>

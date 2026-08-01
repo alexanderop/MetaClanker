@@ -3,6 +3,9 @@ import { ref } from "vue";
 
 import type { PendingInteraction } from "@metaclanker/contracts/wire";
 
+import { Button } from "../../ui/button/index.js";
+import { Card } from "../../ui/card/index.js";
+import { Eyebrow } from "../../ui/eyebrow/index.js";
 import { useWorkspaceStore } from "../../shared/workspaceStore.js";
 
 const props = defineProps<{ interaction: PendingInteraction }>();
@@ -20,25 +23,39 @@ const respond = async (optionId: string): Promise<void> => {
 </script>
 
 <template>
-  <section class="permission-card" :aria-labelledby="`permission-${interaction.id}`">
-    <div class="permission-icon" aria-hidden="true">!</div>
-    <div class="permission-content">
-      <p class="eyebrow">{{ $t("thread.permission") }}</p>
-      <h3 :id="`permission-${interaction.id}`">{{ interaction.title }}</h3>
-      <pre v-if="interaction.description">{{ interaction.description }}</pre>
-      <div class="permission-options">
-        <button
+  <Card
+    as="section"
+    tone="warning"
+    class="mt-[1.2rem] ml-[2.85rem] grid grid-cols-[auto_minmax(0,1fr)] gap-[0.8rem] rounded-lg p-[0.9rem]"
+    :aria-labelledby="`permission-${interaction.id}`"
+  >
+    <div
+      class="grid size-8 place-items-center rounded-full bg-warning font-[850] text-accent-ink"
+      aria-hidden="true"
+    >
+      !
+    </div>
+    <div>
+      <Eyebrow>{{ $t("thread.permission") }}</Eyebrow>
+      <h3 :id="`permission-${interaction.id}`" class="mt-[0.2rem] mb-2 text-[0.82rem]">
+        {{ interaction.title }}
+      </h3>
+      <pre
+        v-if="interaction.description"
+        class="m-0 mb-3 max-h-[14rem] overflow-auto rounded-xs bg-sidebar p-3 font-mono text-[0.75em] whitespace-pre-wrap text-text-inverse"
+        >{{ interaction.description }}</pre>
+      <div class="flex flex-wrap gap-[0.45rem]">
+        <Button
           v-for="option in interaction.options"
           :key="option.optionId"
-          class="button"
-          :class="option.kind.startsWith('allow') ? 'primary' : 'secondary'"
+          :variant="option.kind.startsWith('allow') ? 'primary' : 'secondary'"
           type="button"
           :disabled="responding"
           @click="respond(option.optionId)"
         >
           {{ option.label }}
-        </button>
+        </Button>
       </div>
     </div>
-  </section>
+  </Card>
 </template>

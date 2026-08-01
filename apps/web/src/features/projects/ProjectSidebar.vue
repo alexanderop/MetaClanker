@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from "vue";
+import { computed, nextTick, ref, useTemplateRef, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
+import { onKeyStroke } from "@vueuse/core";
 
 import { ProjectId } from "@metaclanker/contracts/ids";
 import type { DirectoryBrowserResponse } from "@metaclanker/contracts/wire";
@@ -10,6 +11,21 @@ import {
   desktopDirectoryPickerAvailable,
   selectDesktopProjectDirectory,
 } from "../../shared/desktopBridge.js";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../../ui/dialog/index.js";
+import { Eyebrow } from "../../ui/eyebrow/index.js";
+import { Field, FieldError, FieldHint } from "../../ui/field/index.js";
+import { Button } from "../../ui/button/index.js";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../../ui/collapsible/index.js";
+import { Input } from "../../ui/input/index.js";
+import { NativeSelect } from "../../ui/native-select/index.js";
 import { api } from "../../shared/apiClient.js";
 import { useWorkspaceStore } from "../../shared/workspaceStore.js";
 
@@ -20,10 +36,11 @@ const workspace = useWorkspaceStore();
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
-const projectDialog = useTemplateRef<HTMLDialogElement>("projectDialog");
-const projectPathInput = useTemplateRef<HTMLInputElement>("projectPathInput");
-const settingsDialog = useTemplateRef<HTMLDialogElement>("settingsDialog");
-const paletteDialog = useTemplateRef<HTMLDialogElement>("paletteDialog");
+const projectOpen = ref(false);
+const paletteOpen = ref(false);
+const settingsOpen = ref(false);
+const projectPathInput = useTemplateRef<{ focus: () => void }>("projectPathInput");
+const directoryList = useTemplateRef<HTMLUListElement>("directoryList");
 const path = ref("");
 const name = ref("");
 const saving = ref(false);
@@ -67,8 +84,16 @@ const contextualProjectId = (): ProjectId | null => {
   return visibleProjects.value[0]?.id ?? null;
 };
 
+// Two modal layers must never overlap: reka returns focus to whatever was focused
+// when a dialog closes, so a replacement opened in the same tick loses focus to it.
+const closePalette = async (): Promise<void> => {
+  if (!paletteOpen.value) return;
+  paletteOpen.value = false;
+  await nextTick();
+};
+
 const newChat = async (projectId = contextualProjectId()): Promise<void> => {
-  paletteDialog.value?.close();
+  await closePalette();
   if (projectId === null) {
     await openAddProject();
     return;
@@ -78,16 +103,13 @@ const newChat = async (projectId = contextualProjectId()): Promise<void> => {
   emit("close");
 };
 
-const showProjectDialog = (preserveError = false): void => {
-  if (!preserveError) addError.value = null;
-  projectDialog.value?.showModal();
-  if (desktopDirectoryPickerAvailable()) {
-    void nextTick(() => projectPathInput.value?.focus());
-  }
+const focusProjectPath = async (): Promise<void> => {
+  await nextTick();
+  projectPathInput.value?.focus();
 };
 
 const openAddProject = async (): Promise<void> => {
-  paletteDialog.value?.close();
+  await closePalette();
   addError.value = null;
   if (desktopDirectoryPickerAvailable()) {
     const selected = await selectDesktopProjectDirectory();
@@ -95,12 +117,11 @@ const openAddProject = async (): Promise<void> => {
     path.value = selected;
     name.value = "";
     if (await persistProject()) return;
-    showProjectDialog(true);
-    await nextTick();
-    projectPathInput.value?.focus();
+    projectOpen.value = true;
+    await focusProjectPath();
     return;
   }
-  showProjectDialog();
+  projectOpen.value = true;
   void browseDirectories();
 };
 
@@ -111,7 +132,7 @@ const browseDirectories = async (nextPath?: string): Promise<void> => {
     directoryBrowser.value = await api.browseProjectDirectories(nextPath);
     path.value = directoryBrowser.value.currentPath;
     await nextTick();
-    projectDialog.value?.querySelector<HTMLButtonElement>(".directory-browser li button")?.focus();
+    directoryList.value?.querySelector("button")?.focus();
   } catch (cause) {
     browseError.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
@@ -131,7 +152,7 @@ const persistProject = async (): Promise<boolean> => {
     const project = await workspace.createProject(path.value.trim(), name.value.trim());
     path.value = "";
     name.value = "";
-    projectDialog.value?.close();
+    projectOpen.value = false;
     await newChat(project.id);
     return true;
   } catch (cause) {
@@ -144,15 +165,14 @@ const persistProject = async (): Promise<boolean> => {
 
 const addProject = async (): Promise<void> => {
   if (await persistProject()) return;
-  await nextTick();
-  projectPathInput.value?.focus();
+  await focusProjectPath();
 };
 
-const openSettings = (): void => {
-  paletteDialog.value?.close();
+const openSettings = async (): Promise<void> => {
+  await closePalette();
   theme.value = workspace.settings.theme;
   graphDensity.value = workspace.settings.graphDensity;
-  settingsDialog.value?.showModal();
+  settingsOpen.value = true;
 };
 
 const saveSettings = async (): Promise<void> => {
@@ -161,20 +181,27 @@ const saveSettings = async (): Promise<void> => {
     theme: theme.value,
     graphDensity: graphDensity.value,
   });
-  settingsDialog.value?.close();
+  settingsOpen.value = false;
 };
 
-const onGlobalKeydown = (event: KeyboardEvent): void => {
-  if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-  if (event.key.toLocaleLowerCase() === "k") {
-    event.preventDefault();
-    paletteDialog.value?.showModal();
-  }
-  if (event.key.toLocaleLowerCase() === "n") {
-    event.preventDefault();
-    void newChat();
-  }
-};
+const commandChord =
+  (key: string) =>
+  (event: KeyboardEvent): boolean =>
+    (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLocaleLowerCase() === key;
+
+onKeyStroke(commandChord("k"), (event) => {
+  event.preventDefault();
+  paletteOpen.value = true;
+});
+
+onKeyStroke(commandChord("n"), (event) => {
+  event.preventDefault();
+  void newChat();
+});
+
+watch(projectOpen, (isOpen) => {
+  if (!isOpen) addError.value = null;
+});
 
 watch(
   () => route.query["addProject"],
@@ -193,9 +220,6 @@ watch(
   },
   { immediate: true },
 );
-
-onMounted(() => window.addEventListener("keydown", onGlobalKeydown));
-onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
 </script>
 
 <template>
@@ -256,40 +280,61 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
         <span aria-hidden="true">▣</span>
         {{ $t("projects.addFirst") }}
       </button>
-      <section v-for="project in visibleProjects" v-else :key="project.id" class="project-group">
-        <div class="project-row" :class="{ active: routeProjectId === project.id }">
+      <Collapsible
+        v-for="project in visibleProjects"
+        v-else
+        :key="project.id"
+        as="section"
+        default-open
+        class="project-group"
+      >
+        <div
+          class="flex items-center rounded-sm hover:bg-sidebar-row"
+          :class="{ 'bg-sidebar-row': routeProjectId === project.id }"
+        >
+          <CollapsibleTrigger
+            class="grid min-h-[2.25rem] w-[1.4rem] shrink-0 place-items-center text-[0.68rem] text-sidebar-text-faint transition-transform data-[state=closed]:-rotate-90"
+            :aria-label="$t('navigation.toggleProject', { project: project.name })"
+          >
+            <span aria-hidden="true">⌄</span>
+          </CollapsibleTrigger>
           <button
-            class="project-name-button"
+            class="grid min-h-[2.25rem] min-w-0 flex-1 cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-[0.48rem] border-0 bg-transparent px-[0.25rem] py-[0.35rem] text-left text-sidebar-text"
             type="button"
             :aria-label="$t('navigation.newChatInProject', { project: project.name })"
             @click="newChat(project.id)"
           >
-            <span class="project-chevron" aria-hidden="true">⌄</span>
-            <span class="project-folder" aria-hidden="true">▱</span>
-            <strong>{{ project.name }}</strong>
+            <span class="text-base text-sidebar-text-dim" aria-hidden="true">▱</span>
+            <strong
+              class="overflow-hidden text-[0.74rem] font-[620] text-ellipsis whitespace-nowrap"
+            >
+              {{ project.name }}
+            </strong>
           </button>
         </div>
-        <ul v-if="threadsForProject(project.id).length > 0" class="thread-list">
-          <li v-for="thread in threadsForProject(project.id)" :key="thread.id">
-            <RouterLink
-              :to="{ name: 'thread', params: { threadId: thread.id } }"
-              :class="{ active: selectedThreadId === thread.id }"
-              :aria-label="`${thread.title}, ${projectName(thread.projectId)}, ${thread.status}`"
-              @click="emit('close')"
-            >
-              <span class="thread-row-copy">
-                <strong>{{ thread.title }}</strong>
-              </span>
-              <time
-                :datetime="thread.updatedAt"
-                :title="new Date(thread.updatedAt).toLocaleString()"
+        <CollapsibleContent v-if="threadsForProject(project.id).length > 0">
+          <ul class="thread-list">
+            <li v-for="thread in threadsForProject(project.id)" :key="thread.id">
+              <RouterLink
+                :to="{ name: 'thread', params: { threadId: thread.id } }"
+                :class="{ active: selectedThreadId === thread.id }"
+                :aria-label="`${thread.title}, ${projectName(thread.projectId)}, ${thread.status}`"
+                @click="emit('close')"
               >
-                {{ new Date(thread.updatedAt).toLocaleDateString() }}
-              </time>
-            </RouterLink>
-          </li>
-        </ul>
-      </section>
+                <span class="thread-row-copy">
+                  <strong>{{ thread.title }}</strong>
+                </span>
+                <time
+                  :datetime="thread.updatedAt"
+                  :title="new Date(thread.updatedAt).toLocaleString()"
+                >
+                  {{ new Date(thread.updatedAt).toLocaleDateString() }}
+                </time>
+              </RouterLink>
+            </li>
+          </ul>
+        </CollapsibleContent>
+      </Collapsible>
     </nav>
 
     <div class="sidebar-footer">
@@ -299,163 +344,209 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
     </div>
   </aside>
 
-  <dialog
-    ref="projectDialog"
-    class="modal"
-    aria-labelledby="add-project-title"
-    @close="addError = null"
-  >
-    <form method="dialog" @submit.prevent="addProject">
-      <div class="modal-heading">
-        <div>
-          <p class="eyebrow">{{ $t("projects.add") }}</p>
-          <h2 id="add-project-title">{{ $t("projects.chooseServerDirectory") }}</h2>
-        </div>
-        <button
-          class="icon-button"
-          type="button"
-          aria-label="Close"
-          @click="projectDialog?.close()"
+  <Dialog v-model:open="projectOpen">
+    <DialogContent>
+      <form class="grid gap-4" @submit.prevent="addProject">
+        <DialogHeader>
+          <Eyebrow>{{ $t("projects.add") }}</Eyebrow>
+          <DialogTitle>{{ $t("projects.chooseServerDirectory") }}</DialogTitle>
+          <template #action>
+            <DialogClose as-child>
+              <Button variant="outline" size="icon" :aria-label="$t('common.close')">×</Button>
+            </DialogClose>
+          </template>
+        </DialogHeader>
+        <DialogDescription class="sr-only">{{ $t("projects.addDescription") }}</DialogDescription>
+
+        <div
+          v-if="!desktopDirectoryPickerAvailable()"
+          class="grid min-h-[12rem] gap-[0.65rem] rounded-md border border-border bg-surface-raised p-3"
+          aria-live="polite"
         >
-          ×
-        </button>
-      </div>
-      <div v-if="!desktopDirectoryPickerAvailable()" class="directory-browser" aria-live="polite">
-        <div class="directory-browser-heading">
-          <strong>{{ directoryBrowser?.currentPath ?? $t("projects.loadingDirectories") }}</strong>
-          <button
-            v-if="directoryBrowser?.parentPath"
-            class="button secondary"
-            type="button"
-            :disabled="browsing"
-            @click="browseDirectories(directoryBrowser.parentPath ?? undefined)"
+          <div
+            class="flex items-center justify-between gap-[0.65rem] max-narrow:flex-col max-narrow:items-stretch"
           >
-            {{ $t("projects.up") }}
-          </button>
+            <strong
+              class="overflow-hidden font-mono text-[0.68rem] text-ellipsis whitespace-nowrap text-text-muted"
+            >
+              {{ directoryBrowser?.currentPath ?? $t("projects.loadingDirectories") }}
+            </strong>
+            <Button
+              v-if="directoryBrowser?.parentPath"
+              variant="secondary"
+              type="button"
+              :disabled="browsing"
+              @click="browseDirectories(directoryBrowser.parentPath ?? undefined)"
+            >
+              {{ $t("projects.up") }}
+            </Button>
+          </div>
+          <p v-if="browsing" class="m-0 text-[0.64rem] font-normal text-text-muted">
+            {{ $t("projects.loadingDirectories") }}
+          </p>
+          <FieldError v-else-if="browseError">
+            {{ browseError }}
+            <Button variant="secondary" type="button" @click="browseDirectories()">
+              {{ $t("projects.retryBrowse") }}
+            </Button>
+          </FieldError>
+          <ul
+            v-else-if="directoryBrowser && directoryBrowser.entries.length > 0"
+            ref="directoryList"
+            class="grid max-h-[13rem] list-none overflow-y-auto p-0"
+          >
+            <li v-for="entry in directoryBrowser.entries" :key="entry.path">
+              <Button
+                variant="list"
+                size="list"
+                type="button"
+                @click="browseDirectories(entry.path)"
+              >
+                <span aria-hidden="true">▣</span>{{ entry.name }}
+              </Button>
+            </li>
+          </ul>
+          <p v-else-if="directoryBrowser" class="m-0 text-[0.64rem] font-normal text-text-muted">
+            {{ $t("projects.noChildren") }}
+          </p>
+          <p class="m-0 text-[0.64rem] font-normal text-text-muted">
+            {{ $t("projects.serverFolderCue") }}
+          </p>
         </div>
-        <div v-if="browsing" class="directory-loading">{{ $t("projects.loadingDirectories") }}</div>
-        <div v-else-if="browseError" class="form-error" role="alert">
-          {{ browseError }}
-          <button class="button secondary" type="button" @click="browseDirectories()">Retry</button>
-        </div>
-        <ul v-else-if="directoryBrowser && directoryBrowser.entries.length > 0">
-          <li v-for="entry in directoryBrowser.entries" :key="entry.path">
-            <button type="button" @click="browseDirectories(entry.path)">
-              <span aria-hidden="true">▣</span>{{ entry.name }}
-            </button>
-          </li>
-        </ul>
-        <p v-else-if="directoryBrowser" class="directory-empty">{{ $t("projects.noChildren") }}</p>
-        <p class="directory-browser-note">{{ $t("projects.serverFolderCue") }}</p>
-      </div>
-      <label v-else>
-        <span>{{ $t("projects.selectedPath") }}</span>
-        <input ref="projectPathInput" v-model="path" required readonly />
-        <button class="button secondary" type="button" @click="chooseDirectory">
-          {{ $t("projects.anotherDirectory") }}
-        </button>
-        <small>{{ $t("projects.pathHint") }}</small>
-      </label>
-      <details v-if="!desktopDirectoryPickerAvailable()" class="advanced-fields manual-path-fields">
-        <summary>{{ $t("projects.manualPath") }}</summary>
-        <label>
-          <span>{{ $t("projects.absoluteServerPath") }}</span>
-          <input
-            ref="projectPathInput"
-            v-model="path"
-            required
-            autocomplete="off"
-            placeholder="/srv/projects/example"
-            :aria-invalid="addError ? 'true' : undefined"
-            :aria-describedby="addError ? 'add-project-error' : 'project-path-hint'"
-          />
-          <small id="project-path-hint">{{ $t("projects.permittedPathHint") }}</small>
-        </label>
-      </details>
-      <details class="advanced-fields">
-        <summary>{{ $t("projects.advanced") }}</summary>
-        <label>
-          <span>{{ $t("projects.name") }}</span>
-          <input v-model="name" autocomplete="off" :placeholder="$t('projects.inferredName')" />
-        </label>
-      </details>
-      <p v-if="addError" id="add-project-error" class="form-error" role="alert">{{ addError }}</p>
-      <div class="modal-actions">
-        <button class="button secondary" type="button" @click="projectDialog?.close()">
-          {{ $t("common.cancel") }}
-        </button>
-        <button class="button primary" type="submit" :disabled="saving || path.trim().length === 0">
-          {{ saving ? $t("projects.adding") : $t("projects.add") }}
-        </button>
-      </div>
-    </form>
-  </dialog>
 
-  <dialog ref="paletteDialog" class="modal command-palette" aria-labelledby="palette-title">
-    <div class="modal-heading">
-      <div>
-        <p class="eyebrow">{{ $t("navigation.workspace") }}</p>
-        <h2 id="palette-title">{{ $t("navigation.palette") }}</h2>
-      </div>
-      <button class="icon-button" type="button" aria-label="Close" @click="paletteDialog?.close()">
-        ×
-      </button>
-    </div>
-    <div class="palette-actions">
-      <button type="button" @click="newChat()">{{ $t("navigation.newChat") }}</button>
-      <button type="button" @click="openAddProject">{{ $t("projects.add") }}</button>
-      <button type="button" @click="openSettings">{{ $t("settings.open") }}</button>
-    </div>
-    <div v-if="visibleProjects.length > 1" class="palette-projects">
-      <p>{{ $t("navigation.newChatIn") }}</p>
-      <button
-        v-for="project in visibleProjects"
-        :key="project.id"
-        type="button"
-        @click="newChat(project.id)"
-      >
-        {{ project.name }}
-      </button>
-    </div>
-  </dialog>
+        <Field v-else>
+          <span>{{ $t("projects.selectedPath") }}</span>
+          <Input ref="projectPathInput" v-model="path" required readonly />
+          <Button variant="secondary" type="button" @click="chooseDirectory">
+            {{ $t("projects.anotherDirectory") }}
+          </Button>
+          <FieldHint>{{ $t("projects.pathHint") }}</FieldHint>
+        </Field>
 
-  <dialog ref="settingsDialog" class="modal" aria-labelledby="settings-title">
-    <form method="dialog" @submit.prevent="saveSettings">
-      <div class="modal-heading">
-        <div>
-          <p class="eyebrow">{{ $t("settings.preferences") }}</p>
-          <h2 id="settings-title">{{ $t("settings.title") }}</h2>
-        </div>
-        <button
-          class="icon-button"
-          type="button"
-          aria-label="Close"
-          @click="settingsDialog?.close()"
+        <details
+          v-if="!desktopDirectoryPickerAvailable()"
+          class="rounded-sm border border-border-subtle px-[0.65rem] py-[0.55rem] [&[open]_summary]:mb-3"
         >
-          ×
-        </button>
+          <summary class="cursor-pointer text-[0.68rem] text-text-muted">
+            {{ $t("projects.manualPath") }}
+          </summary>
+          <Field>
+            <span>{{ $t("projects.absoluteServerPath") }}</span>
+            <Input
+              ref="projectPathInput"
+              v-model="path"
+              required
+              autocomplete="off"
+              placeholder="/srv/projects/example"
+              :aria-invalid="addError ? 'true' : undefined"
+              :aria-describedby="addError ? 'add-project-error' : 'project-path-hint'"
+            />
+            <FieldHint id="project-path-hint">{{ $t("projects.permittedPathHint") }}</FieldHint>
+          </Field>
+        </details>
+
+        <details
+          class="rounded-sm border border-border-subtle px-[0.65rem] py-[0.55rem] [&[open]_summary]:mb-3"
+        >
+          <summary class="cursor-pointer text-[0.68rem] text-text-muted">
+            {{ $t("projects.advanced") }}
+          </summary>
+          <Field>
+            <span>{{ $t("projects.name") }}</span>
+            <Input v-model="name" autocomplete="off" :placeholder="$t('projects.inferredName')" />
+          </Field>
+        </details>
+
+        <FieldError v-if="addError" id="add-project-error">{{ addError }}</FieldError>
+
+        <DialogFooter>
+          <DialogClose as-child>
+            <Button variant="secondary">{{ $t("common.cancel") }}</Button>
+          </DialogClose>
+          <Button variant="primary" type="submit" :disabled="saving || path.trim().length === 0">
+            {{ saving ? $t("projects.adding") : $t("projects.add") }}
+          </Button>
+        </DialogFooter>
+      </form>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog v-model:open="paletteOpen">
+    <DialogContent class="p-[1.1rem]">
+      <DialogHeader>
+        <Eyebrow>{{ $t("navigation.workspace") }}</Eyebrow>
+        <DialogTitle>{{ $t("navigation.palette") }}</DialogTitle>
+        <template #action>
+          <DialogClose as-child>
+            <Button variant="outline" size="icon" :aria-label="$t('common.close')">×</Button>
+          </DialogClose>
+        </template>
+      </DialogHeader>
+      <DialogDescription class="sr-only">
+        {{ $t("navigation.paletteDescription") }}
+      </DialogDescription>
+      <div class="grid gap-[0.3rem]">
+        <Button variant="list" size="list" type="button" @click="newChat()">
+          {{ $t("navigation.newChat") }}
+        </Button>
+        <Button variant="list" size="list" type="button" @click="openAddProject">
+          {{ $t("projects.add") }}
+        </Button>
+        <Button variant="list" size="list" type="button" @click="openSettings">
+          {{ $t("settings.open") }}
+        </Button>
       </div>
-      <label
-        ><span>{{ $t("settings.theme") }}</span
-        ><select v-model="theme">
-          <option value="system">{{ $t("settings.system") }}</option>
-          <option value="light">{{ $t("settings.light") }}</option>
-          <option value="dark">{{ $t("settings.dark") }}</option>
-        </select></label
-      >
-      <label
-        ><span>{{ $t("settings.density") }}</span
-        ><select v-model="graphDensity">
-          <option value="comfortable">{{ $t("settings.comfortable") }}</option>
-          <option value="compact">{{ $t("settings.compact") }}</option>
-        </select></label
-      >
-      <div class="modal-actions">
-        <button class="button secondary" type="button" @click="settingsDialog?.close()">
-          {{ $t("common.cancel") }}
-        </button>
-        <button class="button primary" type="submit">{{ $t("common.save") }}</button>
+      <div v-if="visibleProjects.length > 1" class="grid gap-[0.3rem]">
+        <p class="m-0 text-[0.65rem] text-text-muted">{{ $t("navigation.newChatIn") }}</p>
+        <Button
+          v-for="project in visibleProjects"
+          :key="project.id"
+          variant="list"
+          size="list"
+          type="button"
+          @click="newChat(project.id)"
+        >
+          {{ project.name }}
+        </Button>
       </div>
-    </form>
-  </dialog>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog v-model:open="settingsOpen">
+    <DialogContent>
+      <form class="grid gap-4" @submit.prevent="saveSettings">
+        <DialogHeader>
+          <Eyebrow>{{ $t("settings.preferences") }}</Eyebrow>
+          <DialogTitle>{{ $t("settings.title") }}</DialogTitle>
+          <template #action>
+            <DialogClose as-child>
+              <Button variant="outline" size="icon" :aria-label="$t('common.close')">×</Button>
+            </DialogClose>
+          </template>
+        </DialogHeader>
+        <DialogDescription class="sr-only">{{ $t("settings.description") }}</DialogDescription>
+        <Field>
+          <span>{{ $t("settings.theme") }}</span>
+          <NativeSelect v-model="theme">
+            <option value="system">{{ $t("settings.system") }}</option>
+            <option value="light">{{ $t("settings.light") }}</option>
+            <option value="dark">{{ $t("settings.dark") }}</option>
+          </NativeSelect>
+        </Field>
+        <Field>
+          <span>{{ $t("settings.density") }}</span>
+          <NativeSelect v-model="graphDensity">
+            <option value="comfortable">{{ $t("settings.comfortable") }}</option>
+            <option value="compact">{{ $t("settings.compact") }}</option>
+          </NativeSelect>
+        </Field>
+        <DialogFooter>
+          <DialogClose as-child>
+            <Button variant="secondary">{{ $t("common.cancel") }}</Button>
+          </DialogClose>
+          <Button variant="primary" type="submit">{{ $t("common.save") }}</Button>
+        </DialogFooter>
+      </form>
+    </DialogContent>
+  </Dialog>
 </template>
