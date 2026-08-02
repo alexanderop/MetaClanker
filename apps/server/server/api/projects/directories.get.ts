@@ -1,35 +1,54 @@
 import { realpath, readdir } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 
-import { createError, defineEventHandler, getQuery } from "h3";
+import * as Effect from "effect/Effect";
+import { createError, getQuery, type H3Event } from "h3";
 
 import {
   configuredProjectBrowserRoots,
   isWithinProjectBrowserRoot,
 } from "../../utils/directory-browser.js";
+import { defineApiHandler } from "../../utils/http.js";
 
-export default defineEventHandler(async (event) => {
-  try {
-    const roots = await Promise.all(configuredProjectBrowserRoots().map((root) => realpath(root)));
-    const requested = getQuery(event)["path"];
-    const target = await realpath(
-      typeof requested === "string" ? requested : (roots[0] ?? process.cwd()),
-    );
+const directoryListing = (event: H3Event) =>
+  Effect.gen(function* () {
+    const { roots, target } = yield* Effect.tryPromise({
+      try: async () => {
+        const resolvedRoots = await Promise.all(
+          configuredProjectBrowserRoots().map((root) => realpath(root)),
+        );
+        const requested = getQuery(event)["path"];
+        const resolvedTarget = await realpath(
+          typeof requested === "string" ? requested : (resolvedRoots[0] ?? process.cwd()),
+        );
+        return { roots: resolvedRoots, target: resolvedTarget };
+      },
+      catch: () =>
+        createError({ statusCode: 422, message: "That server directory is not available" }),
+    });
     const containingRoot = roots.find((root) => isWithinProjectBrowserRoot(target, root));
     if (containingRoot === undefined) {
-      throw createError({ statusCode: 403, message: "That directory is not available" });
+      return yield* Effect.fail(
+        createError({ statusCode: 403, message: "That directory is not available" }),
+      );
     }
-    const entries = await readdir(target, { withFileTypes: true });
-    const directories = await Promise.all(
-      entries
-        .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-        .map(async (entry) => {
-          const path = await realpath(resolve(target, entry.name));
-          return isWithinProjectBrowserRoot(path, containingRoot)
-            ? { name: entry.name, path }
-            : null;
-        }),
-    );
+    const directories = yield* Effect.tryPromise({
+      try: async () => {
+        const entries = await readdir(target, { withFileTypes: true });
+        return await Promise.all(
+          entries
+            .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+            .map(async (entry) => {
+              const path = await realpath(resolve(target, entry.name));
+              return isWithinProjectBrowserRoot(path, containingRoot)
+                ? { name: entry.name, path }
+                : null;
+            }),
+        );
+      },
+      catch: () =>
+        createError({ statusCode: 422, message: "That server directory is not available" }),
+    });
     const parent = dirname(target);
     return {
       currentPath: target,
@@ -39,8 +58,6 @@ export default defineEventHandler(async (event) => {
         .toSorted((left, right) => left.name.localeCompare(right.name)),
       displayName: basename(target),
     };
-  } catch (cause) {
-    if (typeof cause === "object" && cause !== null && "statusCode" in cause) throw cause;
-    throw createError({ statusCode: 422, message: "That server directory is not available" });
-  }
-});
+  });
+
+export default defineApiHandler((event) => Effect.runPromise(directoryListing(event)));

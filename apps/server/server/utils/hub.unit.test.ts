@@ -25,7 +25,7 @@ describe("event fanout", () => {
         });
         const removeHealthy = fanout.subscribeShell(healthy);
 
-        fanout.publishShell(event);
+        yield* fanout.publishShell(event);
         expect(healthy).toHaveBeenCalledWith(event);
 
         removeBroken();
@@ -42,7 +42,7 @@ describe("event fanout", () => {
         });
         const removeHealthy = fanout.subscribeThread(event.threadId, healthy);
 
-        fanout.publishThread(event.threadId, event);
+        yield* fanout.publishThread(event.threadId, event);
         expect(healthy).toHaveBeenCalledWith(event);
 
         removeBroken();

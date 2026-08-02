@@ -141,4 +141,23 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Backend workflows model expected failures in Effect's error channel. Keep
+    // native try/catch at framework and test boundaries outside this scope.
+    files: [
+      "apps/server/server/**/*.ts",
+      "packages/{application,domain,acp-client,persistence,git}/src/**/*.ts",
+    ],
+    ignores: ["**/*.test.ts", "apps/server/server/test-support/**"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "TryStatement[handler!=null]",
+          message:
+            "Use Effect.try, Effect.tryPromise, Effect.catch, or Effect.catchTag with typed errors.",
+        },
+      ],
+    },
+  },
 );

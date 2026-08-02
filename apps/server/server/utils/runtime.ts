@@ -51,14 +51,15 @@ const productionProviderAdapters = (): ProviderAdapters => {
   const resolveAdapter = (
     provider: Provider,
   ): { readonly command: AdapterCommand; readonly ready: boolean } => {
-    try {
-      return {
-        command: { command: process.execPath, args: [adapterEntry(provider)] },
-        ready: true,
-      };
-    } catch {
-      return { command: unavailableAdapter(), ready: false };
-    }
+    return Effect.runSync(
+      Effect.try({
+        try: () => ({ command: process.execPath, args: [adapterEntry(provider)] }),
+        catch: () => undefined,
+      }).pipe(
+        Effect.map((command) => ({ command, ready: true }) as const),
+        Effect.catch(() => Effect.succeed({ command: unavailableAdapter(), ready: false })),
+      ),
+    );
   };
   const codex = resolveAdapter("codex");
   const claude = resolveAdapter("claude");

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import * as Effect from "effect/Effect";
 import { createError, defineEventHandler, type H3Error, type H3Event, readBody } from "h3";
 
 import type { ApplicationError } from "@metaclanker/application/commands";
@@ -87,10 +88,11 @@ export const publicError = (cause: unknown) => {
 
 /** Every API handler has the same safe public-error boundary. */
 export const defineApiHandler = <A>(handler: (event: H3Event) => A | Promise<A>) =>
-  defineEventHandler(async (event) => {
-    try {
-      return await handler(event);
-    } catch (cause) {
-      throw publicError(cause);
-    }
-  });
+  defineEventHandler((event) =>
+    Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => await handler(event),
+        catch: publicError,
+      }),
+    ),
+  );

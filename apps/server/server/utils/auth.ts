@@ -42,12 +42,9 @@ const isLoopbackHostname = (hostname: string): boolean =>
   hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
 
 const hostnameFromHost = (host: string | undefined): string | null => {
-  if (host === undefined) return null;
-  try {
-    return new URL(`http://${host}`).hostname;
-  } catch {
-    return null;
-  }
+  const value = host === undefined ? undefined : `http://${host}`;
+  if (value === undefined || !URL.canParse(value)) return null;
+  return new URL(value).hostname;
 };
 
 export const isTrustedLocalBootstrap = (input: {
@@ -63,11 +60,8 @@ export const isTrustedLocalBootstrap = (input: {
   const hostname = hostnameFromHost(input.host);
   if (hostname === null || !isLoopbackHostname(hostname)) return false;
   if (input.origin === undefined) return true;
-  try {
-    return isLoopbackHostname(new URL(input.origin).hostname);
-  } catch {
-    return false;
-  }
+  if (!URL.canParse(input.origin)) return false;
+  return isLoopbackHostname(new URL(input.origin).hostname);
 };
 
 const equal = (left: string, right: string): boolean => {

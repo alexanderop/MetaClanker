@@ -10,20 +10,21 @@ const publish = <Subscriber extends (event: ServerEvent) => void>(
   subscribers: Iterable<Subscriber>,
   event: ServerEvent,
   remove: (subscriber: Subscriber) => void,
-): void => {
-  for (const subscriber of subscribers) {
-    try {
-      subscriber(event);
-    } catch {
-      remove(subscriber);
-    }
-  }
-};
+): Effect.Effect<void> =>
+  Effect.forEach(
+    subscribers,
+    (subscriber) =>
+      Effect.try({
+        try: () => subscriber(event),
+        catch: () => "subscriber-failure" as const,
+      }).pipe(Effect.catch(() => Effect.sync(() => remove(subscriber)))),
+    { discard: true },
+  );
 
 export interface EventFanoutService {
-  readonly publishShell: (event: ServerEvent) => void;
+  readonly publishShell: (event: ServerEvent) => Effect.Effect<void>;
   readonly subscribeShell: (subscriber: ShellSubscriber) => () => void;
-  readonly publishThread: (threadId: ThreadId, event: ServerEvent) => void;
+  readonly publishThread: (threadId: ThreadId, event: ServerEvent) => Effect.Effect<void>;
   readonly subscribeThread: (threadId: ThreadId, subscriber: ThreadSubscriber) => () => void;
 }
 
@@ -54,9 +55,14 @@ export const eventFanoutLayer = Layer.effect(
       },
       publishThread: (threadId, event) => {
         const subscribers = threadSubscribers.get(threadId);
-        if (subscribers === undefined) return;
-        publish(subscribers, event, (subscriber) => subscribers.delete(subscriber));
-        if (subscribers.size === 0) threadSubscribers.delete(threadId);
+        if (subscribers === undefined) return Effect.void;
+        return publish(subscribers, event, (subscriber) => subscribers.delete(subscriber)).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (subscribers.size === 0) threadSubscribers.delete(threadId);
+            }),
+          ),
+        );
       },
       subscribeThread: (threadId, subscriber) => {
         const subscribers = threadSubscribers.get(threadId) ?? new Set<ThreadSubscriber>();

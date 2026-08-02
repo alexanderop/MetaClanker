@@ -13,7 +13,7 @@ export const publishShellEvent = async (event: ServerEvent): Promise<void> => {
   await runApplication(
     Effect.gen(function* () {
       const fanout = yield* EventFanout;
-      fanout.publishShell(event);
+      yield* fanout.publishShell(event);
     }),
   ).catch(() => undefined);
 };
@@ -31,7 +31,7 @@ export const publishThreadEvent = async (threadId: ThreadId, event: ServerEvent)
   await runApplication(
     Effect.gen(function* () {
       const fanout = yield* EventFanout;
-      fanout.publishThread(threadId, event);
+      yield* fanout.publishThread(threadId, event);
     }),
   ).catch(() => undefined);
 };

@@ -81,6 +81,9 @@ const submitAgentWork = (
 const applicationError = (code: ApplicationError["code"], message: string): ApplicationError =>
   new ApplicationError({ code, message });
 
+const fromPromise = <A>(operation: () => Promise<A>): Effect.Effect<A, unknown> =>
+  Effect.tryPromise({ try: operation, catch: (cause) => cause });
+
 const withStore = <A>(use: (store: MetaClankerStore) => Effect.Effect<A, StoreError>) =>
   runApplication(
     Effect.gen(function* () {
@@ -177,52 +180,60 @@ const openThreadSession = async (
   if (current !== undefined) return current;
   const opening = supervisor.opening(detail.thread.id);
   if (opening !== undefined) return opening;
-  const created = (async (): Promise<AcpSessionHandle> => {
-    const { commands } = await applicationProviderAdapters();
-    const handle = await runApplication(
-      makeAcpSessions(commands).open({
-        provider: detail.thread.provider,
-        cwd: project.path,
-        projectId: project.id,
-        threadId: detail.thread.id,
-        providerSessionId: detail.thread.providerSessionId,
-        model: detail.thread.model,
-        effort: options.effort,
-        permissionMode: options.permissionMode,
-      }),
-    );
-    try {
-      await withStore((store) =>
-        store.replaceProviderModels(
-          detail.thread.provider,
-          handle.capabilities.models,
-          new Date().toISOString(),
+  const created = Effect.runPromise(
+    Effect.gen(function* () {
+      const { commands } = yield* fromPromise(applicationProviderAdapters);
+      const handle = yield* fromPromise(() =>
+        runApplication(
+          makeAcpSessions(commands).open({
+            provider: detail.thread.provider,
+            cwd: project.path,
+            projectId: project.id,
+            threadId: detail.thread.id,
+            providerSessionId: detail.thread.providerSessionId,
+            model: detail.thread.model,
+            effort: options.effort,
+            permissionMode: options.permissionMode,
+          }),
         ),
       );
-      if (detail.thread.providerSessionId !== handle.providerSessionId) {
-        await withStore((store) =>
-          store.setProviderSession(detail.thread.id, handle.providerSessionId),
+      return yield* Effect.gen(function* () {
+        yield* fromPromise(() =>
+          withStore((store) =>
+            store.replaceProviderModels(
+              detail.thread.provider,
+              handle.capabilities.models,
+              new Date().toISOString(),
+            ),
+          ),
         );
-      }
-      if (!supervisor.registerSession(detail.thread.id, handle)) {
-        await runApplication(handle.close);
-        throw applicationError("conflict", "The server runtime is shutting down");
-      }
-      return handle;
-    } catch (cause) {
-      await runApplication(handle.close);
-      throw cause;
-    }
-  })();
+        if (detail.thread.providerSessionId !== handle.providerSessionId) {
+          yield* fromPromise(() =>
+            withStore((store) =>
+              store.setProviderSession(detail.thread.id, handle.providerSessionId),
+            ),
+          );
+        }
+        if (!supervisor.registerSession(detail.thread.id, handle)) {
+          return yield* Effect.fail(
+            applicationError("conflict", "The server runtime is shutting down"),
+          );
+        }
+        return handle;
+      }).pipe(
+        Effect.onError(() => fromPromise(() => runApplication(handle.close)).pipe(Effect.ignore)),
+      );
+    }),
+  );
   if (!supervisor.registerOpening(detail.thread.id, created)) {
-    await created.catch(() => undefined);
+    await Effect.runPromise(fromPromise(() => created).pipe(Effect.ignore));
     throw applicationError("conflict", "The server runtime is shutting down");
   }
-  try {
-    return await created;
-  } finally {
-    supervisor.clearOpening(detail.thread.id, created);
-  }
+  return await Effect.runPromise(
+    fromPromise(() => created).pipe(
+      Effect.ensuring(Effect.sync(() => supervisor.clearOpening(detail.thread.id, created))),
+    ),
+  );
 };
 
 interface TurnContext {
@@ -773,23 +784,46 @@ export const cancelPrompt = async (commandId: CommandId, threadId: ThreadId): Pr
     threadId,
     status: "cancelling",
   });
-  try {
-    await runApplication(session.requestCancel());
-    const awaiting = await withStore((store) =>
-      store.markCancelAwaiting(admitted.turnId, admitted.leaseId, new Date().toISOString()),
-    );
-    if (!awaiting) throw applicationError("conflict", "Cancellation work is no longer active");
-  } catch (cause) {
-    const markedUncertain = await withStore((store) =>
-      store.markCancelUncertain(admitted.turnId, admitted.leaseId, new Date().toISOString()),
-    );
-    if (!markedUncertain) throw applicationError("conflict", "Cancellation work lease was lost");
-    await publishStatus(threadId, "recovery-required");
-    await withStore((store) =>
-      store.completeTurn(admitted.turnId, "recovery-required", new Date().toISOString()),
-    );
-    throw cause;
-  }
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* fromPromise(() => runApplication(session.requestCancel()));
+      const awaiting = yield* fromPromise(() =>
+        withStore((store) =>
+          store.markCancelAwaiting(admitted.turnId, admitted.leaseId, new Date().toISOString()),
+        ),
+      );
+      if (!awaiting) {
+        return yield* Effect.fail(
+          applicationError("conflict", "Cancellation work is no longer active"),
+        );
+      }
+    }).pipe(
+      Effect.tapError(() =>
+        Effect.gen(function* () {
+          const markedUncertain = yield* fromPromise(() =>
+            withStore((store) =>
+              store.markCancelUncertain(
+                admitted.turnId,
+                admitted.leaseId,
+                new Date().toISOString(),
+              ),
+            ),
+          );
+          if (!markedUncertain) {
+            return yield* Effect.fail(
+              applicationError("conflict", "Cancellation work lease was lost"),
+            );
+          }
+          yield* fromPromise(() => publishStatus(threadId, "recovery-required"));
+          yield* fromPromise(() =>
+            withStore((store) =>
+              store.completeTurn(admitted.turnId, "recovery-required", new Date().toISOString()),
+            ),
+          );
+        }),
+      ),
+    ),
+  );
 };
 
 export const respondToInteraction = async (
@@ -835,30 +869,39 @@ export const respondToInteraction = async (
     await publishStatus(stale.threadId, "recovery-required");
     return stale;
   }
-  try {
-    // Publish before the provider can resume and complete, preserving the
-    // durable needs-input -> running -> terminal event order.
-    await publishStatus(admitted.interaction.threadId, "running");
-    await runApplication(session.respondInteraction(interactionId, optionId));
-  } catch (cause) {
-    const persisted = await withStore((store) =>
-      store.settleInteractionResponse(
-        interactionId,
-        admitted.leaseId,
-        "stale",
-        "uncertain",
-        new Date().toISOString(),
-        "provider-response-uncertain",
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      // Publish before the provider can resume and complete, preserving the
+      // durable needs-input -> running -> terminal event order.
+      yield* fromPromise(() => publishStatus(admitted.interaction.threadId, "running"));
+      yield* fromPromise(() => runApplication(session.respondInteraction(interactionId, optionId)));
+    }).pipe(
+      Effect.tapError(() =>
+        Effect.gen(function* () {
+          const persisted = yield* fromPromise(() =>
+            withStore((store) =>
+              store.settleInteractionResponse(
+                interactionId,
+                admitted.leaseId,
+                "stale",
+                "uncertain",
+                new Date().toISOString(),
+                "provider-response-uncertain",
+              ),
+            ),
+          );
+          yield* fromPromise(() =>
+            publishThreadEvent(persisted.record.threadId, {
+              type: "interaction-upserted",
+              sequence: persisted.eventSequence,
+              interaction: persisted.record,
+            }),
+          );
+          yield* fromPromise(() => publishStatus(persisted.record.threadId, "recovery-required"));
+        }),
       ),
-    );
-    await publishThreadEvent(persisted.record.threadId, {
-      type: "interaction-upserted",
-      sequence: persisted.eventSequence,
-      interaction: persisted.record,
-    });
-    await publishStatus(persisted.record.threadId, "recovery-required");
-    throw cause;
-  }
+    ),
+  );
   const persisted = await withStore((store) =>
     store.settleInteractionResponse(
       interactionId,
@@ -941,32 +984,28 @@ export const restoreThreadFiles = async (
     await publishThreadEvent(threadId, event);
     await publishShellEvent(event);
   };
-  let undo;
-  try {
-    undo = await runApplication(
-      Effect.gen(function* () {
-        const checkpoints = yield* CheckpointsService;
-        return yield* checkpoints.restore(record.checkpoint, admitted.undoCheckpointId);
-      }),
-    );
-  } catch (cause) {
-    await markUncertain();
-    throw cause;
-  }
-  let persisted;
-  try {
-    persisted = await withStore((store) =>
-      store.completeRestore(commandId, admitted.leaseId, {
-        checkpoint: undo,
-        threadId,
-        turnId: record.turnId,
-        kind: "undo",
-      }),
-    );
-  } catch (cause) {
-    await markUncertain();
-    throw cause;
-  }
+  const undo = await Effect.runPromise(
+    fromPromise(() =>
+      runApplication(
+        Effect.gen(function* () {
+          const checkpoints = yield* CheckpointsService;
+          return yield* checkpoints.restore(record.checkpoint, admitted.undoCheckpointId);
+        }),
+      ),
+    ).pipe(Effect.tapError(() => fromPromise(markUncertain))),
+  );
+  const persisted = await Effect.runPromise(
+    fromPromise(() =>
+      withStore((store) =>
+        store.completeRestore(commandId, admitted.leaseId, {
+          checkpoint: undo,
+          threadId,
+          turnId: record.turnId,
+          kind: "undo",
+        }),
+      ),
+    ).pipe(Effect.tapError(() => fromPromise(markUncertain))),
+  );
   if (persisted === null) {
     throw applicationError("conflict", "Restore work lease was lost");
   }
