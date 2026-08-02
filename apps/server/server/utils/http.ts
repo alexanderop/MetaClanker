@@ -13,9 +13,9 @@ const isApplicationError = (cause: unknown): cause is ApplicationError =>
   "message" in cause &&
   typeof cause.message === "string";
 
-export const decodeBody = async <A, I>(
+export const decodeBody = async <A>(
   event: H3Event,
-  schema: Schema.Schema<A, I, never>,
+  schema: Schema.ConstraintDecoder<A, never>,
 ): Promise<A> => {
   const body: unknown = await readBody<unknown>(event);
   return Schema.decodeUnknownPromise(schema)(body).catch(() => {

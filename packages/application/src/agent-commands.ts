@@ -1,4 +1,6 @@
-import { Context } from "effect";
+import { Context, type Effect } from "effect";
+
+import type { ApplicationError } from "./commands.js";
 
 import type {
   CommandId,
@@ -21,34 +23,42 @@ export interface StartAgentThreadInput {
 }
 
 export interface AgentCommandsService {
-  readonly providerReadiness: () => Promise<
+  readonly providerReadiness: () => Effect.Effect<
     ReadonlyArray<{
       readonly provider: Provider;
       readonly status: "ready" | "unavailable";
       readonly reason: string | null;
-    }>
+    }>,
+    ApplicationError
   >;
-  readonly startThread: (input: StartAgentThreadInput) => Promise<{
-    readonly accepted: true;
-    readonly thread: Thread;
-    readonly turnId: TurnId;
-  }>;
+  readonly startThread: (
+    input: StartAgentThreadInput,
+  ) => Effect.Effect<
+    { readonly accepted: true; readonly thread: Thread; readonly turnId: TurnId },
+    ApplicationError
+  >;
   readonly dispatchPrompt: (
     commandId: CommandId,
     threadId: ThreadId,
     text: string,
     attachments: ReadonlyArray<string>,
-  ) => Promise<TurnId>;
-  readonly cancelPrompt: (threadId: ThreadId) => Promise<void>;
+  ) => Effect.Effect<TurnId, ApplicationError>;
+  readonly cancelPrompt: (
+    commandId: CommandId,
+    threadId: ThreadId,
+  ) => Effect.Effect<void, ApplicationError>;
   readonly respondToInteraction: (
     commandId: CommandId,
     interactionId: PendingInteractionId,
     optionId: string,
-  ) => Promise<PendingInteraction>;
-  readonly restoreThreadFiles: (threadId: ThreadId, checkpointId: string) => Promise<unknown>;
+  ) => Effect.Effect<PendingInteraction, ApplicationError>;
+  readonly restoreThreadFiles: (
+    commandId: CommandId,
+    threadId: ThreadId,
+    checkpointId: string,
+  ) => Effect.Effect<unknown, ApplicationError>;
 }
 
-export class AgentCommands extends Context.Tag("@metaclanker/application/AgentCommands")<
-  AgentCommands,
-  AgentCommandsService
->() {}
+export class AgentCommands extends Context.Service<AgentCommands, AgentCommandsService>()(
+  "@metaclanker/application/AgentCommands",
+) {}

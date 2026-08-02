@@ -1,4 +1,4 @@
-import { SqlClient } from "@effect/sql";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { Effect, Schema } from "effect";
 
 const ColumnRow = Schema.Struct({ name: Schema.String });
@@ -33,7 +33,7 @@ export const runMigrations = Effect.gen(function* () {
   const addColumn = (table: string, column: string, definition: string) =>
     Effect.gen(function* () {
       const rows = yield* sql.unsafe<{ readonly name: string }>(`PRAGMA table_info(${table})`);
-      const columns = yield* Schema.decodeUnknown(Schema.Array(ColumnRow))(rows);
+      const columns = yield* Schema.decodeUnknownEffect(Schema.Array(ColumnRow))(rows);
       if (!columns.some((candidate) => candidate.name === column)) {
         yield* sql.unsafe(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
       }
@@ -60,4 +60,17 @@ export const runMigrations = Effect.gen(function* () {
       WHERE schema_version = 1 AND json_extract(payload_json, '$.origin') IS NULL`;
     yield* sql`INSERT INTO schema_migrations(version, applied_at) VALUES (6, datetime('now'))`;
   }
+
+  yield* addColumn("side_effect_intents", "attempt", "INTEGER NOT NULL DEFAULT 0");
+  yield* addColumn("side_effect_intents", "lease_id", "TEXT");
+  yield* addColumn("side_effect_intents", "lease_expires_at", "TEXT");
+  yield* addColumn("side_effect_intents", "phase", "TEXT NOT NULL DEFAULT 'admitted'");
+  yield* addColumn("side_effect_intents", "failure_reason", "TEXT");
+  yield* sql`UPDATE side_effect_intents
+    SET phase = CASE
+      WHEN state IN ('succeeded', 'failed', 'recovery-required') THEN 'completed'
+      ELSE 'admitted'
+    END
+    WHERE phase = 'admitted'`;
+  yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (7, datetime('now'))`;
 }).pipe(Effect.withSpan("persistence.migrations"));

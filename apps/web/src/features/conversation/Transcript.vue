@@ -22,7 +22,9 @@ const props = defineProps<{ detail: ThreadDetail }>();
 
 const timeline = computed(() => conversationTimeline(props.detail));
 const pendingInteractions = computed(() =>
-  props.detail.interactions.filter((interaction) => interaction.status === "pending"),
+  props.detail.interactions.filter(
+    (interaction) => interaction.status === "pending" || interaction.status === "dispatching",
+  ),
 );
 const cacheMarkdown = computed(() => props.detail.thread.status !== "running");
 

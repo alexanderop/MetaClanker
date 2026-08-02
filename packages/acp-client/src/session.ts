@@ -103,7 +103,7 @@ const subagentState = (status: acp.ToolCallStatus | null | undefined) => {
   return "running" as const;
 };
 
-const noopEmitter = (): Effect.Effect<void> => Effect.void;
+const noopEmitter = (): Promise<void> => Promise.resolve();
 
 interface PendingPermission {
   readonly resolve: (response: acp.RequestPermissionResponse) => void;
@@ -200,7 +200,7 @@ const openSession = (
         }
       });
 
-      let activeEmitter: (event: NormalizedAgentEvent) => Effect.Effect<void> = noopEmitter;
+      let activeEmitter: (event: NormalizedAgentEvent) => Promise<void> = noopEmitter;
       let activeTurnId: typeof TurnId.Type | null = null;
       let providerSessionId: string | null = input.providerSessionId;
       let ignoreReplay = input.providerSessionId !== null;
@@ -212,29 +212,27 @@ const openSession = (
       const emitUpdate = async (update: acp.SessionUpdate): Promise<void> => {
         if (activeTurnId === null || ignoreReplay) return;
         for (const event of normalizeSessionUpdate(update)) {
-          await Effect.runPromise(activeEmitter(event));
+          await activeEmitter(event);
         }
         const subagent = decodeSubagentMetadata(input.provider, update._meta);
         if (subagent?.provider === "codex") {
           const nodeId = AgentNodeId.make(`codex:${input.threadId}:${subagent.threadId}`);
-          await Effect.runPromise(
-            activeEmitter({
-              type: "agent-node",
-              node: {
-                id: nodeId,
-                threadId: input.threadId,
-                parentId: rootNodeId,
-                name: subagent.path ?? `Codex subagent ${subagent.threadId.slice(0, 8)}`,
-                provider: "codex",
-                model: null,
-                state: subagent.activity === "interrupted" ? "interrupted" : "running",
-                activity: subagent.activity,
-                childCount: 0,
-                pendingApproval: false,
-                changedFileCount: 0,
-              },
-            }),
-          );
+          await activeEmitter({
+            type: "agent-node",
+            node: {
+              id: nodeId,
+              threadId: input.threadId,
+              parentId: rootNodeId,
+              name: subagent.path ?? `Codex subagent ${subagent.threadId.slice(0, 8)}`,
+              provider: "codex",
+              model: null,
+              state: subagent.activity === "interrupted" ? "interrupted" : "running",
+              activity: subagent.activity,
+              childCount: 0,
+              pendingApproval: false,
+              changedFileCount: 0,
+            },
+          });
         }
         if (
           subagent?.provider === "claude" &&
@@ -248,24 +246,22 @@ const openSession = (
             subagent.parentToolUseId === null
               ? rootNodeId
               : (claudeNodesByTool.get(subagent.parentToolUseId) ?? rootNodeId);
-          await Effect.runPromise(
-            activeEmitter({
-              type: "agent-node",
-              node: {
-                id: nodeId,
-                threadId: input.threadId,
-                parentId,
-                name: update.title ?? "Claude subagent",
-                provider: "claude",
-                model: null,
-                state: subagentState(update.status),
-                activity: update.title ?? "Working",
-                childCount: 0,
-                pendingApproval: false,
-                changedFileCount: 0,
-              },
-            }),
-          );
+          await activeEmitter({
+            type: "agent-node",
+            node: {
+              id: nodeId,
+              threadId: input.threadId,
+              parentId,
+              name: update.title ?? "Claude subagent",
+              provider: "claude",
+              model: null,
+              state: subagentState(update.status),
+              activity: update.title ?? "Working",
+              childCount: 0,
+              pendingApproval: false,
+              changedFileCount: 0,
+            },
+          });
         }
       };
 
@@ -298,30 +294,28 @@ const openSession = (
           const response = new Promise<acp.RequestPermissionResponse>((resolve) => {
             permissions.set(id, { resolve, sessionId: params.sessionId });
           });
-          await Effect.runPromise(
-            activeEmitter({
-              type: "permission",
-              interaction: {
-                id,
-                projectId: input.projectId,
-                threadId: input.threadId,
-                turnId: activeTurnId,
-                nodeId: rootNodeId,
-                kind: "permission",
-                title: params.toolCall.title ?? "Permission required",
-                description: params.toolCall.rawInput
-                  ? JSON.stringify(params.toolCall.rawInput, null, 2)
-                  : "The agent needs permission to continue.",
-                options: params.options.map((option) => ({
-                  optionId: option.optionId,
-                  label: option.name,
-                  kind: permissionKind(option.kind),
-                })),
-                status: "pending",
-                createdAt: new Date().toISOString(),
-              },
-            }),
-          );
+          await activeEmitter({
+            type: "permission",
+            interaction: {
+              id,
+              projectId: input.projectId,
+              threadId: input.threadId,
+              turnId: activeTurnId,
+              nodeId: rootNodeId,
+              kind: "permission",
+              title: params.toolCall.title ?? "Permission required",
+              description: params.toolCall.rawInput
+                ? JSON.stringify(params.toolCall.rawInput, null, 2)
+                : "The agent needs permission to continue.",
+              options: params.options.map((option) => ({
+                optionId: option.optionId,
+                label: option.name,
+                kind: permissionKind(option.kind),
+              })),
+              status: "pending",
+              createdAt: new Date().toISOString(),
+            },
+          });
           return response;
         });
 
@@ -524,7 +518,7 @@ const openSession = (
             clearTimeout(force);
           },
           catch: () => undefined,
-        }).pipe(Effect.catchAll(() => Effect.void)),
+        }).pipe(Effect.catch(() => Effect.void)),
       } satisfies AcpSessionHandle;
     },
     catch: (cause) => (cause instanceof RuntimeFailure ? cause : runtimeFailure("spawn", cause)),

@@ -41,8 +41,8 @@ export default defineEventHandler(async (event) => {
       sequence: mutation.eventSequence,
       thread: mutation.record,
     } as const;
-    publishShellEvent(liveEvent);
-    publishThreadEvent(result.thread.id, liveEvent);
+    await publishShellEvent(liveEvent);
+    await publishThreadEvent(result.thread.id, liveEvent);
   }
   return result.thread;
 });

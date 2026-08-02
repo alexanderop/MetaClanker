@@ -164,6 +164,19 @@ invariants, command idempotency models, and settings migrations.
 - Files: colocated `*.unit.test.ts`.
 - Command: `pnpm test:unit`.
 
+#### Effect tests
+
+Effect-backed Node tests use `@effect/vitest`, pinned to the selected Effect 4 beta tuple and wrapping
+the existing Vitest runner; it is not another test lane or runner. Use `it.effect` for deterministic
+Effect programs and `it.live` only when a test genuinely needs the live clock, filesystem, subprocess,
+Git, lock, or SQLite. Each test builds fresh scoped mutable infrastructure. Use `Effect.exit` to assert
+typed failures. `it.flakyTest`, Vitest retries, and elapsed-time success conditions remain prohibited.
+
+The TypeScript baseline keeps `strict` enabled and must remain at least as strict as the Effect
+package requirement. ESLint warns on new named imports from the `effect` barrel; use namespace
+submodule imports such as `import * as Effect from "effect/Effect"` in new backend code. The warning
+is a migration ratchet until the existing imports are converted deliberately.
+
 #### Example
 
 ```ts

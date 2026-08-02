@@ -17,7 +17,7 @@ export default defineEventHandler(async (event) => {
       throw publicError(cause);
     },
   );
-  publishShellEvent({
+  await publishShellEvent({
     type: "project-upserted",
     sequence: result.eventSequence,
     project: result.record,

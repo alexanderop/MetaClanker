@@ -14,7 +14,6 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@effect/sql": "catalog:",
     "@effect/sql-sqlite-node": "catalog:",
     "@metaclanker/application": "workspace:*",
     "@metaclanker/contracts": "workspace:*",

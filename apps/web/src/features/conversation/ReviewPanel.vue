@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 
-import type { ThreadId } from "@metaclanker/contracts/ids";
+import { CommandId, type ThreadId } from "@metaclanker/contracts/ids";
 import type { RestorePreviewResponse, ReviewResponse } from "@metaclanker/contracts/wire";
 
 import { Button } from "../../ui/button/index.js";
@@ -76,7 +76,13 @@ function useRestore() {
   const restore = async (): Promise<void> => {
     const checkpointId = selectedCheckpointId.value;
     if (!confirmed.value || checkpointId === null) return;
-    const restored = await run(() => api.restoreFiles(props.threadId, checkpointId));
+    const restored = await run(() =>
+      api.restoreFiles(props.threadId, {
+        commandId: CommandId.make(crypto.randomUUID()),
+        checkpointId,
+        confirmed: true,
+      }),
+    );
     if (restored === null) return;
     emit("restored");
     emit("close");

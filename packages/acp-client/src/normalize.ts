@@ -7,13 +7,13 @@ import type { Provider } from "@metaclanker/contracts/wire";
 
 const CodexSubagent = Schema.Struct({
   threadId: Schema.String,
-  path: Schema.optional(Schema.String),
-  activity: Schema.optional(Schema.Literal("started", "interacted", "interrupted")),
+  path: Schema.optionalKey(Schema.String),
+  activity: Schema.optionalKey(Schema.Literals(["started", "interacted", "interrupted"])),
 });
 
 const ClaudeSubagent = Schema.Struct({
   subagent: Schema.Boolean,
-  parentToolUseId: Schema.optional(Schema.String),
+  parentToolUseId: Schema.optionalKey(Schema.String),
 });
 
 export type SubagentMetadata =

@@ -1,4 +1,5 @@
 import eslint from "@eslint/js";
+import effect from "@effect/eslint-plugin";
 import tseslint from "typescript-eslint";
 import vue from "eslint-plugin-vue";
 
@@ -52,6 +53,17 @@ export default tseslint.config(
       "vue/multi-word-component-names": "off",
       "vue/no-v-html": "off",
       "vue/singleline-html-element-content-newline": "off",
+    },
+  },
+  {
+    // Effect's named root imports obscure the module boundary and make the
+    // dependency surface of an effect harder to read. This starts as a
+    // warning because the existing codebase uses the old style extensively;
+    // new backend code should use `import * as Effect from "effect/Effect"`.
+    files: ["{apps,packages}/**/*.{ts,tsx,cts,vue}"],
+    plugins: { effect },
+    rules: {
+      "effect/no-import-from-barrel-package": ["warn", { packageNames: ["effect"] }],
     },
   },
   {

@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Effect, ManagedRuntime } from "effect";
-import { SqlClient } from "@effect/sql";
-import { SqliteClient } from "@effect/sql-sqlite-node";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqliteClient from "@effect/sql-sqlite-node/SqliteClient";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { Store } from "@metaclanker/application/commands";
@@ -145,6 +145,202 @@ describe("SQLite event store", () => {
     });
     expect(result.replayedProjection.shell).toEqual(result.shell);
     expect(result.replayedProjection.threads[result.first.thread.id]).toEqual(result.detail);
+  });
+
+  it("fences prompt intent claims and transitions by the active lease", async () => {
+    const filename = await temporaryDatabase();
+    const runtime = ManagedRuntime.make(databaseLayer(filename));
+    const result = await runtime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const projectId = ProjectId.make("project:intent-lease");
+        const turnId = TurnId.make("turn:intent-lease");
+        yield* store.createProject({
+          id: projectId,
+          commandId: CommandId.make("command:intent-project"),
+          name: "Intent lease",
+          path: "/tmp/intent-lease",
+          gitBranch: null,
+          gitStatus: "unavailable",
+          createdAt: "2026-08-02T00:00:00.000Z",
+        });
+        yield* store.startThread({
+          id: ThreadId.make("thread:intent-lease"),
+          turnId,
+          userMessageId: MessageId.make("message:intent-lease"),
+          commandId: CommandId.make("command:intent-prompt"),
+          projectId,
+          provider: "codex",
+          title: "Lease prompt",
+          model: null,
+          prompt: "Lease prompt",
+          attachments: [],
+          createdAt: "2026-08-02T00:00:01.000Z",
+        });
+        const claimed = yield* store.claimPromptIntent(
+          turnId,
+          "lease:current",
+          "2026-08-02T00:05:00.000Z",
+        );
+        const duplicateClaim = yield* store.claimPromptIntent(
+          turnId,
+          "lease:stale",
+          "2026-08-02T00:05:00.000Z",
+        );
+        const staleTransition = yield* store.transitionPromptIntent(
+          turnId,
+          "lease:stale",
+          "dispatching-provider",
+          "2026-08-02T00:00:02.000Z",
+        );
+        const currentTransition = yield* store.transitionPromptIntent(
+          turnId,
+          "lease:current",
+          "dispatching-provider",
+          "2026-08-02T00:00:02.000Z",
+        );
+        return { claimed, duplicateClaim, staleTransition, currentTransition };
+      }),
+    );
+    await runtime.dispose();
+
+    expect(result.claimed).toMatchObject({
+      intentId: "turn:intent-lease",
+      leaseId: "lease:current",
+      attempt: 1,
+      phase: "leased",
+    });
+    expect(result.duplicateClaim).toBeNull();
+    expect(result.staleTransition).toBe(false);
+    expect(result.currentTransition).toBe(true);
+  });
+
+  it("admits a cancellation once before the provider notification and settles it with the turn", async () => {
+    const filename = await temporaryDatabase();
+    const runtime = ManagedRuntime.make(databaseLayer(filename));
+    const result = await runtime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const projectId = ProjectId.make("project:cancel");
+        const threadId = ThreadId.make("thread:cancel");
+        const turnId = TurnId.make("turn:cancel");
+        const commandId = CommandId.make("command:cancel");
+        yield* store.createProject({
+          id: projectId,
+          commandId: CommandId.make("command:cancel-project"),
+          name: "Cancel prompt",
+          path: "/tmp/cancel-prompt",
+          gitBranch: null,
+          gitStatus: "unavailable",
+          createdAt: "2026-08-02T00:00:00.000Z",
+        });
+        yield* store.startThread({
+          id: threadId,
+          turnId,
+          userMessageId: MessageId.make("message:cancel"),
+          commandId: CommandId.make("command:cancel-prompt"),
+          projectId,
+          provider: "codex",
+          title: "Cancel prompt",
+          model: null,
+          prompt: "Cancel prompt",
+          attachments: [],
+          createdAt: "2026-08-02T00:00:01.000Z",
+        });
+        const admitted = yield* store.admitCancel({
+          commandId,
+          threadId,
+          leaseId: "lease:cancel",
+          createdAt: "2026-08-02T00:00:02.000Z",
+        });
+        const replayed = yield* store.admitCancel({
+          commandId,
+          threadId,
+          leaseId: "lease:cancel-replay",
+          createdAt: "2026-08-02T00:00:03.000Z",
+        });
+        const awaiting = yield* store.markCancelAwaiting(
+          turnId,
+          "lease:cancel",
+          "2026-08-02T00:00:04.000Z",
+        );
+        yield* store.completeTurn(turnId, "cancelled", "2026-08-02T00:00:05.000Z");
+        return { admitted, replayed, awaiting, detail: yield* store.getThread(threadId) };
+      }),
+    );
+    await runtime.dispose();
+
+    expect(result.admitted).toMatchObject({ acceptedNow: true, turnId: "turn:cancel" });
+    expect(result.replayed).toEqual({
+      acceptedNow: false,
+      turnId: "turn:cancel",
+      eventSequence: null,
+    });
+    expect(result.awaiting).toBe(true);
+    expect(result.detail?.thread.status).toBe("cancelling");
+  });
+
+  it("marks an admitted destructive restore recovery-required without replaying it after restart", async () => {
+    const filename = await temporaryDatabase();
+    const projectId = ProjectId.make("project:restore-recovery");
+    const threadId = ThreadId.make("thread:restore-recovery");
+    const commandId = CommandId.make("command:restore-recovery");
+    const firstRuntime = ManagedRuntime.make(databaseLayer(filename));
+    const admitted = await firstRuntime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        yield* store.createProject({
+          id: projectId,
+          commandId: CommandId.make("command:restore-recovery-project"),
+          name: "Restore recovery",
+          path: "/tmp/restore-recovery",
+          gitBranch: null,
+          gitStatus: "unavailable",
+          createdAt: "2026-08-02T00:00:00.000Z",
+        });
+        yield* store.createThread({
+          id: threadId,
+          commandId: CommandId.make("command:restore-recovery-thread"),
+          projectId,
+          provider: "codex",
+          title: "Restore recovery",
+          model: null,
+          createdAt: "2026-08-02T00:00:01.000Z",
+        });
+        return yield* store.admitRestore({
+          commandId,
+          threadId,
+          checkpointId: "checkpoint:source",
+          undoCheckpointId: "checkpoint:undo",
+          leaseId: "lease:restore",
+          createdAt: "2026-08-02T00:00:02.000Z",
+        });
+      }),
+    );
+    await firstRuntime.dispose();
+
+    const restarted = ManagedRuntime.make(databaseLayer(filename));
+    const recovered = await restarted.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        return {
+          detail: yield* store.getThread(threadId),
+          replayed: yield* store.admitRestore({
+            commandId,
+            threadId,
+            checkpointId: "checkpoint:source",
+            undoCheckpointId: "checkpoint:other",
+            leaseId: "lease:restore-replay",
+            createdAt: "2026-08-02T00:00:03.000Z",
+          }),
+        };
+      }),
+    );
+    await restarted.dispose();
+
+    expect(admitted).toMatchObject({ acceptedNow: true, undoCheckpointId: "checkpoint:undo" });
+    expect(recovered.detail?.thread.status).toBe("recovery-required");
+    expect(recovered.replayed).toEqual({ acceptedNow: false, undoCheckpointId: "checkpoint:undo" });
   });
 
   it("accepts concurrent retries of a follow-up turn exactly once", async () => {
@@ -461,6 +657,17 @@ describe("SQLite event store", () => {
           options: [{ optionId: "allow", label: "Allow", kind: "allow-once" }],
           status: "pending",
           createdAt: "2026-08-01T00:00:00.000Z",
+        });
+        const admitted = yield* store.admitInteractionResponse({
+          commandId: CommandId.make("command:interaction-recovery"),
+          interactionId,
+          optionId: "allow",
+          leaseId: "lease:interaction-recovery",
+          createdAt: "2026-08-01T00:00:01.500Z",
+        });
+        expect(admitted).toMatchObject({
+          acceptedNow: true,
+          interaction: { status: "dispatching" },
         });
       }),
     );

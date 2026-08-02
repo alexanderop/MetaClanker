@@ -9,6 +9,7 @@ import { adapterEntry, type AdapterCommand } from "@metaclanker/acp-client/sessi
 import type { Provider } from "@metaclanker/contracts/wire";
 import { AgentCommands } from "@metaclanker/application/agent-commands";
 import type { AgentCommandsService } from "@metaclanker/application/agent-commands";
+import type { ApplicationError } from "@metaclanker/application/commands";
 import type { CheckpointService, Files, Store } from "@metaclanker/application/commands";
 import { CheckpointService as ApplicationCheckpointService } from "@metaclanker/application/commands";
 import {
@@ -18,10 +19,12 @@ import {
 } from "@metaclanker/git/checkpoints";
 import { databaseLayer } from "@metaclanker/persistence/database";
 
-import type { AgentWork } from "./agent-work.js";
-import { agentWorkLayer } from "./agent-work.js";
 import type { LocalDiagnostics } from "./local-diagnostics.js";
 import { localDiagnosticsLayer } from "./local-diagnostics.js";
+import type { TurnSupervisor } from "./turn-supervisor.js";
+import { turnSupervisorLayer } from "./turn-supervisor.js";
+import type { EventFanout } from "./event-fanout.js";
+import { eventFanoutLayer } from "./event-fanout.js";
 import { agentCommandsLayer } from "../services/agent-commands.js";
 
 type ApplicationRequirements =
@@ -30,8 +33,9 @@ type ApplicationRequirements =
   | Files
   | CheckpointsService
   | CheckpointService
-  | AgentWork
-  | LocalDiagnostics;
+  | LocalDiagnostics
+  | TurnSupervisor
+  | EventFanout;
 
 export interface ProviderAdapters {
   readonly commands: Readonly<Record<Provider, AdapterCommand>>;
@@ -94,7 +98,7 @@ const run = async <A, E>(
 ): Promise<A> => {
   const exit = await runtime.runPromiseExit(effect);
   if (Exit.isSuccess(exit)) return exit.value;
-  const failure = Cause.failureOption(exit.cause);
+  const failure = Cause.findErrorOption(exit.cause);
   if (Option.isSome(failure)) throw failure.value;
   throw Cause.squash(exit.cause);
 };
@@ -117,8 +121,9 @@ export const makeApplicationRuntime = (
           return yield* CheckpointsService;
         }),
       ).pipe(Layer.provide(checkpoints)),
-      agentWorkLayer,
       localDiagnosticsLayer(resolvedDataDirectory),
+      turnSupervisorLayer,
+      eventFanoutLayer,
       agentCommandsLayer,
     ),
   );
@@ -143,12 +148,12 @@ export const runApplication = async <A, E>(
 ): Promise<A> => await (await currentApplicationRuntime()).runApplication(effect);
 
 export const runAgentCommand = async <A>(
-  use: (commands: AgentCommandsService) => Promise<A>,
+  use: (commands: AgentCommandsService) => Effect.Effect<A, ApplicationError>,
 ): Promise<A> =>
   await runApplication(
     Effect.gen(function* () {
       const commands = yield* AgentCommands;
-      return yield* Effect.tryPromise({ try: () => use(commands), catch: (cause) => cause });
+      return yield* use(commands);
     }),
   );
 

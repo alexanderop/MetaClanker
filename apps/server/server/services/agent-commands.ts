@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect";
 
 import { AgentCommands } from "@metaclanker/application/agent-commands";
+import { ApplicationError } from "@metaclanker/application/commands";
 
 import {
   cancelPrompt,
@@ -11,17 +12,27 @@ import {
   startThreadWithPrompt,
 } from "../utils/orchestrator.js";
 
+const commandFailure = (cause: unknown): ApplicationError =>
+  cause instanceof ApplicationError
+    ? cause
+    : new ApplicationError({ code: "persistence", message: "Agent command failed" });
+
+const fromOrchestrator = <A>(operation: () => Promise<A>): Effect.Effect<A, ApplicationError> =>
+  Effect.tryPromise({ try: operation, catch: commandFailure });
+
 /** Server adapter for the application-level agent command port. */
 export const agentCommandsLayer = Layer.effect(
   AgentCommands,
   Effect.sync(() => ({
-    providerReadiness: () => listProviderReadiness(),
-    startThread: (input) => startThreadWithPrompt(input),
+    providerReadiness: () => fromOrchestrator(listProviderReadiness),
+    startThread: (input) => fromOrchestrator(() => startThreadWithPrompt(input)),
     dispatchPrompt: (commandId, threadId, text, attachments) =>
-      dispatchPrompt(commandId, threadId, text, attachments),
-    cancelPrompt: (threadId) => cancelPrompt(threadId),
+      fromOrchestrator(() => dispatchPrompt(commandId, threadId, text, attachments)),
+    cancelPrompt: (commandId, threadId) =>
+      fromOrchestrator(() => cancelPrompt(commandId, threadId)),
     respondToInteraction: (commandId, interactionId, optionId) =>
-      respondToInteraction(commandId, interactionId, optionId),
-    restoreThreadFiles: (threadId, checkpointId) => restoreThreadFiles(threadId, checkpointId),
+      fromOrchestrator(() => respondToInteraction(commandId, interactionId, optionId)),
+    restoreThreadFiles: (commandId, threadId, checkpointId) =>
+      fromOrchestrator(() => restoreThreadFiles(commandId, threadId, checkpointId)),
   })),
 );

@@ -130,7 +130,7 @@ const gitFileKinds = (root: string) =>
       "--ignored",
       "-z",
       "--untracked-files=all",
-    ]).pipe(Effect.catchAll(() => Effect.succeed("")));
+    ]).pipe(Effect.catch(() => Effect.succeed("")));
     const kinds = new Map<string, CheckpointFile["kind"]>();
     const records = status.split("\0").filter((record) => record.length >= 4);
     for (const record of records) {
@@ -208,10 +208,10 @@ const compareCheckpoints = (before: Checkpoint, after: Checkpoint) =>
   });
 
 const makeCheckpoints = (storageRoot: string): Checkpoints => {
-  const capture: Checkpoints["capture"] = (projectPath) =>
+  const capture: Checkpoints["capture"] = (projectPath, checkpointId = crypto.randomUUID()) =>
     Effect.gen(function* () {
       const root = yield* validateRoot(projectPath);
-      const id = crypto.randomUUID();
+      const id = checkpointId;
       const checkpointRoot = join(storageRoot, id);
       const filesRoot = join(checkpointRoot, "files");
       yield* Effect.tryPromise({
@@ -289,10 +289,10 @@ const makeCheckpoints = (storageRoot: string): Checkpoints => {
     diff: (before, after) =>
       compareCheckpoints(before, after).pipe(Effect.mapError((cause) => failure("diff", cause))),
     previewRestore,
-    restore: (checkpoint) =>
+    restore: (checkpoint, undoCheckpointId) =>
       Effect.gen(function* () {
         const root = yield* validateRoot(checkpoint.projectPath);
-        const undo = yield* capture(root);
+        const undo = yield* capture(root, undoCheckpointId);
         const excludedRoot = yield* Effect.tryPromise({
           try: () => realpath(storageRoot),
           catch: (cause) => failure("restore", cause),
@@ -341,10 +341,9 @@ const makeCheckpoints = (storageRoot: string): Checkpoints => {
 export const checkpointsLayer = (storageRoot: string) =>
   Layer.succeed(CheckpointsService, makeCheckpoints(storageRoot));
 
-export class CheckpointsService extends Context.Tag("@metaclanker/git/Checkpoints")<
-  CheckpointsService,
-  Checkpoints
->() {}
+export class CheckpointsService extends Context.Service<CheckpointsService, Checkpoints>()(
+  "@metaclanker/git/Checkpoints",
+) {}
 
 const projectFiles: ProjectFiles = {
   validateProject: (path) =>

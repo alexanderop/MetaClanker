@@ -7,9 +7,9 @@ catalog:
   "@agentclientprotocol/sdk": 1.3.0
   "@agentclientprotocol/codex-acp": 1.1.7
   "@agentclientprotocol/claude-agent-acp": 0.64.0
-  "@effect/sql": 0.52.1
-  "@effect/sql-sqlite-node": 0.53.0
-  effect: 3.22.1
+  "@effect/sql-sqlite-node": 4.0.0-beta.102
+  effect: 4.0.0-beta.102
+  "@effect/vitest": 4.0.0-beta.102
   typescript: 6.0.3
   vite: 8.2.0
   vue: 3.5.40
@@ -19,8 +19,6 @@ minimumReleaseAgeExclude:
   - "@agentclientprotocol/sdk"
   - "@agentclientprotocol/codex-acp"
   - "@agentclientprotocol/claude-agent-acp"
-  - "@effect/sql"
-  - "@effect/sql-sqlite-node"
   - "@vitest/browser-playwright"
   - "@vitest/coverage-v8"
   - "@vue-flow/core"

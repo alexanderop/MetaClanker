@@ -1,11 +1,12 @@
-import { SqlClient } from "@effect/sql";
-import { SqliteClient } from "@effect/sql-sqlite-node";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqliteClient from "@effect/sql-sqlite-node/SqliteClient";
 import { Context, Data, Effect, Layer, Schema } from "effect";
 
 import type {
   MetaClankerStore,
   PersistedCheckpoint,
   StoreError,
+  PromptIntentLease,
   UpsertToolCallRecord,
 } from "@metaclanker/application/ports";
 import { Store } from "@metaclanker/application/commands";
@@ -55,7 +56,7 @@ const storeError = (
   message: cause instanceof Error ? cause.message : String(cause),
 });
 
-const decode = <A, I>(operation: string, schema: Schema.Schema<A, I, never>, value: unknown) =>
+const decode = <A>(operation: string, schema: Schema.ConstraintDecoder<A, never>, value: unknown) =>
   Effect.try({
     try: () => Schema.decodeUnknownSync(schema)(value),
     catch: (cause) =>
@@ -69,7 +70,7 @@ const ProjectRow = Schema.Struct({
   name: Schema.String,
   path: Schema.String,
   git_branch: Schema.NullOr(Schema.String),
-  git_status: Schema.Literal("clean", "dirty", "unavailable"),
+  git_status: Schema.Literals(["clean", "dirty", "unavailable"]),
   hidden: Schema.Number,
   sort_order: Schema.Number,
   created_at: Schema.String,
@@ -165,7 +166,7 @@ const EventRow = Schema.Struct({
 const CheckpointFileSchema = Schema.Struct({
   path: Schema.String,
   size: Schema.Number,
-  kind: Schema.Literal("tracked", "staged", "untracked", "ignored", "unknown"),
+  kind: Schema.Literals(["tracked", "staged", "untracked", "ignored", "unknown"]),
 });
 
 const CheckpointSchema = Schema.Struct({
@@ -180,7 +181,15 @@ const CheckpointRow = Schema.Struct({
   checkpoint_json: Schema.String,
   thread_id: ThreadId,
   turn_id: Schema.NullOr(TurnId),
-  kind: Schema.Literal("pre-turn", "post-turn", "undo"),
+  kind: Schema.Literals(["pre-turn", "post-turn", "undo"]),
+});
+
+const PromptIntentRow = Schema.Struct({
+  id: TurnId,
+  payload_json: Schema.String,
+  lease_id: Schema.String,
+  attempt: Schema.Natural,
+  phase: Schema.Literal("leased"),
 });
 
 type ProjectRow = typeof ProjectRow.Type;
@@ -193,6 +202,7 @@ type AgentNodeRow = typeof AgentNodeRow.Type;
 type ReceiptRow = typeof ReceiptRow.Type;
 type EventRow = typeof EventRow.Type;
 type CheckpointRow = typeof CheckpointRow.Type;
+type PromptIntentRow = typeof PromptIntentRow.Type;
 
 const projectFromRow = (row: ProjectRow): Project => ({
   id: row.id,
@@ -294,7 +304,7 @@ const makeStore = Effect.gen(function* () {
 
   yield* runMigrations;
   const latestSequence = sql<{ readonly sequence: number }>`
-    SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events
+    SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events WHERE schema_version = 1
   `.pipe(
     Effect.map((rows) => rows[0]?.sequence ?? 0),
     Effect.flatMap((value) => decode("latest sequence", Sequence, value)),
@@ -315,6 +325,16 @@ const makeStore = Effect.gen(function* () {
       Effect.asVoid,
       Effect.mapError((cause) => storeError("save command receipt", cause)),
     );
+
+  const findInteractionById = (id: PendingInteractionId) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<InteractionRow>`SELECT id, project_id, thread_id, turn_id, node_id,
+        kind, title, description, options_json, status, sequence, created_at FROM pending_requests
+        WHERE id = ${id}`;
+      const decoded = yield* decode("find interaction", Schema.Array(InteractionRow), rows);
+      const row = decoded[0];
+      return row === undefined ? null : yield* interactionFromRow(row);
+    }).pipe(Effect.mapError((cause) => storeError("find interaction", cause)));
 
   const createProject: MetaClankerStore["createProject"] = (input) =>
     Effect.gen(function* () {
@@ -607,7 +627,7 @@ const makeStore = Effect.gen(function* () {
   yield* Effect.gen(function* () {
     const pendingRows = yield* sql<InteractionRow>`SELECT id, project_id, thread_id, turn_id,
       node_id, kind, title, description, options_json, status, sequence, created_at
-      FROM pending_requests WHERE status = 'pending'`;
+      FROM pending_requests WHERE status IN ('pending', 'dispatching')`;
     const pending = yield* decode(
       "recover pending interactions",
       Schema.Array(InteractionRow),
@@ -634,6 +654,39 @@ const makeStore = Effect.gen(function* () {
         },
       });
       yield* sql`UPDATE pending_requests SET status = 'stale' WHERE id = ${interaction.id}`;
+      yield* sql`UPDATE side_effect_intents
+        SET state = 'uncertain', phase = 'completed', failure_reason = 'recovery-required',
+          lease_id = NULL, lease_expires_at = NULL, updated_at = ${interaction.createdAt}
+        WHERE kind = 'acp.interaction-response' AND state IN ('pending', 'running')
+          AND json_extract(payload_json, '$.interactionId') = ${interaction.id}`;
+    }
+
+    const restoreRows = yield* sql<{
+      readonly id: string;
+      readonly payload_json: string;
+    }>`SELECT id,
+      payload_json FROM side_effect_intents WHERE kind = 'git.restore'
+        AND state IN ('pending', 'running')`;
+    for (const restore of restoreRows) {
+      const payload = yield* decode(
+        "recover restore intent",
+        Schema.Struct({ threadId: ThreadId }),
+        parseJson(restore.payload_json),
+      );
+      const updatedAt = new Date().toISOString();
+      yield* appendEvent({
+        origin: "server",
+        type: "thread.status-changed",
+        threadId: payload.threadId,
+        status: "recovery-required",
+        updatedAt,
+      });
+      yield* sql`UPDATE threads SET status = 'recovery-required', updated_at = ${updatedAt}
+        WHERE id = ${payload.threadId}`;
+      yield* sql`UPDATE side_effect_intents
+        SET state = 'uncertain', phase = 'completed', failure_reason = 'restore-uncertain',
+          lease_id = NULL, lease_expires_at = NULL, updated_at = ${updatedAt}
+        WHERE id = ${restore.id}`;
     }
 
     const runningTurnRows = yield* sql<TurnRow>`SELECT id, thread_id FROM turns
@@ -655,8 +708,9 @@ const makeStore = Effect.gen(function* () {
       yield* sql`UPDATE turns SET status = 'recovery-required', completed_at = ${completedAt}
         WHERE id = ${turn.id}`;
       yield* sql`UPDATE side_effect_intents
-        SET state = 'recovery-required', updated_at = ${completedAt}
-        WHERE id = ${turn.id} AND state = 'pending'`;
+        SET state = 'uncertain', phase = 'completed', failure_reason = 'recovery-required',
+          lease_id = NULL, lease_expires_at = NULL, updated_at = ${completedAt}
+        WHERE id IN (${turn.id}, ${`cancel:${turn.id}`}) AND state IN ('pending', 'running')`;
     }
 
     const activeRows = yield* sql<ThreadRow>`SELECT id, project_id, provider, title, status, model,
@@ -854,8 +908,8 @@ const makeStore = Effect.gen(function* () {
           VALUES (${input.userMessageId}, ${input.id}, ${input.turnId}, 'user', ${input.prompt},
             ${sequence}, ${input.createdAt})`;
         yield* sql`INSERT INTO side_effect_intents
-          (id, command_id, kind, state, payload_json, created_at, updated_at)
-          VALUES (${input.turnId}, ${input.commandId}, 'acp.prompt', 'pending',
+          (id, command_id, kind, state, phase, payload_json, created_at, updated_at)
+          VALUES (${input.turnId}, ${input.commandId}, 'acp.prompt', 'pending', 'admitted',
             ${JSON.stringify({ threadId: input.id, turnId: input.turnId })}, ${input.createdAt},
             ${input.createdAt})`;
         yield* saveReceipt({
@@ -971,8 +1025,8 @@ const makeStore = Effect.gen(function* () {
             child_count = excluded.child_count, pending_approval = excluded.pending_approval,
             changed_file_count = excluded.changed_file_count`;
         yield* sql`INSERT INTO side_effect_intents
-          (id, command_id, kind, state, payload_json, created_at, updated_at)
-          VALUES (${input.turnId}, ${input.commandId}, 'acp.prompt', 'pending',
+          (id, command_id, kind, state, phase, payload_json, created_at, updated_at)
+          VALUES (${input.turnId}, ${input.commandId}, 'acp.prompt', 'pending', 'admitted',
             ${JSON.stringify({ threadId: input.threadId, turnId: input.turnId, attachments: input.attachments })},
             ${input.createdAt}, ${input.createdAt})`;
         yield* saveReceipt({
@@ -996,8 +1050,178 @@ const makeStore = Effect.gen(function* () {
         sql.withTransaction,
         Effect.mapError((cause) => storeError("start turn", cause)),
       ),
+    admitCancel: (input) =>
+      Effect.gen(function* () {
+        const receipt = yield* findReceipt(input.commandId);
+        if (receipt !== null) {
+          const turnId = yield* decode("replayed cancellation", TurnId, receipt.aggregateId);
+          return { acceptedNow: false, turnId, eventSequence: null } as const;
+        }
+        const rows = yield* sql<TurnRow>`SELECT id, thread_id FROM turns
+          WHERE thread_id = ${input.threadId} AND status = 'running'`;
+        const activeTurns = yield* decode("active cancellation turn", Schema.Array(TurnRow), rows);
+        const activeTurn = activeTurns[0];
+        if (activeTurn === undefined) {
+          return yield* Effect.fail(storeError("admit cancellation", "No active turn", "conflict"));
+        }
+        const eventSequence = yield* appendEvent({
+          origin: "client",
+          type: "thread.status-changed",
+          threadId: input.threadId,
+          status: "cancelling",
+          updatedAt: input.createdAt,
+        });
+        yield* sql`UPDATE threads SET status = 'cancelling', updated_at = ${input.createdAt}
+          WHERE id = ${input.threadId}`;
+        yield* sql`INSERT INTO side_effect_intents
+          (id, command_id, kind, state, phase, lease_id, payload_json, created_at, updated_at)
+          VALUES (${`cancel:${activeTurn.id}`}, ${input.commandId}, 'acp.cancel', 'running',
+            'dispatching-provider', ${input.leaseId},
+            ${JSON.stringify({ threadId: input.threadId, turnId: activeTurn.id })},
+            ${input.createdAt}, ${input.createdAt})`;
+        yield* saveReceipt({
+          commandId: input.commandId,
+          status: "accepted",
+          aggregateId: activeTurn.id,
+          reason: null,
+          createdAt: input.createdAt,
+        });
+        return {
+          acceptedNow: true,
+          turnId: activeTurn.id,
+          eventSequence,
+          leaseId: input.leaseId,
+        } as const;
+      }).pipe(
+        sql.withTransaction,
+        Effect.mapError((cause) => storeError("admit cancellation", cause)),
+      ),
+    markCancelAwaiting: (turnId, leaseId, updatedAt) =>
+      sql`UPDATE side_effect_intents
+        SET phase = 'awaiting-provider', updated_at = ${updatedAt}
+        WHERE id = ${`cancel:${turnId}`} AND kind = 'acp.cancel' AND state = 'running'
+          AND lease_id = ${leaseId}
+        RETURNING id`.pipe(
+        Effect.map((result) => result.length === 1),
+        Effect.mapError((cause) => storeError("mark cancellation awaiting", cause)),
+      ),
+    markCancelUncertain: (turnId, leaseId, updatedAt) =>
+      sql`UPDATE side_effect_intents
+        SET state = 'uncertain', phase = 'completed', failure_reason = 'provider-cancel-uncertain',
+          lease_id = NULL, lease_expires_at = NULL, updated_at = ${updatedAt}
+        WHERE id = ${`cancel:${turnId}`} AND kind = 'acp.cancel' AND state = 'running'
+          AND lease_id = ${leaseId}
+        RETURNING id`.pipe(
+        Effect.map((result) => result.length === 1),
+        Effect.mapError((cause) => storeError("mark cancellation uncertain", cause)),
+      ),
+    admitRestore: (input) =>
+      Effect.gen(function* () {
+        const receipt = yield* findReceipt(input.commandId);
+        if (receipt !== null) {
+          return { acceptedNow: false, undoCheckpointId: receipt.aggregateId } as const;
+        }
+        yield* getThreadRow(input.threadId);
+        const activeRows = yield* sql<TurnRow>`SELECT id, thread_id FROM turns
+          WHERE thread_id = ${input.threadId} AND status IN ('running', 'cancelling')`;
+        const activeTurns = yield* decode(
+          "active restore turns",
+          Schema.Array(TurnRow),
+          activeRows,
+        );
+        if (activeTurns.length > 0) {
+          return yield* Effect.fail(
+            storeError(
+              "admit restore",
+              "Files can be restored only while the session is idle",
+              "conflict",
+            ),
+          );
+        }
+        const liveRestores = yield* sql<{ readonly id: string }>`SELECT id FROM side_effect_intents
+          WHERE kind = 'git.restore' AND state IN ('pending', 'running')
+            AND json_extract(payload_json, '$.threadId') = ${input.threadId}`;
+        if (liveRestores.length > 0) {
+          return yield* Effect.fail(
+            storeError("admit restore", "A file restore is already in progress", "conflict"),
+          );
+        }
+        yield* sql`INSERT INTO side_effect_intents
+          (id, command_id, kind, state, phase, lease_id, payload_json, created_at, updated_at)
+          VALUES (${`restore:${input.commandId}`}, ${input.commandId}, 'git.restore', 'running',
+            'dispatching-provider', ${input.leaseId},
+            ${JSON.stringify({
+              threadId: input.threadId,
+              checkpointId: input.checkpointId,
+              undoCheckpointId: input.undoCheckpointId,
+            })}, ${input.createdAt}, ${input.createdAt})`;
+        yield* saveReceipt({
+          commandId: input.commandId,
+          status: "accepted",
+          aggregateId: input.undoCheckpointId,
+          reason: null,
+          createdAt: input.createdAt,
+        });
+        return {
+          acceptedNow: true,
+          undoCheckpointId: input.undoCheckpointId,
+          leaseId: input.leaseId,
+        } as const;
+      }).pipe(
+        sql.withTransaction,
+        Effect.mapError((cause) => storeError("admit restore", cause)),
+      ),
+    completeRestore: (commandId, leaseId, record) =>
+      Effect.gen(function* () {
+        const completed = yield* sql<{ readonly id: string }>`UPDATE side_effect_intents
+          SET state = 'succeeded', phase = 'completed', lease_id = NULL, lease_expires_at = NULL,
+            updated_at = ${record.checkpoint.createdAt}
+          WHERE id = ${`restore:${commandId}`} AND kind = 'git.restore' AND state = 'running'
+            AND lease_id = ${leaseId}
+          RETURNING id`;
+        if (completed.length !== 1) return null;
+        yield* appendEvent({ origin: "git", type: "checkpoint.saved", record });
+        yield* sql`INSERT INTO checkpoints (id, thread_id, turn_id, kind, ref, created_at, checkpoint_json)
+          VALUES (${record.checkpoint.id}, ${record.threadId}, ${record.turnId}, ${record.kind},
+            ${record.checkpoint.snapshotPath}, ${record.checkpoint.createdAt},
+            ${JSON.stringify(record.checkpoint)})
+          ON CONFLICT(id) DO UPDATE SET checkpoint_json = excluded.checkpoint_json`;
+        return record;
+      }).pipe(
+        sql.withTransaction,
+        Effect.mapError((cause) => storeError("complete restore", cause)),
+      ),
+    markRestoreUncertain: (commandId, leaseId, threadId, updatedAt) =>
+      Effect.gen(function* () {
+        const uncertain = yield* sql<{ readonly id: string }>`UPDATE side_effect_intents
+          SET state = 'uncertain', phase = 'completed', failure_reason = 'restore-uncertain',
+            lease_id = NULL, lease_expires_at = NULL, updated_at = ${updatedAt}
+          WHERE id = ${`restore:${commandId}`} AND kind = 'git.restore' AND state = 'running'
+            AND lease_id = ${leaseId}
+          RETURNING id`;
+        if (uncertain.length !== 1) return null;
+        const eventSequence = yield* appendEvent({
+          origin: "server",
+          type: "thread.status-changed",
+          threadId,
+          status: "recovery-required",
+          updatedAt,
+        });
+        yield* sql`UPDATE threads SET status = 'recovery-required', updated_at = ${updatedAt}
+          WHERE id = ${threadId}`;
+        return eventSequence;
+      }).pipe(
+        sql.withTransaction,
+        Effect.mapError((cause) => storeError("mark restore uncertain", cause)),
+      ),
     completeTurn: (turnId, status, completedAt) =>
       Effect.gen(function* () {
+        let intentState = "succeeded";
+        if (status === "recovery-required") intentState = "uncertain";
+        else if (status === "failed") intentState = "failed";
+        let cancellationState = "failed";
+        if (status === "cancelled") cancellationState = "succeeded";
+        else if (status === "recovery-required") cancellationState = "uncertain";
         const rows = yield* sql<TurnRow>`SELECT id, thread_id FROM turns WHERE id = ${turnId}`;
         const turns = yield* decode("complete turn", Schema.Array(TurnRow), rows);
         const turn = turns[0];
@@ -1006,8 +1230,14 @@ const makeStore = Effect.gen(function* () {
         }
         yield* sql`UPDATE turns SET status = ${status}, completed_at = ${completedAt}
           WHERE id = ${turnId}`;
-        yield* sql`UPDATE side_effect_intents SET state = ${status}, updated_at = ${completedAt}
+        yield* sql`UPDATE side_effect_intents
+          SET state = ${intentState}, phase = 'completed', lease_id = NULL, lease_expires_at = NULL,
+            updated_at = ${completedAt}
           WHERE id = ${turnId}`;
+        yield* sql`UPDATE side_effect_intents
+          SET state = ${cancellationState}, phase = 'completed', lease_id = NULL,
+            lease_expires_at = NULL, updated_at = ${completedAt}
+          WHERE id = ${`cancel:${turnId}`} AND kind = 'acp.cancel' AND state = 'running'`;
         yield* appendEvent({
           origin: "server",
           type: "turn.completed",
@@ -1020,6 +1250,43 @@ const makeStore = Effect.gen(function* () {
         Effect.asVoid,
         Effect.mapError((cause) => storeError("complete turn", cause)),
       ),
+    claimPromptIntent: (turnId, leaseId, leaseExpiresAt) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<PromptIntentRow>`UPDATE side_effect_intents
+          SET state = 'running', phase = 'leased', lease_id = ${leaseId},
+            lease_expires_at = ${leaseExpiresAt}, attempt = attempt + 1, updated_at = ${leaseExpiresAt}
+          WHERE id = ${turnId} AND kind = 'acp.prompt' AND state = 'pending'
+            AND phase IN ('admitted', 'scheduling-failed')
+          RETURNING id, payload_json, lease_id, attempt, phase`;
+        const claimed = yield* decode("claim prompt intent", Schema.Array(PromptIntentRow), rows);
+        const row = claimed[0];
+        if (row === undefined) return null;
+        const payload = yield* decode(
+          "claim prompt intent payload",
+          Schema.Struct({ threadId: ThreadId, turnId: TurnId }),
+          parseJson(row.payload_json),
+        );
+        return {
+          intentId: row.id,
+          threadId: payload.threadId,
+          turnId: payload.turnId,
+          leaseId: row.lease_id,
+          attempt: row.attempt,
+          phase: row.phase,
+        } satisfies PromptIntentLease;
+      }).pipe(Effect.mapError((cause) => storeError("claim prompt intent", cause))),
+    transitionPromptIntent: (turnId, leaseId, phase, updatedAt, failureReason) =>
+      Effect.gen(function* () {
+        const state = phase === "completed" ? "succeeded" : "running";
+        const rows = yield* sql<{ readonly id: TurnId }>`UPDATE side_effect_intents
+          SET state = ${state}, phase = ${phase}, failure_reason = ${failureReason ?? null},
+            lease_id = CASE WHEN ${phase} = 'completed' THEN NULL ELSE lease_id END,
+            lease_expires_at = CASE WHEN ${phase} = 'completed' THEN NULL ELSE lease_expires_at END,
+            updated_at = ${updatedAt}
+          WHERE id = ${turnId} AND kind = 'acp.prompt' AND state = 'running' AND lease_id = ${leaseId}
+          RETURNING id`;
+        return rows.length === 1;
+      }).pipe(Effect.mapError((cause) => storeError("transition prompt intent", cause))),
     getThread: (id) =>
       Effect.gen(function* () {
         const threadRows = yield* sql<ThreadRow>`SELECT id, project_id, provider, title, status,
@@ -1227,15 +1494,7 @@ const makeStore = Effect.gen(function* () {
         sql.withTransaction,
         Effect.mapError((cause) => storeError("upsert interaction", cause)),
       ),
-    findInteraction: (id) =>
-      Effect.gen(function* () {
-        const rows = yield* sql<InteractionRow>`SELECT id, project_id, thread_id, turn_id, node_id,
-          kind, title, description, options_json, status, sequence, created_at FROM pending_requests
-          WHERE id = ${id}`;
-        const decoded = yield* decode("find interaction", Schema.Array(InteractionRow), rows);
-        const row = decoded[0];
-        return row === undefined ? null : yield* interactionFromRow(row);
-      }).pipe(Effect.mapError((cause) => storeError("find interaction", cause))),
+    findInteraction: findInteractionById,
     resolveInteraction: (id, status) =>
       Effect.gen(function* () {
         yield* sql`UPDATE pending_requests SET status = ${status} WHERE id = ${id}`;
@@ -1269,6 +1528,162 @@ const makeStore = Effect.gen(function* () {
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("resolve interaction", cause)),
+      ),
+    admitInteractionResponse: (input) =>
+      Effect.gen(function* () {
+        const receipt = yield* findReceipt(input.commandId);
+        if (receipt !== null) {
+          const replayedId = yield* decode(
+            "replayed interaction response",
+            PendingInteractionId,
+            receipt.aggregateId,
+          );
+          const replayed = yield* findInteractionById(replayedId);
+          if (replayed === null) {
+            return yield* Effect.fail(
+              storeError("admit interaction response", "Accepted response has no interaction"),
+            );
+          }
+          return { acceptedNow: false, interaction: replayed, eventSequence: null } as const;
+        }
+        const interaction = yield* findInteractionById(input.interactionId);
+        if (interaction === null) {
+          return yield* Effect.fail(
+            storeError("admit interaction response", "Interaction not found"),
+          );
+        }
+        if (interaction.status !== "pending") {
+          return yield* Effect.fail(
+            storeError(
+              "admit interaction response",
+              "Interaction is no longer pending",
+              "conflict",
+            ),
+          );
+        }
+        const intentId = `interaction:${interaction.id}`;
+        const liveIntents = yield* sql<{ readonly id: string }>`SELECT id FROM side_effect_intents
+          WHERE id = ${intentId} AND kind = 'acp.interaction-response'
+            AND state IN ('pending', 'running')`;
+        if (liveIntents.length > 0) {
+          return yield* Effect.fail(
+            storeError(
+              "admit interaction response",
+              "Interaction response is already dispatching",
+              "conflict",
+            ),
+          );
+        }
+        const dispatching = { ...interaction, status: "dispatching" as const };
+        const eventSequence = yield* appendEvent({
+          origin: "client",
+          type: "interaction.upserted",
+          interaction: {
+            id: dispatching.id,
+            projectId: dispatching.projectId,
+            threadId: dispatching.threadId,
+            turnId: dispatching.turnId,
+            nodeId: dispatching.nodeId,
+            kind: dispatching.kind,
+            title: dispatching.title,
+            description: dispatching.description,
+            options: dispatching.options,
+            status: dispatching.status,
+            createdAt: dispatching.createdAt,
+          },
+        });
+        yield* sql`UPDATE pending_requests SET status = 'dispatching', sequence = ${eventSequence}
+          WHERE id = ${interaction.id} AND status = 'pending'`;
+        yield* sql`INSERT INTO side_effect_intents
+          (id, command_id, kind, state, phase, lease_id, payload_json, created_at, updated_at)
+          VALUES (${intentId}, ${input.commandId}, 'acp.interaction-response', 'running',
+            'dispatching-provider', ${input.leaseId},
+            ${JSON.stringify({
+              interactionId: interaction.id,
+              threadId: interaction.threadId,
+              turnId: interaction.turnId,
+              optionId: input.optionId,
+            })}, ${input.createdAt}, ${input.createdAt})`;
+        yield* saveReceipt({
+          commandId: input.commandId,
+          status: "accepted",
+          aggregateId: interaction.id,
+          reason: null,
+          createdAt: input.createdAt,
+        });
+        return {
+          acceptedNow: true,
+          interaction: { ...dispatching, sequence: eventSequence },
+          eventSequence,
+          leaseId: input.leaseId,
+        } as const;
+      }).pipe(
+        sql.withTransaction,
+        Effect.mapError((cause) => storeError("admit interaction response", cause)),
+      ),
+    settleInteractionResponse: (
+      interactionId,
+      leaseId,
+      status,
+      intentState,
+      updatedAt,
+      failureReason,
+    ) =>
+      Effect.gen(function* () {
+        const interaction = yield* findInteractionById(interactionId);
+        if (interaction === null) {
+          return yield* Effect.fail(
+            storeError("settle interaction response", "Interaction not found"),
+          );
+        }
+        if (interaction.status !== "dispatching") {
+          return yield* Effect.fail(
+            storeError(
+              "settle interaction response",
+              "Interaction is no longer dispatching",
+              "conflict",
+            ),
+          );
+        }
+        const settledIntent = yield* sql<{ readonly id: string }>`UPDATE side_effect_intents
+          SET state = ${intentState}, phase = 'completed', failure_reason = ${failureReason ?? null},
+            lease_id = NULL, lease_expires_at = NULL, updated_at = ${updatedAt}
+          WHERE id = ${`interaction:${interactionId}`} AND kind = 'acp.interaction-response'
+            AND state = 'running' AND lease_id = ${leaseId}
+          RETURNING id`;
+        if (settledIntent.length !== 1) {
+          return yield* Effect.fail(
+            storeError(
+              "settle interaction response",
+              "Interaction response lease was lost",
+              "conflict",
+            ),
+          );
+        }
+        const settled = { ...interaction, status };
+        const eventSequence = yield* appendEvent({
+          origin: "server",
+          type: "interaction.upserted",
+          interaction: {
+            id: settled.id,
+            projectId: settled.projectId,
+            threadId: settled.threadId,
+            turnId: settled.turnId,
+            nodeId: settled.nodeId,
+            kind: settled.kind,
+            title: settled.title,
+            description: settled.description,
+            options: settled.options,
+            status: settled.status,
+            createdAt: settled.createdAt,
+          },
+        });
+        yield* sql`UPDATE pending_requests SET status = ${status}, sequence = ${eventSequence}
+          WHERE id = ${interactionId} AND status = 'dispatching'`;
+        return { record: { ...settled, sequence: eventSequence }, eventSequence };
+      }).pipe(
+        sql.withTransaction,
+        Effect.mapError((cause) => storeError("settle interaction response", cause)),
       ),
     upsertAgentNode: (input) =>
       Effect.gen(function* () {
@@ -1369,7 +1784,6 @@ const makeStore = Effect.gen(function* () {
 export const databaseLayer = (filename: string): Layer.Layer<Store, unknown> =>
   Layer.effect(Store, makeStore).pipe(Layer.provide(SqliteClient.layer({ filename })));
 
-export class DatabaseRuntime extends Context.Tag("@metaclanker/persistence/DatabaseRuntime")<
-  DatabaseRuntime,
-  MetaClankerStore
->() {}
+export class DatabaseRuntime extends Context.Service<DatabaseRuntime, MetaClankerStore>()(
+  "@metaclanker/persistence/DatabaseRuntime",
+) {}

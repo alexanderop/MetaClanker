@@ -23,7 +23,7 @@ const threadIdFromUrl = (url: string): ThreadId | null => {
 };
 
 export default defineWebSocketHandler({
-  open(peer) {
+  async open(peer) {
     const url = new URL(peer.request.url, "http://localhost");
     const threadId = threadIdFromUrl(url.pathname);
     if (threadId === null || !consumeWebSocketTicket(url.searchParams.get("ticket"))) {
@@ -56,7 +56,7 @@ export default defineWebSocketHandler({
       },
       overflow: () => requireSnapshot("buffer-overflow"),
     });
-    unsubscribe = subscribeToThread(threadId, replayState.push);
+    unsubscribe = await subscribeToThread(threadId, replayState.push);
     peer.context[cleanupContextKey] = cleanup;
 
     void runApplication(

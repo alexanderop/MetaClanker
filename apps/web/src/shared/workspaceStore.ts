@@ -29,17 +29,14 @@ const ConversationDraftSchema = Schema.Struct({
   prompt: Schema.String,
   provider: ProviderSchema,
   model: Schema.NullOr(Schema.String),
-  effort: Schema.NullOr(Schema.Literal("low", "medium", "high")),
-  permissionMode: Schema.NullOr(Schema.Literal("read-only", "workspace-write", "full-access")),
+  effort: Schema.NullOr(Schema.Literals(["low", "medium", "high"])),
+  permissionMode: Schema.NullOr(Schema.Literals(["read-only", "workspace-write", "full-access"])),
   attachments: Schema.Array(Schema.String),
-  cursorStart: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
-  cursorEnd: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  cursorStart: Schema.Natural,
+  cursorEnd: Schema.Natural,
 });
 export type ConversationDraft = typeof ConversationDraftSchema.Type;
-const ConversationDraftRecordSchema = Schema.Record({
-  key: Schema.String,
-  value: ConversationDraftSchema,
-});
+const ConversationDraftRecordSchema = Schema.Record(Schema.String, ConversationDraftSchema);
 
 const loadConversationDrafts = (): Record<string, ConversationDraft> => {
   try {
@@ -505,7 +502,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
 
   const cancelPrompt = async (): Promise<void> => {
     if (detail.value === null) return;
-    await api.cancel(detail.value.thread.id);
+    await api.cancel(detail.value.thread.id, { commandId: CommandId.make(crypto.randomUUID()) });
   };
 
   const respond = async (interaction: PendingInteraction, optionId: string): Promise<void> => {

@@ -19,7 +19,7 @@ const peerCleanup = (peer: {
 };
 
 export default defineWebSocketHandler({
-  open(peer) {
+  async open(peer) {
     const url = new URL(peer.request.url, "http://localhost");
     if (!consumeWebSocketTicket(url.searchParams.get("ticket"))) {
       peer.close(4401, "Authentication required");
@@ -51,7 +51,7 @@ export default defineWebSocketHandler({
       },
       overflow: () => requireSnapshot("buffer-overflow"),
     });
-    unsubscribe = subscribeToShell(replayState.push);
+    unsubscribe = await subscribeToShell(replayState.push);
     peer.context[cleanupContextKey] = cleanup;
 
     void runApplication(readEventReplay(Sequence.make(requestedSequence), domainEventToShellEvent))

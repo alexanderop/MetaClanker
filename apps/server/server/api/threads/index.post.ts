@@ -29,7 +29,7 @@ export default defineEventHandler(async (event) => {
     throw publicError(cause);
   });
   if (result.eventSequence !== null) {
-    publishShellEvent({
+    await publishShellEvent({
       type: "thread-upserted",
       sequence: result.eventSequence,
       thread: result.record,

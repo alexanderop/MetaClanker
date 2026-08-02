@@ -13,14 +13,14 @@ import {
 } from "@metaclanker/contracts/wire";
 import type { UnsequencedDomainEvent } from "@metaclanker/domain/events";
 
-const Origin = Schema.Literal("client", "server", "provider", "git");
+const Origin = Schema.Literals(["client", "server", "provider", "git"]);
 const EventBase = { origin: Origin } as const;
 
 const MessageWithoutSequence = Schema.Struct({
   id: MessageId,
   threadId: ThreadId,
   turnId: Schema.NullOr(TurnId),
-  role: Schema.Literal("user", "agent", "thought", "system"),
+  role: Schema.Literals(["user", "agent", "thought", "system"]),
   content: Schema.String,
   createdAt: Schema.String,
 });
@@ -52,7 +52,7 @@ const InteractionWithoutSequence = Schema.Struct({
   createdAt: Schema.String,
 });
 
-const EventData = Schema.Union(
+const EventData = Schema.Union([
   Schema.Struct({ ...EventBase, type: Schema.Literal("project.upserted"), project: Project }),
   Schema.Struct({ ...EventBase, type: Schema.Literal("project.removed"), projectId: ProjectId }),
   Schema.Struct({ ...EventBase, type: Schema.Literal("thread.upserted"), thread: Thread }),
@@ -75,7 +75,13 @@ const EventData = Schema.Union(
     type: Schema.Literal("turn.completed"),
     threadId: ThreadId,
     turnId: TurnId,
-    outcome: Schema.Literal("completed", "cancelled", "interrupted", "failed", "recovery-required"),
+    outcome: Schema.Literals([
+      "completed",
+      "cancelled",
+      "interrupted",
+      "failed",
+      "recovery-required",
+    ]),
   }),
   Schema.Struct({
     ...EventBase,
@@ -103,7 +109,7 @@ const EventData = Schema.Union(
     record: PersistedCheckpointWire,
   }),
   Schema.Struct({ ...EventBase, type: Schema.Literal("settings.saved"), settings: UserSettings }),
-);
+]);
 
 export const UnsequencedDomainEventSchema = EventData;
 

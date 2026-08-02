@@ -25,14 +25,10 @@ import type {
 import { CheckpointsService } from "@metaclanker/git/checkpoints";
 
 import { publishShellEvent, publishThreadEvent } from "./hub.js";
-import { AgentWork } from "./agent-work.js";
 import { LocalDiagnostics } from "./local-diagnostics.js";
 import { applicationProviderAdapters, runApplication } from "./runtime.js";
 import { deriveThreadTitle } from "./thread-title.js";
-
-const activeSessions = new Map<string, AcpSessionHandle>();
-const openingSessions = new Map<string, Promise<AcpSessionHandle>>();
-const activeTurns = new Set<string>();
+import { TurnSupervisor } from "./turn-supervisor.js";
 
 const submitAgentWork = (
   correlation: TurnContext,
@@ -40,10 +36,11 @@ const submitAgentWork = (
 ): Promise<void> =>
   runApplication(
     Effect.gen(function* () {
-      const agentWork = yield* AgentWork;
+      const supervisor = yield* TurnSupervisor;
       const diagnostics = yield* LocalDiagnostics;
       const submittedAt = Date.now();
-      yield* agentWork.submit(
+      yield* supervisor.submit(
+        correlation.detail.thread.id,
         Effect.gen(function* () {
           const startedAt = Date.now();
           yield* diagnostics.record({
@@ -67,12 +64,12 @@ const submitAgentWork = (
             turnId: correlation.turnId,
           });
         }).pipe(
-          Effect.catchAll((cause) =>
+          Effect.catch((cause) =>
             Effect.tryPromise({
               try: () => recordPromptFailure(correlation, cause),
               catch: (error) => error,
             }).pipe(
-              Effect.catchAll(() => Effect.void),
+              Effect.catch(() => Effect.void),
               Effect.asVoid,
             ),
           ),
@@ -116,14 +113,14 @@ const shellProjects = (): Promise<ReadonlyArray<Project>> =>
 const publishStatus = async (threadId: ThreadId, status: ThreadStatus): Promise<void> => {
   const sequence = await withStore((store) => store.setThreadStatus(threadId, status));
   const event = { type: "thread-status", sequence, threadId, status } as const;
-  publishThreadEvent(threadId, event);
-  publishShellEvent(event);
+  await publishThreadEvent(threadId, event);
+  await publishShellEvent(event);
 };
 
 const persistMessage = async (input: Omit<Message, "sequence">): Promise<Message> => {
   const persisted = await withStore((store) => store.appendMessage(input));
   const message = persisted.record;
-  publishThreadEvent(message.threadId, {
+  await publishThreadEvent(message.threadId, {
     type: "message-upserted",
     sequence: persisted.eventSequence,
     message,
@@ -134,7 +131,7 @@ const persistMessage = async (input: Omit<Message, "sequence">): Promise<Message
 const persistToolCall = async (input: UpsertToolCallRecord): Promise<void> => {
   const persisted = await withStore((store) => store.upsertToolCall(input));
   const toolCall = persisted.record;
-  publishThreadEvent(toolCall.threadId, {
+  await publishThreadEvent(toolCall.threadId, {
     type: "tool-upserted",
     sequence: persisted.eventSequence,
     toolCall,
@@ -146,7 +143,7 @@ const persistInteraction = async (
 ): Promise<PendingInteraction> => {
   const persisted = await withStore((store) => store.upsertInteraction(input));
   const interaction = persisted.record;
-  publishThreadEvent(interaction.threadId, {
+  await publishThreadEvent(interaction.threadId, {
     type: "interaction-upserted",
     sequence: persisted.eventSequence,
     interaction,
@@ -156,7 +153,7 @@ const persistInteraction = async (
 
 const persistNode = async (node: AgentNode): Promise<void> => {
   const persisted = await withStore((store) => store.upsertAgentNode(node));
-  publishThreadEvent(node.threadId, {
+  await publishThreadEvent(node.threadId, {
     type: "agent-node-upserted",
     sequence: persisted.eventSequence,
     node,
@@ -168,9 +165,10 @@ const openThreadSession = async (
   project: Project,
   options: Pick<TurnContext, "effort" | "permissionMode">,
 ): Promise<AcpSessionHandle> => {
-  const current = activeSessions.get(detail.thread.id);
+  const supervisor = await runApplication(Effect.service(TurnSupervisor));
+  const current = supervisor.session(detail.thread.id);
   if (current !== undefined) return current;
-  const opening = openingSessions.get(detail.thread.id);
+  const opening = supervisor.opening(detail.thread.id);
   if (opening !== undefined) return opening;
   const created = (async (): Promise<AcpSessionHandle> => {
     const { commands } = await applicationProviderAdapters();
@@ -192,20 +190,24 @@ const openThreadSession = async (
           store.setProviderSession(detail.thread.id, handle.providerSessionId),
         );
       }
-      activeSessions.set(detail.thread.id, handle);
+      if (!supervisor.registerSession(detail.thread.id, handle)) {
+        await runApplication(handle.close);
+        throw applicationError("conflict", "The server runtime is shutting down");
+      }
       return handle;
     } catch (cause) {
       await runApplication(handle.close);
       throw cause;
     }
   })();
-  openingSessions.set(detail.thread.id, created);
+  if (!supervisor.registerOpening(detail.thread.id, created)) {
+    await created.catch(() => undefined);
+    throw applicationError("conflict", "The server runtime is shutting down");
+  }
   try {
     return await created;
   } finally {
-    if (openingSessions.get(detail.thread.id) === created) {
-      openingSessions.delete(detail.thread.id);
-    }
+    supervisor.clearOpening(detail.thread.id, created);
   }
 };
 
@@ -220,6 +222,9 @@ interface TurnContext {
   readonly startedAt: string;
   readonly effort: string | null;
   readonly permissionMode: string | null;
+  readonly leaseId: string;
+  readonly dispatchStarted: { value: boolean };
+  readonly finishTurn: () => void;
 }
 
 const eventWriter =
@@ -303,7 +308,7 @@ const eventWriter =
         }
       },
       catch: (cause) => cause,
-    }).pipe(Effect.catchAll(() => Effect.logError("Failed to persist an ACP update")));
+    }).pipe(Effect.catch(() => Effect.logError("Failed to persist an ACP update")));
   };
 
 const executePromptWork = (
@@ -312,6 +317,22 @@ const executePromptWork = (
   attachments: ReadonlyArray<string>,
 ): Effect.Effect<TurnCompletionStatus, unknown> =>
   Effect.gen(function* () {
+    const claimed = yield* Effect.tryPromise({
+      try: () =>
+        withStore((store) =>
+          store.claimPromptIntent(
+            context.turnId,
+            context.leaseId,
+            new Date(Date.now() + 5 * 60_000).toISOString(),
+          ),
+        ),
+      catch: (cause) => cause,
+    });
+    if (claimed === null) {
+      return yield* Effect.fail(
+        applicationError("conflict", "Prompt work is no longer eligible to run"),
+      );
+    }
     const preTurn = yield* Effect.tryPromise({
       try: () =>
         runApplication(
@@ -335,12 +356,42 @@ const executePromptWork = (
       catch: (cause) => cause,
     });
     const handle = yield* Effect.tryPromise({
+      try: () =>
+        withStore((store) =>
+          store.transitionPromptIntent(
+            context.turnId,
+            context.leaseId,
+            "opening-session",
+            new Date().toISOString(),
+          ),
+        ),
+      catch: (cause) => cause,
+    });
+    if (!handle) {
+      return yield* Effect.fail(applicationError("conflict", "Prompt work lease was lost"));
+    }
+    const session = yield* Effect.tryPromise({
       try: () => openThreadSession(context.detail, context.project, context),
       catch: (cause) => cause,
     });
-    const outcome = yield* handle.prompt(
-      { turnId: context.turnId, text, attachments },
-      eventWriter(context),
+    const dispatching = yield* Effect.tryPromise({
+      try: () =>
+        withStore((store) =>
+          store.transitionPromptIntent(
+            context.turnId,
+            context.leaseId,
+            "dispatching-provider",
+            new Date().toISOString(),
+          ),
+        ),
+      catch: (cause) => cause,
+    });
+    if (!dispatching) {
+      return yield* Effect.fail(applicationError("conflict", "Prompt work lease was lost"));
+    }
+    context.dispatchStarted.value = true;
+    const outcome = yield* session.prompt({ turnId: context.turnId, text, attachments }, (event) =>
+      runApplication(eventWriter(context)(event)),
     );
     yield* Effect.tryPromise({
       try: () => publishStatus(context.detail.thread.id, outcome.stopReason),
@@ -415,14 +466,14 @@ const failureTurnStatus = (cause: unknown): TurnCompletionStatus =>
   isConnectionFailure(cause) ? "recovery-required" : "failed";
 
 const evictThreadSession = async (threadId: ThreadId): Promise<void> => {
-  const handle = activeSessions.get(threadId);
+  const supervisor = await runApplication(Effect.service(TurnSupervisor));
+  const handle = supervisor.takeSession(threadId);
   if (handle === undefined) return;
-  activeSessions.delete(threadId);
   await runApplication(handle.close);
 };
 
 const recordPromptFailure = async (context: TurnContext, cause: unknown): Promise<void> => {
-  const status = failureTurnStatus(cause);
+  const status = context.dispatchStarted.value ? "recovery-required" : failureTurnStatus(cause);
   if (isConnectionFailure(cause)) await evictThreadSession(context.detail.thread.id);
   await publishStatus(context.detail.thread.id, status);
   await withStore((store) => store.completeTurn(context.turnId, status, new Date().toISOString()));
@@ -434,7 +485,7 @@ const recordPromptFailure = async (context: TurnContext, cause: unknown): Promis
     content: "The agent connection failed. This turn was preserved and was not sent again.",
     createdAt: new Date().toISOString(),
   });
-  activeTurns.delete(context.detail.thread.id);
+  context.finishTurn();
 };
 
 const executePrompt = (
@@ -452,7 +503,7 @@ const executePrompt = (
         catch: (cause) => cause,
       }),
     ),
-    Effect.ensuring(Effect.sync(() => activeTurns.delete(context.detail.thread.id))),
+    Effect.ensuring(Effect.sync(context.finishTurn)),
     Effect.asVoid,
   );
 
@@ -507,21 +558,22 @@ export const dispatchPrompt = async (
   );
   if (!started.acceptedNow) return started.turnId;
 
-  activeTurns.add(threadId);
+  const supervisor = await runApplication(Effect.service(TurnSupervisor));
+  supervisor.startTurn(threadId);
   const statusEvent = {
     type: "thread-status",
     sequence: started.statusEventSequence,
     threadId,
     status: "running",
   } as const;
-  publishThreadEvent(threadId, statusEvent);
-  publishShellEvent(statusEvent);
-  publishThreadEvent(threadId, {
+  await publishThreadEvent(threadId, statusEvent);
+  await publishShellEvent(statusEvent);
+  await publishThreadEvent(threadId, {
     type: "message-upserted",
     sequence: started.messageEventSequence,
     message: started.userMessage,
   });
-  publishThreadEvent(threadId, {
+  await publishThreadEvent(threadId, {
     type: "agent-node-upserted",
     sequence: started.nodeEventSequence,
     node: started.rootNode,
@@ -537,6 +589,9 @@ export const dispatchPrompt = async (
     startedAt,
     effort: providerDefaults.effort,
     permissionMode: providerDefaults.permissionMode,
+    leaseId: crypto.randomUUID(),
+    dispatchStarted: { value: false },
+    finishTurn: () => supervisor.finishTurn(threadId),
   };
   await submitAgentWork(context, executePrompt(context, text, attachments));
   return started.turnId;
@@ -593,7 +648,7 @@ export const startThreadWithPrompt = async (
   }
 
   if (started.threadEventSequence !== null) {
-    publishShellEvent({
+    await publishShellEvent({
       type: "thread-upserted",
       sequence: started.threadEventSequence,
       thread: started.thread,
@@ -605,7 +660,8 @@ export const startThreadWithPrompt = async (
     throw applicationError("persistence", "Accepted thread could not be loaded");
   }
   const rootNodeId = AgentNodeId.make(`root:${started.thread.id}`);
-  activeTurns.add(started.thread.id);
+  const supervisor = await runApplication(Effect.service(TurnSupervisor));
+  supervisor.startTurn(started.thread.id);
   const context: TurnContext = {
     detail,
     project,
@@ -617,6 +673,9 @@ export const startThreadWithPrompt = async (
     startedAt,
     effort: input.effort,
     permissionMode: input.permissionMode,
+    leaseId: crypto.randomUUID(),
+    dispatchStarted: { value: false },
+    finishTurn: () => supervisor.finishTurn(started.thread.id),
   };
   await submitAgentWork(
     context,
@@ -636,19 +695,57 @@ export const startThreadWithPrompt = async (
           changedFileCount: 0,
         }),
       catch: (cause) => cause,
-    }).pipe(Effect.zipRight(executePrompt(context, input.prompt, input.attachments))),
+    }).pipe(Effect.andThen(executePrompt(context, input.prompt, input.attachments))),
   );
 
   return { accepted: true, thread: started.thread, turnId: started.turnId };
 };
 
-export const cancelPrompt = async (threadId: ThreadId): Promise<void> => {
-  const session = activeSessions.get(threadId);
-  if (session === undefined || !activeTurns.has(threadId)) {
+export const cancelPrompt = async (commandId: CommandId, threadId: ThreadId): Promise<void> => {
+  if ((await withStore((store) => store.findReceipt(commandId))) !== null) return;
+  const supervisor = await runApplication(Effect.service(TurnSupervisor));
+  const session = supervisor.session(threadId);
+  if (session === undefined || !supervisor.hasActiveTurn(threadId)) {
     throw applicationError("conflict", "No active turn");
   }
-  await publishStatus(threadId, "cancelling");
-  await runApplication(session.requestCancel());
+  const admitted = await withStore((store) =>
+    store.admitCancel({
+      commandId,
+      threadId,
+      leaseId: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  if (!admitted.acceptedNow) return;
+  await publishThreadEvent(threadId, {
+    type: "thread-status",
+    sequence: admitted.eventSequence,
+    threadId,
+    status: "cancelling",
+  });
+  await publishShellEvent({
+    type: "thread-status",
+    sequence: admitted.eventSequence,
+    threadId,
+    status: "cancelling",
+  });
+  try {
+    await runApplication(session.requestCancel());
+    const awaiting = await withStore((store) =>
+      store.markCancelAwaiting(admitted.turnId, admitted.leaseId, new Date().toISOString()),
+    );
+    if (!awaiting) throw applicationError("conflict", "Cancellation work is no longer active");
+  } catch (cause) {
+    const markedUncertain = await withStore((store) =>
+      store.markCancelUncertain(admitted.turnId, admitted.leaseId, new Date().toISOString()),
+    );
+    if (!markedUncertain) throw applicationError("conflict", "Cancellation work lease was lost");
+    await publishStatus(threadId, "recovery-required");
+    await withStore((store) =>
+      store.completeTurn(admitted.turnId, "recovery-required", new Date().toISOString()),
+    );
+    throw cause;
+  }
 };
 
 export const respondToInteraction = async (
@@ -656,57 +753,88 @@ export const respondToInteraction = async (
   interactionId: PendingInteractionId,
   optionId: string,
 ): Promise<PendingInteraction> => {
-  const receipt = await withStore((store) => store.findReceipt(commandId));
-  const interaction = await withStore((store) => store.findInteraction(interactionId));
-  if (interaction === null) {
-    throw applicationError("not-found", "Interaction not found");
-  }
-  if (receipt !== null) return interaction;
-  const session = activeSessions.get(interaction.threadId);
+  const admitted = await withStore((store) =>
+    store.admitInteractionResponse({
+      commandId,
+      interactionId,
+      optionId,
+      leaseId: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  if (!admitted.acceptedNow) return admitted.interaction;
+  await publishThreadEvent(admitted.interaction.threadId, {
+    type: "interaction-upserted",
+    sequence: admitted.eventSequence,
+    interaction: admitted.interaction,
+  });
+  const session = (await runApplication(Effect.service(TurnSupervisor))).session(
+    admitted.interaction.threadId,
+  );
   if (session === undefined) {
-    const persisted = await withStore((store) => store.resolveInteraction(interactionId, "stale"));
+    const persisted = await withStore((store) =>
+      store.settleInteractionResponse(
+        interactionId,
+        admitted.leaseId,
+        "stale",
+        "failed",
+        new Date().toISOString(),
+        "session-unavailable",
+      ),
+    );
     const stale = persisted.record;
-    publishThreadEvent(stale.threadId, {
+    await publishThreadEvent(stale.threadId, {
       type: "interaction-upserted",
       sequence: persisted.eventSequence,
       interaction: stale,
     });
-    await withStore((store) =>
-      store.saveReceipt({
-        commandId,
-        status: "accepted",
-        aggregateId: interactionId,
-        reason: null,
-        createdAt: new Date().toISOString(),
-      }),
-    );
     return stale;
   }
-  await runApplication(session.respondInteraction(interactionId, optionId));
-  const persisted = await withStore((store) => store.resolveInteraction(interactionId, "resolved"));
+  try {
+    await runApplication(session.respondInteraction(interactionId, optionId));
+  } catch (cause) {
+    const persisted = await withStore((store) =>
+      store.settleInteractionResponse(
+        interactionId,
+        admitted.leaseId,
+        "stale",
+        "uncertain",
+        new Date().toISOString(),
+        "provider-response-uncertain",
+      ),
+    );
+    await publishThreadEvent(persisted.record.threadId, {
+      type: "interaction-upserted",
+      sequence: persisted.eventSequence,
+      interaction: persisted.record,
+    });
+    throw cause;
+  }
+  const persisted = await withStore((store) =>
+    store.settleInteractionResponse(
+      interactionId,
+      admitted.leaseId,
+      "resolved",
+      "succeeded",
+      new Date().toISOString(),
+    ),
+  );
   const resolved = persisted.record;
-  publishThreadEvent(resolved.threadId, {
+  await publishThreadEvent(resolved.threadId, {
     type: "interaction-upserted",
     sequence: persisted.eventSequence,
     interaction: resolved,
   });
-  await withStore((store) =>
-    store.saveReceipt({
-      commandId,
-      status: "accepted",
-      aggregateId: interactionId,
-      reason: null,
-      createdAt: new Date().toISOString(),
-    }),
-  );
   return resolved;
 };
 
 export const closeAgentSessions = async (): Promise<void> => {
-  await Promise.allSettled(openingSessions.values());
-  await Promise.all([...activeSessions.values()].map((session) => runApplication(session.close)));
-  activeSessions.clear();
-  openingSessions.clear();
+  await runApplication(
+    Effect.gen(function* () {
+      const supervisor = yield* TurnSupervisor;
+      yield* supervisor.closeAll;
+    }),
+  );
   await drainAgentWork();
 };
 
@@ -714,34 +842,85 @@ export const closeAgentSessions = async (): Promise<void> => {
 export const drainAgentWork = async (): Promise<void> => {
   await runApplication(
     Effect.gen(function* () {
-      const agentWork = yield* AgentWork;
-      yield* agentWork.drain;
+      const supervisor = yield* TurnSupervisor;
+      yield* supervisor.drain;
     }),
   );
 };
 
-export const restoreThreadFiles = async (threadId: ThreadId, checkpointId: string) => {
+export const restoreThreadFiles = async (
+  commandId: CommandId,
+  threadId: ThreadId,
+  checkpointId: string,
+) => {
   const detail = await threadDetail(threadId);
   if (detail === null) throw applicationError("not-found", "Thread not found");
-  if (activeTurns.has(threadId))
+  if ((await runApplication(Effect.service(TurnSupervisor))).hasActiveTurn(threadId))
     throw applicationError("conflict", "Files can be restored only while the session is idle");
   const records = await withStore((store) => store.listCheckpoints(threadId));
   const record = records.find((candidate) => candidate.checkpoint.id === checkpointId);
   if (record === undefined) throw applicationError("not-found", "Checkpoint not found");
-  const undo = await runApplication(
-    Effect.gen(function* () {
-      const checkpoints = yield* CheckpointsService;
-      return yield* checkpoints.restore(record.checkpoint);
-    }),
-  );
-  const persisted = await withStore((store) =>
-    store.saveCheckpoint({
-      checkpoint: undo,
+  const admitted = await withStore((store) =>
+    store.admitRestore({
+      commandId,
       threadId,
-      turnId: record.turnId,
-      kind: "undo",
+      checkpointId,
+      undoCheckpointId: crypto.randomUUID(),
+      leaseId: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
     }),
   );
+  if (!admitted.acceptedNow) {
+    const undo = records.find((candidate) => candidate.checkpoint.id === admitted.undoCheckpointId);
+    if (undo === undefined) {
+      throw applicationError("persistence", "Accepted restore has no durable undo checkpoint");
+    }
+    return undo;
+  }
+  const markUncertain = async (): Promise<void> => {
+    const updatedAt = new Date().toISOString();
+    const sequence = await withStore((store) =>
+      store.markRestoreUncertain(commandId, admitted.leaseId, threadId, updatedAt),
+    );
+    if (sequence === null) return;
+    const event = {
+      type: "thread-status",
+      sequence,
+      threadId,
+      status: "recovery-required",
+    } as const;
+    await publishThreadEvent(threadId, event);
+    await publishShellEvent(event);
+  };
+  let undo;
+  try {
+    undo = await runApplication(
+      Effect.gen(function* () {
+        const checkpoints = yield* CheckpointsService;
+        return yield* checkpoints.restore(record.checkpoint, admitted.undoCheckpointId);
+      }),
+    );
+  } catch (cause) {
+    await markUncertain();
+    throw cause;
+  }
+  let persisted;
+  try {
+    persisted = await withStore((store) =>
+      store.completeRestore(commandId, admitted.leaseId, {
+        checkpoint: undo,
+        threadId,
+        turnId: record.turnId,
+        kind: "undo",
+      }),
+    );
+  } catch (cause) {
+    await markUncertain();
+    throw cause;
+  }
+  if (persisted === null) {
+    throw applicationError("conflict", "Restore work lease was lost");
+  }
   await persistMessage({
     id: MessageId.make(crypto.randomUUID()),
     threadId,

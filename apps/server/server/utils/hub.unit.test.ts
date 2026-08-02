@@ -1,14 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { expect, it } from "@effect/vitest";
+import { Effect } from "effect";
+import { describe, vi } from "vitest";
 
 import { ThreadId } from "@metaclanker/contracts/ids";
 import type { ServerEvent } from "@metaclanker/contracts/wire";
 
-import {
-  publishShellEvent,
-  publishThreadEvent,
-  subscribeToShell,
-  subscribeToThread,
-} from "./hub.js";
+import { EventFanout, eventFanoutLayer } from "./event-fanout.js";
 
 const event: ServerEvent = {
   type: "thread-status",
@@ -17,32 +14,40 @@ const event: ServerEvent = {
   status: "running",
 };
 
-describe("event hub", () => {
-  it("isolates a throwing shell subscriber from healthy peers", () => {
-    const healthy = vi.fn();
-    const removeBroken = subscribeToShell(() => {
-      throw new Error("socket closed");
-    });
-    const removeHealthy = subscribeToShell(healthy);
+describe("event fanout", () => {
+  it.layer(eventFanoutLayer)("with a runtime-scoped fanout", (layerIt) => {
+    layerIt.effect("isolates a throwing shell subscriber from healthy peers", () =>
+      Effect.gen(function* () {
+        const fanout = yield* EventFanout;
+        const healthy = vi.fn();
+        const removeBroken = fanout.subscribeShell(() => {
+          throw new Error("socket closed");
+        });
+        const removeHealthy = fanout.subscribeShell(healthy);
 
-    expect(() => publishShellEvent(event)).not.toThrow();
-    expect(healthy).toHaveBeenCalledWith(event);
+        fanout.publishShell(event);
+        expect(healthy).toHaveBeenCalledWith(event);
 
-    removeBroken();
-    removeHealthy();
-  });
+        removeBroken();
+        removeHealthy();
+      }),
+    );
 
-  it("isolates a throwing thread subscriber from healthy peers", () => {
-    const healthy = vi.fn();
-    const removeBroken = subscribeToThread(event.threadId, () => {
-      throw new Error("socket closed");
-    });
-    const removeHealthy = subscribeToThread(event.threadId, healthy);
+    layerIt.effect("isolates a throwing thread subscriber from healthy peers", () =>
+      Effect.gen(function* () {
+        const fanout = yield* EventFanout;
+        const healthy = vi.fn();
+        const removeBroken = fanout.subscribeThread(event.threadId, () => {
+          throw new Error("socket closed");
+        });
+        const removeHealthy = fanout.subscribeThread(event.threadId, healthy);
 
-    expect(() => publishThreadEvent(event.threadId, event)).not.toThrow();
-    expect(healthy).toHaveBeenCalledWith(event);
+        fanout.publishThread(event.threadId, event);
+        expect(healthy).toHaveBeenCalledWith(event);
 
-    removeBroken();
-    removeHealthy();
+        removeBroken();
+        removeHealthy();
+      }),
+    );
   });
 });

@@ -2,17 +2,17 @@ import { Context, Data, Effect } from "effect";
 
 import type { Checkpoints, MetaClankerStore, ProjectFiles } from "./ports.js";
 
-export class Store extends Context.Tag("@metaclanker/application/Store")<
-  Store,
-  MetaClankerStore
->() {}
+export class Store extends Context.Service<Store, MetaClankerStore>()(
+  "@metaclanker/application/Store",
+) {}
 
-export class Files extends Context.Tag("@metaclanker/application/Files")<Files, ProjectFiles>() {}
+export class Files extends Context.Service<Files, ProjectFiles>()(
+  "@metaclanker/application/Files",
+) {}
 
-export class CheckpointService extends Context.Tag("@metaclanker/application/CheckpointService")<
-  CheckpointService,
-  Checkpoints
->() {}
+export class CheckpointService extends Context.Service<CheckpointService, Checkpoints>()(
+  "@metaclanker/application/CheckpointService",
+) {}
 
 export class ApplicationError extends Data.TaggedError("ApplicationError")<{
   readonly code:

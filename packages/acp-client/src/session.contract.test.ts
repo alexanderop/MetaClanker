@@ -58,13 +58,12 @@ describe("ACP process supervision", () => {
     const result = await Effect.runPromise(
       handle.prompt(
         { turnId: TurnId.make("turn:test"), text: "Build it", attachments: [] },
-        (event) =>
-          Effect.gen(function* () {
-            events.push(event);
-            if (event.type === "permission") {
-              yield* handle.respondInteraction(event.interaction.id, "allow").pipe(Effect.orDie);
-            }
-          }),
+        async (event) => {
+          events.push(event);
+          if (event.type === "permission") {
+            await Effect.runPromise(handle.respondInteraction(event.interaction.id, "allow"));
+          }
+        },
       ),
     );
     await Effect.runPromise(handle.close);
@@ -125,12 +124,13 @@ describe("ACP process supervision", () => {
           text: "send a trailing update",
           attachments: [],
         },
-        (event) =>
-          Effect.sync(() => {
-            if (event.type !== "agent-message-chunk") return;
+        (event) => {
+          if (event.type === "agent-message-chunk") {
             chunks.push(event.chunk);
             if (event.chunk.includes("trailing chunk")) observeTrailing();
-          }),
+          }
+          return Promise.resolve();
+        },
       ),
     );
     expect(result.stopReason).toBe("completed");
@@ -181,10 +181,10 @@ describe("ACP process supervision", () => {
               text: "Identify this session",
               attachments: [],
             },
-            (event) =>
-              Effect.sync(() => {
-                if (event.type === "agent-message-chunk") chunks.push(event.chunk);
-              }),
+            (event) => {
+              if (event.type === "agent-message-chunk") chunks.push(event.chunk);
+              return Promise.resolve();
+            },
           ),
         ).then(() => chunks);
       }),
@@ -205,7 +205,7 @@ describe("ACP process supervision", () => {
       Effect.runPromise(
         handle.prompt(
           { turnId: TurnId.make("turn:prompt-crash"), text: "Crash now", attachments: [] },
-          () => Effect.void,
+          () => Promise.resolve(),
         ),
       ),
     ).rejects.toThrow("ACP connection closed");

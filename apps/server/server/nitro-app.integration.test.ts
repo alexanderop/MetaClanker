@@ -222,7 +222,8 @@ describe("the built Nitro application", () => {
       }),
       fetch(`${origin}/api/threads/thread:inactive/cancel`, {
         method: "POST",
-        headers: { cookie: sessionCookie },
+        headers: { cookie: sessionCookie, "content-type": "application/json" },
+        body: JSON.stringify({ commandId: "command:inactive-cancel" }),
       }),
       fetch(`${origin}/api/threads/thread:missing`, {
         method: "PATCH",

@@ -1,11 +1,16 @@
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { Effect } from "effect";
 import { expect, test } from "vitest";
 
+import { Store } from "@metaclanker/application/commands";
 import { CommandId, ProjectId } from "@metaclanker/contracts/ids";
+import { CheckpointsService } from "@metaclanker/git/checkpoints";
 
 import { withOrchestrationHarness } from "../test-support/orchestration.js";
-import { dispatchPrompt } from "./orchestrator.js";
+import { dispatchPrompt, restoreThreadFiles } from "./orchestrator.js";
+import { runApplication } from "./runtime.js";
 
 test("first send rejects before persistence and preserves an accepted provider failure exactly once", async () => {
   await withOrchestrationHarness(
@@ -151,4 +156,59 @@ test("a prompt after an adapter disconnect opens a fresh resumable session", asy
     },
     { fakeAcpScenario: JSON.stringify({ prompt: { mode: "crash" } }) },
   );
+});
+
+test("a confirmed restore records one undo checkpoint and replays the same command without repeating it", async () => {
+  await withOrchestrationHarness(async (harness) => {
+    const projectId = ProjectId.make("project:restore");
+    await harness.createProject({
+      id: projectId,
+      commandId: CommandId.make("command:restore-project"),
+      name: "Restore project",
+      path: harness.projectDirectory,
+      gitBranch: null,
+      gitStatus: "unavailable",
+      createdAt: "2026-08-02T00:00:00.000Z",
+    });
+    const started = await harness.startThreadWithPrompt({
+      commandId: CommandId.make("command:restore-thread"),
+      projectId,
+      provider: "codex",
+      model: null,
+      effort: null,
+      permissionMode: null,
+      prompt: "Create an idle thread for restore",
+      attachments: [],
+    });
+    await harness.drain();
+
+    const target = join(harness.projectDirectory, "restore-target.txt");
+    await writeFile(target, "before restore");
+    const checkpoint = await runApplication(
+      Effect.gen(function* () {
+        const checkpoints = yield* CheckpointsService;
+        return yield* checkpoints.capture(harness.projectDirectory);
+      }),
+    );
+    await runApplication(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        yield* store.saveCheckpoint({
+          checkpoint,
+          threadId: started.thread.id,
+          turnId: null,
+          kind: "pre-turn",
+        });
+      }),
+    );
+    await writeFile(target, "after restore");
+
+    const commandId = CommandId.make("command:restore-files");
+    const first = await restoreThreadFiles(commandId, started.thread.id, checkpoint.id);
+    const replayed = await restoreThreadFiles(commandId, started.thread.id, checkpoint.id);
+
+    expect(await readFile(target, "utf8")).toBe("before restore");
+    expect(replayed.checkpoint.id).toBe(first.checkpoint.id);
+    expect(replayed.kind).toBe("undo");
+  });
 });

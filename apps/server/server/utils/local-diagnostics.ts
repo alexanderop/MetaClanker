@@ -26,10 +26,9 @@ export interface LocalDiagnosticsService {
   readonly flush: Effect.Effect<void>;
 }
 
-export class LocalDiagnostics extends Context.Tag("@metaclanker/server/LocalDiagnostics")<
-  LocalDiagnostics,
-  LocalDiagnosticsService
->() {}
+export class LocalDiagnostics extends Context.Service<LocalDiagnostics, LocalDiagnosticsService>()(
+  "@metaclanker/server/LocalDiagnostics",
+) {}
 
 const discard = (): LocalDiagnosticsService => ({
   record: () => Effect.void,
@@ -67,7 +66,7 @@ export const localDiagnosticsLayer = (
   enabled = process.env["METACLANKER_DIAGNOSTICS"] === "1",
 ) => {
   if (!enabled) return Layer.succeed(LocalDiagnostics, discard());
-  return Layer.scoped(
+  return Layer.effect(
     LocalDiagnostics,
     Effect.acquireRelease(
       Effect.tryPromise(() => prepareDirectory(join(dataDirectory, "diagnostics"))).pipe(
@@ -86,7 +85,7 @@ export const localDiagnosticsLayer = (
           };
           return service;
         }),
-        Effect.catchAll(() => Effect.succeed(discard())),
+        Effect.catch(() => Effect.succeed(discard())),
       ),
       (service) => service.flush,
     ),

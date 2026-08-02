@@ -95,6 +95,74 @@ export type TurnCompletionStatus =
   | "failed"
   | "recovery-required";
 
+export type PromptIntentPhase =
+  | "admitted"
+  | "scheduling-failed"
+  | "leased"
+  | "opening-session"
+  | "dispatching-provider"
+  | "awaiting-provider"
+  | "completed";
+
+export interface PromptIntentLease {
+  readonly intentId: TurnId;
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId;
+  readonly leaseId: string;
+  readonly attempt: number;
+  readonly phase: "leased";
+}
+
+export interface AdmitInteractionResponseRecord {
+  readonly commandId: CommandId;
+  readonly interactionId: PendingInteractionId;
+  readonly optionId: string;
+  readonly leaseId: string;
+  readonly createdAt: string;
+}
+
+export type AdmittedInteractionResponse =
+  | {
+      readonly acceptedNow: false;
+      readonly interaction: PendingInteraction;
+      readonly eventSequence: null;
+    }
+  | {
+      readonly acceptedNow: true;
+      readonly interaction: PendingInteraction;
+      readonly eventSequence: Sequence;
+      readonly leaseId: string;
+    };
+
+export interface AdmitCancelRecord {
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly leaseId: string;
+  readonly createdAt: string;
+}
+
+export type AdmittedCancel =
+  | { readonly acceptedNow: false; readonly turnId: TurnId; readonly eventSequence: null }
+  | {
+      readonly acceptedNow: true;
+      readonly turnId: TurnId;
+      readonly eventSequence: Sequence;
+      readonly leaseId: string;
+    };
+
+export interface AdmitRestoreRecord {
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly checkpointId: string;
+  readonly undoCheckpointId: string;
+  readonly leaseId: string;
+  readonly createdAt: string;
+}
+
+export type AdmittedRestore =
+  | { readonly acceptedNow: false; readonly undoCheckpointId: string }
+  | { readonly acceptedNow: true; readonly undoCheckpointId: string; readonly leaseId: string };
+
 export interface AppendMessageRecord {
   readonly id: MessageId;
   readonly threadId: ThreadId;
@@ -161,6 +229,45 @@ export interface MetaClankerStore {
     status: TurnCompletionStatus,
     completedAt: string,
   ) => Effect.Effect<void, StoreError>;
+  /** Atomically records cancellation before the provider cancel notification. */
+  readonly admitCancel: (input: AdmitCancelRecord) => Effect.Effect<AdmittedCancel, StoreError>;
+  readonly markCancelAwaiting: (
+    turnId: TurnId,
+    leaseId: string,
+    updatedAt: string,
+  ) => Effect.Effect<boolean, StoreError>;
+  readonly markCancelUncertain: (
+    turnId: TurnId,
+    leaseId: string,
+    updatedAt: string,
+  ) => Effect.Effect<boolean, StoreError>;
+  /** Locks an idle root and records the destructive filesystem boundary. */
+  readonly admitRestore: (input: AdmitRestoreRecord) => Effect.Effect<AdmittedRestore, StoreError>;
+  /** Persists the undo checkpoint and completes its restore intent atomically. */
+  readonly completeRestore: (
+    commandId: CommandId,
+    leaseId: string,
+    record: PersistedCheckpoint,
+  ) => Effect.Effect<PersistedCheckpoint | null, StoreError>;
+  /** Marks a restore whose filesystem result cannot be proven after a failure. */
+  readonly markRestoreUncertain: (
+    commandId: CommandId,
+    leaseId: string,
+    threadId: ThreadId,
+    updatedAt: string,
+  ) => Effect.Effect<Sequence | null, StoreError>;
+  readonly claimPromptIntent: (
+    turnId: TurnId,
+    leaseId: string,
+    leaseExpiresAt: string,
+  ) => Effect.Effect<PromptIntentLease | null, StoreError>;
+  readonly transitionPromptIntent: (
+    turnId: TurnId,
+    leaseId: string,
+    phase: Exclude<PromptIntentPhase, "admitted" | "scheduling-failed" | "leased">,
+    updatedAt: string,
+    failureReason?: string,
+  ) => Effect.Effect<boolean, StoreError>;
   readonly getThread: (id: ThreadId) => Effect.Effect<ThreadDetail | null, StoreError>;
   readonly renameThread: (
     id: ThreadId,
@@ -194,6 +301,19 @@ export interface MetaClankerStore {
   readonly resolveInteraction: (
     id: PendingInteractionId,
     status: "resolved" | "cancelled" | "stale",
+  ) => Effect.Effect<PersistedMutation<PendingInteraction>, StoreError>;
+  /** Atomically records the selected option and the provider dispatch boundary. */
+  readonly admitInteractionResponse: (
+    input: AdmitInteractionResponseRecord,
+  ) => Effect.Effect<AdmittedInteractionResponse, StoreError>;
+  /** Settles an admitted response only after the provider request outcome is known. */
+  readonly settleInteractionResponse: (
+    interactionId: PendingInteractionId,
+    leaseId: string,
+    status: "resolved" | "stale",
+    intentState: "succeeded" | "uncertain" | "failed",
+    updatedAt: string,
+    failureReason?: string,
   ) => Effect.Effect<PersistedMutation<PendingInteraction>, StoreError>;
   readonly upsertAgentNode: (
     input: AgentNode,
@@ -254,7 +374,10 @@ export interface CheckpointError {
 }
 
 export interface Checkpoints {
-  readonly capture: (projectPath: string) => Effect.Effect<Checkpoint, CheckpointError>;
+  readonly capture: (
+    projectPath: string,
+    id?: string,
+  ) => Effect.Effect<Checkpoint, CheckpointError>;
   readonly diff: (
     before: Checkpoint,
     after: Checkpoint,
@@ -262,7 +385,10 @@ export interface Checkpoints {
   readonly previewRestore: (
     checkpoint: Checkpoint,
   ) => Effect.Effect<RestorePreview, CheckpointError>;
-  readonly restore: (checkpoint: Checkpoint) => Effect.Effect<Checkpoint, CheckpointError>;
+  readonly restore: (
+    checkpoint: Checkpoint,
+    undoCheckpointId?: string,
+  ) => Effect.Effect<Checkpoint, CheckpointError>;
 }
 
 export interface PersistedCheckpoint {
@@ -339,7 +465,8 @@ export interface AcpSessionHandle {
   readonly capabilities: SessionCapabilities;
   readonly prompt: (
     input: PromptInput,
-    emit: (event: NormalizedAgentEvent) => Effect.Effect<void>,
+    /** The ACP SDK calls this foreign-boundary bridge outside an Effect runtime. */
+    emit: (event: NormalizedAgentEvent) => Promise<void>,
   ) => Effect.Effect<PromptOutcome, AcpRuntimeError>;
   readonly requestCancel: () => Effect.Effect<void, AcpRuntimeError>;
   readonly respondInteraction: (

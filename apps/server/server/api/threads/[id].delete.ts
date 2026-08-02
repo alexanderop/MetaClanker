@@ -16,7 +16,7 @@ export default defineApiHandler(async (event) => {
     threadId: result.record,
     sequence: result.eventSequence,
   } as const;
-  publishShellEvent(liveEvent);
-  publishThreadEvent(result.record, liveEvent);
+  await publishShellEvent(liveEvent);
+  await publishThreadEvent(result.record, liveEvent);
   return { removed: true };
 });

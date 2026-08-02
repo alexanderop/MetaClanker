@@ -1,43 +1,48 @@
+import { Effect } from "effect";
+
 import type { ThreadId } from "@metaclanker/contracts/ids";
 import type { ServerEvent } from "@metaclanker/contracts/wire";
 
-export type ThreadSubscriber = (event: ServerEvent) => void;
-export type ShellSubscriber = (event: ServerEvent) => void;
+import { EventFanout, type ShellSubscriber, type ThreadSubscriber } from "./event-fanout.js";
+import { runApplication } from "./runtime.js";
 
-const subscribers = new Map<string, Set<ThreadSubscriber>>();
-const shellSubscribers = new Set<ShellSubscriber>();
+export type { ShellSubscriber, ThreadSubscriber } from "./event-fanout.js";
 
-export const publishShellEvent = (event: ServerEvent): void => {
-  for (const subscriber of shellSubscribers) {
-    try {
-      subscriber(event);
-    } catch {
-      shellSubscribers.delete(subscriber);
-    }
-  }
+/** Publishes an already-committed event; shutdown only drops this best-effort wake-up. */
+export const publishShellEvent = async (event: ServerEvent): Promise<void> => {
+  await runApplication(
+    Effect.gen(function* () {
+      const fanout = yield* EventFanout;
+      fanout.publishShell(event);
+    }),
+  ).catch(() => undefined);
 };
 
-export const subscribeToShell = (subscriber: ShellSubscriber): (() => void) => {
-  shellSubscribers.add(subscriber);
-  return () => shellSubscribers.delete(subscriber);
+export const subscribeToShell = async (subscriber: ShellSubscriber): Promise<() => void> =>
+  await runApplication(
+    Effect.gen(function* () {
+      const fanout = yield* EventFanout;
+      return fanout.subscribeShell(subscriber);
+    }),
+  );
+
+/** Publishes an already-committed event; shutdown only drops this best-effort wake-up. */
+export const publishThreadEvent = async (threadId: ThreadId, event: ServerEvent): Promise<void> => {
+  await runApplication(
+    Effect.gen(function* () {
+      const fanout = yield* EventFanout;
+      fanout.publishThread(threadId, event);
+    }),
+  ).catch(() => undefined);
 };
 
-export const publishThreadEvent = (threadId: ThreadId, event: ServerEvent): void => {
-  for (const subscriber of subscribers.get(threadId) ?? []) {
-    try {
-      subscriber(event);
-    } catch {
-      subscribers.get(threadId)?.delete(subscriber);
-    }
-  }
-};
-
-export const subscribeToThread = (threadId: string, subscriber: ThreadSubscriber): (() => void) => {
-  const threadSubscribers = subscribers.get(threadId) ?? new Set<ThreadSubscriber>();
-  threadSubscribers.add(subscriber);
-  subscribers.set(threadId, threadSubscribers);
-  return () => {
-    threadSubscribers.delete(subscriber);
-    if (threadSubscribers.size === 0) subscribers.delete(threadId);
-  };
-};
+export const subscribeToThread = async (
+  threadId: ThreadId,
+  subscriber: ThreadSubscriber,
+): Promise<() => void> =>
+  await runApplication(
+    Effect.gen(function* () {
+      const fanout = yield* EventFanout;
+      return fanout.subscribeThread(threadId, subscriber);
+    }),
+  );

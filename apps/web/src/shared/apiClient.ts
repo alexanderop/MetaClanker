@@ -1,7 +1,12 @@
 import { Schema } from "effect";
 
 import type { ThreadId } from "@metaclanker/contracts/ids";
-import type { CreateProjectRequest, StartThreadRequest } from "@metaclanker/contracts/wire";
+import type {
+  CancelPromptRequest,
+  CreateProjectRequest,
+  RestoreThreadFilesRequest,
+  StartThreadRequest,
+} from "@metaclanker/contracts/wire";
 import {
   AgentNode,
   DirectoryBrowserResponse,
@@ -30,12 +35,12 @@ class ApiError extends Error {
   }
 }
 
-const decode = <A, I>(schema: Schema.Schema<A, I, never>, value: unknown): Promise<A> =>
+const decode = <A>(schema: Schema.ConstraintDecoder<A, never>, value: unknown): Promise<A> =>
   Schema.decodeUnknownPromise(schema)(value);
 
-const request = async <A, I>(
+const request = async <A>(
   path: string,
-  schema: Schema.Schema<A, I, never>,
+  schema: Schema.ConstraintDecoder<A, never>,
   init?: RequestInit,
 ): Promise<A> => {
   const response = await fetch(path, {
@@ -90,8 +95,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  cancel: (id: ThreadId) =>
-    request(`/api/threads/${encodeURIComponent(id)}/cancel`, Accepted, { method: "POST" }),
+  cancel: (id: ThreadId, input: CancelPromptRequest) =>
+    request(`/api/threads/${encodeURIComponent(id)}/cancel`, Accepted, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   respond: (interactionId: string, input: object) =>
     request(`/api/interactions/${encodeURIComponent(interactionId)}/respond`, PendingInteraction, {
       method: "POST",
@@ -108,10 +116,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ checkpointId }),
     }),
-  restoreFiles: (id: ThreadId, checkpointId: string) =>
+  restoreFiles: (id: ThreadId, input: RestoreThreadFilesRequest) =>
     request(`/api/threads/${encodeURIComponent(id)}/restore`, PersistedCheckpointWire, {
       method: "POST",
-      body: JSON.stringify({ checkpointId, confirmed: true }),
+      body: JSON.stringify(input),
     }),
 };
 

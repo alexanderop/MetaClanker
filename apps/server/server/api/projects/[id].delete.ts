@@ -15,7 +15,7 @@ export default defineEventHandler(async (event) => {
       throw publicError(cause);
     },
   );
-  publishShellEvent({
+  await publishShellEvent({
     type: "project-removed",
     projectId: result.record,
     sequence: result.eventSequence,

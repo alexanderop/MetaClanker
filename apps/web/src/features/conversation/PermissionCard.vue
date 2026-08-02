@@ -50,7 +50,7 @@ const respond = async (optionId: string): Promise<void> => {
           :key="option.optionId"
           :variant="option.kind.startsWith('allow') ? 'primary' : 'secondary'"
           type="button"
-          :disabled="responding"
+          :disabled="responding || interaction.status !== 'pending'"
           @click="respond(option.optionId)"
         >
           {{ option.label }}

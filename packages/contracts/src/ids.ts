@@ -33,8 +33,8 @@ export type EventId = typeof EventId.Type;
 export const SessionId = Schema.String.pipe(Schema.brand("SessionId"));
 export type SessionId = typeof SessionId.Type;
 
-export const Sequence = Schema.Number.pipe(Schema.int(), Schema.nonNegative());
+export const Sequence = Schema.Natural;
 export type Sequence = typeof Sequence.Type;
 
-export const decodeId = <A, I>(schema: Schema.Schema<A, I, never>, value: unknown): A =>
+export const decodeId = <A>(schema: Schema.ConstraintDecoder<A, never>, value: unknown): A =>
   Schema.decodeUnknownSync(schema)(value);
