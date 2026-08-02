@@ -3,7 +3,7 @@ import * as acp from "@agentclientprotocol/sdk";
 
 import { scenarioFromEnvironment } from "./scenarios.js";
 
-const sessions = new Set<string>();
+const sessions = new Map<string, string>();
 const scenario = scenarioFromEnvironment(process.env["METACLANKER_FAKE_ACP_SCENARIO"]);
 const cancellations = new Map<string, () => void>();
 const noop = (): void => undefined;
@@ -24,19 +24,34 @@ const terminate = (): Promise<never> => {
   return new Promise<never>(() => undefined);
 };
 
-const sessionModes = () => ({
-  currentModeId: "default",
-  availableModes: [{ id: "default", name: "Default", description: "Deterministic mode" }],
+const sessionModes = (currentModeId = scenario.modes[0] ?? "default") => ({
+  currentModeId,
+  availableModes: scenario.modes.map((mode) => ({
+    id: mode,
+    name: mode,
+    description: "Deterministic mode",
+  })),
 });
 
-const modelConfig = (currentValue = scenario.models[0] ?? "default") => [
+const sessionConfig = (
+  currentModel = scenario.models[0] ?? "default",
+  currentMode = scenario.modes[0] ?? "default",
+) => [
   {
     type: "select" as const,
     id: "model",
     name: "Model",
     category: "model",
-    currentValue,
+    currentValue: currentModel,
     options: scenario.models.map((model) => ({ value: model, name: model })),
+  },
+  {
+    type: "select" as const,
+    id: "mode",
+    name: "Mode",
+    category: "mode",
+    currentValue: currentMode,
+    options: scenario.modes.map((mode) => ({ value: mode, name: mode })),
   },
 ];
 
@@ -62,28 +77,49 @@ const app = acp
   .onRequest(acp.methods.agent.session.new, ({ params }) => {
     if (scenario.crashAt === "session-new") return terminate();
     const sessionId = `fake-${crypto.randomUUID()}`;
-    sessions.add(sessionId);
+    sessions.set(sessionId, scenario.modes[0] ?? "default");
     return {
       sessionId,
       modes: sessionModes(),
-      configOptions: modelConfig(),
+      configOptions: sessionConfig(),
       _meta: { cwd: params.cwd },
     };
   })
   .onRequest(acp.methods.agent.session.resume, ({ params }) => {
-    sessions.add(params.sessionId);
+    sessions.set(params.sessionId, scenario.modes[0] ?? "default");
     return {
       modes: sessionModes(),
-      configOptions: modelConfig(),
+      configOptions: sessionConfig(),
       _meta: { cwd: params.cwd },
     };
   })
-  .onRequest(acp.methods.agent.session.setConfigOption, ({ params }) => ({
-    configOptions: modelConfig(String(params.value)),
-  }))
+  .onRequest(acp.methods.agent.session.setConfigOption, ({ params }) => {
+    const value = String(params.value);
+    if (params.configId === "model" && scenario.models.includes(value)) {
+      return { configOptions: sessionConfig(value) };
+    }
+    if (params.configId === "mode" && scenario.modes.includes(value)) {
+      sessions.set(params.sessionId, value);
+      return { configOptions: sessionConfig(scenario.models[0] ?? "default", value) };
+    }
+    throw new Error(`Unsupported ${params.configId} configuration: ${value}`);
+  })
+  .onRequest(acp.methods.agent.session.setMode, ({ params }) => {
+    if (!scenario.modes.includes(params.modeId)) {
+      throw new Error(`Unsupported mode: ${params.modeId}`);
+    }
+    sessions.set(params.sessionId, params.modeId);
+    return {};
+  })
   .onRequest(acp.methods.agent.session.prompt, async ({ client, params }) => {
     if (!sessions.has(params.sessionId)) {
       throw new Error("Unknown fake session");
+    }
+    if (
+      scenario.requiredMode !== null &&
+      sessions.get(params.sessionId) !== scenario.requiredMode
+    ) {
+      throw new Error(`Expected mode ${scenario.requiredMode}`);
     }
     if (scenario.crashAt === "prompt" || scenario.prompt.mode === "crash") return terminate();
     if (scenario.prompt.mode === "malformed-frame") {

@@ -105,6 +105,21 @@ const subagentState = (status: acp.ToolCallStatus | null | undefined) => {
 
 const noopEmitter = (): Promise<void> => Promise.resolve();
 
+const providerPermissionMode = (
+  provider: Provider,
+  permissionMode: OpenAcpSessionInput["permissionMode"],
+): string | null => {
+  if (permissionMode === null) return null;
+  if (provider === "claude") {
+    if (permissionMode === "read-only") return "plan";
+    if (permissionMode === "workspace-write") return "acceptEdits";
+    return "bypassPermissions";
+  }
+  if (permissionMode === "workspace-write") return "agent";
+  if (permissionMode === "full-access") return "agent-full-access";
+  return permissionMode;
+};
+
 interface PendingPermission {
   readonly resolve: (response: acp.RequestPermissionResponse) => void;
   readonly sessionId: string;
@@ -163,9 +178,7 @@ const openSession = (
 ): Effect.Effect<AcpSessionHandle, AcpRuntimeError> =>
   Effect.tryPromise({
     try: async () => {
-      let permissionMode = input.permissionMode;
-      if (permissionMode === "workspace-write") permissionMode = "agent";
-      if (permissionMode === "full-access") permissionMode = "agent-full-access";
+      const permissionMode = providerPermissionMode(input.provider, input.permissionMode);
       const codexConfig = {
         ...(input.model === null ? {} : { model: input.model }),
         ...(input.effort === null ? {} : { model_reasoning_effort: input.effort }),

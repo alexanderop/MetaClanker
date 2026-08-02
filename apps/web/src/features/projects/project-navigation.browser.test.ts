@@ -299,7 +299,7 @@ test("provider selection explains unavailable choices and enables a ready altern
   expect(document.activeElement).toBe(provider.element());
 });
 
-test("the model catalog searches advertised models and accepts a custom model", async () => {
+test("the Claude model catalog exposes advertised Sonnet and accepts a custom model", async () => {
   let providerRequestCount = 0;
   worker.use(
     http.get("/api/shell", () =>
@@ -312,15 +312,21 @@ test("the model catalog searches advertised models and accepts a custom model", 
           provider: "codex",
           status: "ready",
           reason: null,
-          models: providerRequestCount > 1 ? ["gpt-5.6-codex", "gpt-5.5-codex"] : [],
+          models: [],
         },
-        { provider: "claude", status: "ready", reason: null, models: [] },
+        {
+          provider: "claude",
+          status: "ready",
+          reason: null,
+          models: providerRequestCount > 1 ? ["default", "sonnet", "opus[1m]"] : [],
+        },
       ]);
     }),
   );
   await router.push({ name: "draft", params: { projectId: project.id } });
   await router.isReady();
   const screen = await renderApp();
+  await screen.getByLabelText("Provider").selectOptions("claude");
   const trigger = screen.getByRole("button", { name: "Browse catalog" });
 
   await trigger.click();
@@ -330,21 +336,17 @@ test("the model catalog searches advertised models and accepts a custom model", 
   await expect.element(dialog).toBeVisible();
   expect(document.activeElement).toBe(search.element());
   await expect.element(dialog.getByRole("button", { name: "Provider default" })).toBeVisible();
-  await expect.element(dialog.getByRole("button", { name: "gpt-5.6-codex" })).toBeVisible();
-  await expect.element(dialog.getByRole("button", { name: "gpt-5.5-codex" })).toBeVisible();
+  await expect.element(dialog.getByRole("button", { name: "sonnet" })).toBeVisible();
+  await expect.element(dialog.getByRole("button", { name: "opus[1m]" })).toBeVisible();
   expect(providerRequestCount).toBe(2);
 
-  await search.fill("5.6");
-  await expect.element(dialog.getByRole("button", { name: "gpt-5.6-codex" })).toBeVisible();
-  await expect
-    .element(dialog.getByRole("button", { name: "gpt-5.5-codex" }))
-    .not.toBeInTheDocument();
-  await dialog.getByRole("button", { name: "gpt-5.6-codex" }).click();
+  await search.fill("sonn");
+  await expect.element(dialog.getByRole("button", { name: "sonnet" })).toBeVisible();
+  await expect.element(dialog.getByRole("button", { name: "opus[1m]" })).not.toBeInTheDocument();
+  await dialog.getByRole("button", { name: "sonnet" }).click();
 
   await expect.element(dialog).not.toBeInTheDocument();
-  await expect
-    .element(screen.getByLabelText("Model", { exact: true }))
-    .toHaveValue("gpt-5.6-codex");
+  await expect.element(screen.getByLabelText("Model", { exact: true })).toHaveValue("sonnet");
   expect(document.activeElement).toBe(trigger.element());
 
   await trigger.click();

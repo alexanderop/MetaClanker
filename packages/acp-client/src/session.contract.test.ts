@@ -160,6 +160,56 @@ describe("ACP process supervision", () => {
     await Effect.runPromise(handle.close);
   });
 
+  it.each([
+    ["read-only", "plan"],
+    ["workspace-write", "acceptEdits"],
+    ["full-access", "bypassPermissions"],
+  ] as const)(
+    "maps the generic %s permission choice to Claude's %s session mode",
+    async (permissionMode, claudeMode) => {
+      const scenario = acpScenario({
+        modes: ["default", claudeMode],
+        requiredMode: claudeMode,
+        prompt: { mode: "complete" },
+      });
+      const command = {
+        command: process.execPath,
+        args: [fakeAgent],
+        environment: fakeAcpEnvironment(scenario),
+      };
+      const handle = await Effect.runPromise(
+        makeAcpSessions({ codex: command, claude: command }).open({
+          provider: "claude",
+          cwd: process.cwd(),
+          projectId: ProjectId.make(`project:claude-${permissionMode}`),
+          threadId: ThreadId.make(`thread:claude-${permissionMode}`),
+          providerSessionId: null,
+          model: null,
+          effort: null,
+          permissionMode,
+        }),
+      );
+
+      try {
+        expect(handle.capabilities.modes).toContain(claudeMode);
+        await expect(
+          Effect.runPromise(
+            handle.prompt(
+              {
+                turnId: TurnId.make(`turn:claude-${permissionMode}`),
+                text: "Complete the permission-mode regression probe",
+                attachments: [],
+              },
+              () => Promise.resolve(),
+            ),
+          ),
+        ).resolves.toEqual({ stopReason: "completed" });
+      } finally {
+        await Effect.runPromise(handle.close);
+      }
+    },
+  );
+
   it("rejects an adapter that negotiates an unsupported protocol version", async () => {
     await expect(
       openFakeSession(acpScenario({ protocolVersion: 2 }), "unsupported-protocol"),

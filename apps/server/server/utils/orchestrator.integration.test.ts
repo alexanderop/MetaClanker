@@ -94,51 +94,61 @@ test("first send rejects before persistence and preserves an accepted provider f
   );
 });
 
-test("an accepted first send streams through the production ACP supervisor exactly once", async () => {
-  await withOrchestrationHarness(async (harness) => {
-    const projectId = ProjectId.make("project:orchestrator-success");
-    await harness.createProject({
-      id: projectId,
-      commandId: CommandId.make("command:orchestrator-success-project"),
-      name: "Orchestrator success project",
-      path: harness.projectDirectory,
-      gitBranch: null,
-      gitStatus: "unavailable",
-      createdAt: "2026-08-01T00:00:00.000Z",
-    });
-    const input = {
-      commandId: CommandId.make("command:orchestrator-success"),
-      projectId,
-      provider: "claude" as const,
-      model: null,
-      effort: null,
-      permissionMode: null,
-      prompt: "Complete the deterministic turn",
-      attachments: [],
-    };
+test("a Claude workspace-write first send caches its advertised model catalog", async () => {
+  await withOrchestrationHarness(
+    async (harness) => {
+      const projectId = ProjectId.make("project:orchestrator-success");
+      await harness.createProject({
+        id: projectId,
+        commandId: CommandId.make("command:orchestrator-success-project"),
+        name: "Orchestrator success project",
+        path: harness.projectDirectory,
+        gitBranch: null,
+        gitStatus: "unavailable",
+        createdAt: "2026-08-01T00:00:00.000Z",
+      });
+      const input = {
+        commandId: CommandId.make("command:orchestrator-success"),
+        projectId,
+        provider: "claude" as const,
+        model: null,
+        effort: null,
+        permissionMode: "workspace-write" as const,
+        prompt: "Complete the deterministic turn",
+        attachments: [],
+      };
 
-    const accepted = await harness.startThreadWithPrompt(input);
-    const replayed = await harness.startThreadWithPrompt(input);
-    await harness.drain();
-    const detail = await harness.threadDetail(accepted.thread.id);
-    const providerModels = await runApplication(
-      Effect.gen(function* () {
-        const store = yield* Store;
-        return yield* store.listProviderModels;
+      const accepted = await harness.startThreadWithPrompt(input);
+      const replayed = await harness.startThreadWithPrompt(input);
+      await harness.drain();
+      const detail = await harness.threadDetail(accepted.thread.id);
+      const providerModels = await runApplication(
+        Effect.gen(function* () {
+          const store = yield* Store;
+          return yield* store.listProviderModels;
+        }),
+      );
+
+      expect(replayed).toEqual(accepted);
+      expect(detail?.thread.status).toBe("completed");
+      expect(detail?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+      expect(detail?.messages.map((message) => message.content).join(" ")).toContain(
+        "Integration fake completed",
+      );
+      expect(providerModels).toEqual([
+        { provider: "claude", model: "default" },
+        { provider: "claude", model: "opus" },
+        { provider: "claude", model: "sonnet" },
+      ]);
+    },
+    {
+      fakeAcpScenario: JSON.stringify({
+        models: ["default", "sonnet", "opus"],
+        modes: ["default", "acceptEdits"],
+        prompt: { mode: "complete", message: "Integration fake completed" },
       }),
-    );
-
-    expect(replayed).toEqual(accepted);
-    expect(detail?.thread.status).toBe("completed");
-    expect(detail?.messages.filter((message) => message.role === "user")).toHaveLength(1);
-    expect(detail?.messages.map((message) => message.content).join(" ")).toContain(
-      "Integration fake completed",
-    );
-    expect(providerModels).toEqual([
-      { provider: "claude", model: "fake-deep" },
-      { provider: "claude", model: "fake-fast" },
-    ]);
-  });
+    },
+  );
 });
 
 test("a permission request publishes needs-input before returning to running and completing", async () => {
