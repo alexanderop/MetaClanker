@@ -26,172 +26,246 @@ import { useWorkspaceStore } from "../shared/workspaceStore.js";
 const workspace = useWorkspaceStore();
 const route = useRoute();
 const router = useRouter();
-const promptInput = useTemplateRef<{ element: HTMLTextAreaElement | null }>("promptInput");
-const discardOpen = ref(false);
-const sending = ref(false);
-const sendError = ref<string | null>(null);
-const attachmentValue = ref("");
-const attachmentsOpen = ref(false);
-const acceptedDraft = shallowRef<ConversationDraft | null>(null);
-
-const projectId = computed(() => ProjectId.make(String(route.params["projectId"] ?? "")));
-const project = computed(() =>
-  workspace.shell.projects.find((candidate) => candidate.id === projectId.value),
-);
-const draft = computed(
-  () =>
-    workspace.conversationDrafts[projectId.value] ??
-    acceptedDraft.value ??
-    workspace.draftForProject(projectId.value),
-);
-const sendReady = computed(
-  () =>
-    (draft.value.prompt.trim().length > 0 || draft.value.attachments.length > 0) &&
-    workspace.providerReadiness.find((item) => item.provider === draft.value.provider)?.status ===
-      "ready",
-);
-const selectedProviderReadiness = computed(() =>
-  workspace.providerReadiness.find((item) => item.provider === draft.value.provider),
-);
 
 const selection = (target: HTMLTextAreaElement) => ({
   cursorStart: target.selectionStart,
   cursorEnd: target.selectionEnd,
 });
 
-const updatePrompt = (event: Event): void => {
-  workspace.updateConversationDraft(projectId.value, {
-    prompt: (event.target as HTMLTextAreaElement).value,
-    ...selection(event.target as HTMLTextAreaElement),
-  });
-};
+const { projectId, project, draft, retainDraft, changeProject } = useDraftProject();
+const { promptInput, focusPrompt } = useComposerFocus();
+const {
+  updatePrompt,
+  updateCursor,
+  updateProvider,
+  updateModel,
+  updateEffort,
+  updatePermissionMode,
+} = useDraftFields();
+const { attachmentValue, attachmentsOpen, addAttachment, removeAttachment } = useAttachments();
+const { sending, sendError, sendReady, selectedProviderReadiness, send, onKeydown } =
+  useSendDraft();
+const { discardOpen, discard, confirmDiscard } = useDiscardDraft();
 
-const updateCursor = (event: Event): void => {
-  workspace.updateConversationDraft(
-    projectId.value,
-    selection(event.target as HTMLTextAreaElement),
+function useDraftProject() {
+  // The draft the user just sent, kept so the view renders its final state
+  // instead of flashing empty while the router moves to the new thread.
+  const acceptedDraft = shallowRef<ConversationDraft | null>(null);
+
+  const projectId = computed(() => ProjectId.make(String(route.params["projectId"] ?? "")));
+  const project = computed(() =>
+    workspace.shell.projects.find((candidate) => candidate.id === projectId.value),
   );
-};
+  const draft = computed(
+    () =>
+      workspace.conversationDrafts[projectId.value] ??
+      acceptedDraft.value ??
+      workspace.draftForProject(projectId.value),
+  );
 
-const updateProvider = (value: string): void => {
-  const provider: Provider = value === "claude" ? "claude" : "codex";
-  const defaults = workspace.settings.providerDefaults[provider];
-  workspace.updateConversationDraft(projectId.value, {
-    provider,
-    model: defaults.model,
-    effort: defaults.effort,
-    permissionMode: defaults.permissionMode,
-  });
-};
+  const retainDraft = (accepted: ConversationDraft): void => {
+    acceptedDraft.value = accepted;
+  };
 
-const updateModel = (value: string): void => {
-  const model = value.trim();
-  workspace.updateConversationDraft(projectId.value, { model: model.length === 0 ? null : model });
-};
+  const changeProject = async (value: string): Promise<void> => {
+    if (value === "__add-project") {
+      await router.push({ query: { addProject: "true" } });
+      return;
+    }
+    const nextProjectId = ProjectId.make(value);
+    await router.push({ name: "draft", params: { projectId: nextProjectId } });
+  };
 
-const updateEffort = (value: string): void => {
-  workspace.updateConversationDraft(projectId.value, {
-    effort: value === "low" || value === "medium" || value === "high" ? value : null,
-  });
-};
+  return { projectId, project, draft, retainDraft, changeProject };
+}
 
-const updatePermissionMode = (value: string): void => {
-  workspace.updateConversationDraft(projectId.value, {
-    permissionMode:
-      value === "read-only" || value === "workspace-write" || value === "full-access"
-        ? value
-        : null,
-  });
-};
+function useComposerFocus() {
+  const promptInput = useTemplateRef<{ element: HTMLTextAreaElement | null }>("promptInput");
 
-const addAttachment = (): void => {
-  const attachment = attachmentValue.value.trim();
-  if (attachment.length === 0 || draft.value.attachments.includes(attachment)) return;
-  workspace.updateConversationDraft(projectId.value, {
-    attachments: [...draft.value.attachments, attachment],
-  });
-  attachmentValue.value = "";
-};
-
-const removeAttachment = (attachment: string): void => {
-  workspace.updateConversationDraft(projectId.value, {
-    attachments: draft.value.attachments.filter((item) => item !== attachment),
-  });
-};
-
-const changeProject = async (value: string): Promise<void> => {
-  if (value === "__add-project") {
-    await router.push({ query: { addProject: "true" } });
-    return;
-  }
-  const nextProjectId = ProjectId.make(value);
-  await router.push({ name: "draft", params: { projectId: nextProjectId } });
-};
-
-const send = async (): Promise<void> => {
-  if (!sendReady.value || sending.value) return;
-  sending.value = true;
-  sendError.value = null;
-  try {
-    const acceptedProjectId = projectId.value;
-    const threadId = await workspace.startConversation(acceptedProjectId);
-    acceptedDraft.value = draft.value;
-    workspace.discardConversationDraft(acceptedProjectId);
-    await router.replace({ name: "thread", params: { threadId } });
-    requestAnimationFrame(() =>
-      document.querySelector<HTMLTextAreaElement>("#main-content textarea")?.focus(),
-    );
-  } catch (cause) {
-    sendError.value = cause instanceof Error ? cause.message : String(cause);
+  const focusPrompt = async (): Promise<void> => {
     await nextTick();
     promptInput.value?.element?.focus();
-  } finally {
-    sending.value = false;
-  }
-};
+  };
 
-const onKeydown = (event: KeyboardEvent): void => {
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
-  event.preventDefault();
-  void send();
-};
+  // Returning to a draft restores the caret where the user left it.
+  const restoreComposer = (): void => {
+    void nextTick(() => {
+      const input = promptInput.value?.element ?? null;
+      if (input === null) return;
+      input.focus();
+      const maximum = input.value.length;
+      input.setSelectionRange(
+        Math.min(draft.value.cursorStart, maximum),
+        Math.min(draft.value.cursorEnd, maximum),
+      );
+    });
+  };
 
-const confirmDiscard = async (): Promise<void> => {
-  workspace.discardConversationDraft(projectId.value);
-  discardOpen.value = false;
-  await router.push({ name: "home" });
-};
+  watch(projectId, restoreComposer, { immediate: true });
 
-const discard = async (): Promise<void> => {
-  if (draft.value.prompt.trim().length > 0 || draft.value.attachments.length > 0) {
-    discardOpen.value = true;
-    return;
-  }
-  await confirmDiscard();
-};
+  return { promptInput, focusPrompt };
+}
 
-const focusComposer = (): void => {
-  void nextTick(() => {
-    const input = promptInput.value?.element ?? null;
-    if (input === null) return;
-    input.focus();
-    const maximum = input.value.length;
-    input.setSelectionRange(
-      Math.min(draft.value.cursorStart, maximum),
-      Math.min(draft.value.cursorEnd, maximum),
+function useDraftFields() {
+  const updatePrompt = (event: Event): void => {
+    workspace.updateConversationDraft(projectId.value, {
+      prompt: (event.target as HTMLTextAreaElement).value,
+      ...selection(event.target as HTMLTextAreaElement),
+    });
+  };
+
+  const updateCursor = (event: Event): void => {
+    workspace.updateConversationDraft(
+      projectId.value,
+      selection(event.target as HTMLTextAreaElement),
     );
-  });
-};
+  };
 
-watch(
-  projectId,
-  () => {
+  const updateProvider = (value: string): void => {
+    const provider: Provider = value === "claude" ? "claude" : "codex";
+    const defaults = workspace.settings.providerDefaults[provider];
+    workspace.updateConversationDraft(projectId.value, {
+      provider,
+      model: defaults.model,
+      effort: defaults.effort,
+      permissionMode: defaults.permissionMode,
+    });
+  };
+
+  const updateModel = (value: string): void => {
+    const model = value.trim();
+    workspace.updateConversationDraft(projectId.value, {
+      model: model.length === 0 ? null : model,
+    });
+  };
+
+  const updateEffort = (value: string): void => {
+    workspace.updateConversationDraft(projectId.value, {
+      effort: value === "low" || value === "medium" || value === "high" ? value : null,
+    });
+  };
+
+  const updatePermissionMode = (value: string): void => {
+    workspace.updateConversationDraft(projectId.value, {
+      permissionMode:
+        value === "read-only" || value === "workspace-write" || value === "full-access"
+          ? value
+          : null,
+    });
+  };
+
+  return {
+    updatePrompt,
+    updateCursor,
+    updateProvider,
+    updateModel,
+    updateEffort,
+    updatePermissionMode,
+  };
+}
+
+function useAttachments() {
+  const attachmentValue = ref("");
+  const attachmentsOpen = ref(false);
+
+  const addAttachment = (): void => {
+    const attachment = attachmentValue.value.trim();
+    if (attachment.length === 0 || draft.value.attachments.includes(attachment)) return;
+    workspace.updateConversationDraft(projectId.value, {
+      attachments: [...draft.value.attachments, attachment],
+    });
+    attachmentValue.value = "";
+  };
+
+  const removeAttachment = (attachment: string): void => {
+    workspace.updateConversationDraft(projectId.value, {
+      attachments: draft.value.attachments.filter((item) => item !== attachment),
+    });
+  };
+
+  watch(
+    projectId,
+    () => {
+      attachmentsOpen.value = draft.value.attachments.length > 0;
+    },
+    { immediate: true },
+  );
+
+  return { attachmentValue, attachmentsOpen, addAttachment, removeAttachment };
+}
+
+function useSendDraft() {
+  const sending = ref(false);
+  const sendError = ref<string | null>(null);
+
+  const selectedProviderReadiness = computed(() =>
+    workspace.providerReadiness.find((item) => item.provider === draft.value.provider),
+  );
+
+  const sendReady = computed(
+    () =>
+      (draft.value.prompt.trim().length > 0 || draft.value.attachments.length > 0) &&
+      selectedProviderReadiness.value?.status === "ready",
+  );
+
+  const send = async (): Promise<void> => {
+    if (!sendReady.value || sending.value) return;
+    sending.value = true;
     sendError.value = null;
-    attachmentsOpen.value = draft.value.attachments.length > 0;
-    focusComposer();
-  },
-  { immediate: true },
-);
+    try {
+      const acceptedProjectId = projectId.value;
+      const threadId = await workspace.startConversation(acceptedProjectId);
+      retainDraft(draft.value);
+      workspace.discardConversationDraft(acceptedProjectId);
+      await router.replace({ name: "thread", params: { threadId } });
+      requestAnimationFrame(() =>
+        document.querySelector<HTMLTextAreaElement>("#main-content textarea")?.focus(),
+      );
+    } catch (cause) {
+      sendError.value = cause instanceof Error ? cause.message : String(cause);
+      await focusPrompt();
+    } finally {
+      sending.value = false;
+    }
+  };
+
+  const onKeydown = (event: KeyboardEvent): void => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    void send();
+  };
+
+  watch(
+    projectId,
+    () => {
+      sendError.value = null;
+    },
+    { immediate: true },
+  );
+
+  return { sending, sendError, sendReady, selectedProviderReadiness, send, onKeydown };
+}
+
+function useDiscardDraft() {
+  const discardOpen = ref(false);
+
+  const confirmDiscard = async (): Promise<void> => {
+    workspace.discardConversationDraft(projectId.value);
+    discardOpen.value = false;
+    await router.push({ name: "home" });
+  };
+
+  // Only interrupt the user when discarding would lose something.
+  const discard = async (): Promise<void> => {
+    if (draft.value.prompt.trim().length > 0 || draft.value.attachments.length > 0) {
+      discardOpen.value = true;
+      return;
+    }
+    await confirmDiscard();
+  };
+
+  return { discardOpen, discard, confirmDiscard };
+}
 </script>
 
 <template>

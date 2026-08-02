@@ -14,60 +14,93 @@ import { EmptyState } from "../../ui/empty-state/index.js";
 const codeBlockClass =
   "m-0 mx-3 mb-3 max-h-56 overflow-auto rounded-xs bg-sidebar p-3 font-mono text-[0.75em] whitespace-pre-wrap text-text-inverse";
 
-const props = defineProps<{ detail: ThreadDetail }>();
-const transcript = useTemplateRef<HTMLElement>("transcript");
-let anchoredToBottom = true;
+// A reader scrolled this close to the end still counts as reading the tail.
+const bottomAnchorSlack = 96;
+const activityPageSize = 200;
 
+const props = defineProps<{ detail: ThreadDetail }>();
+
+const timeline = computed(() => conversationTimeline(props.detail));
 const pendingInteractions = computed(() =>
   props.detail.interactions.filter((interaction) => interaction.status === "pending"),
 );
-const timeline = computed(() => conversationTimeline(props.detail));
-const activityPageSize = 200;
-const visibleActivityCount = ref(activityPageSize);
-const visibleTimeline = computed(() => timeline.value.slice(-visibleActivityCount.value));
-const hiddenActivityCount = computed(() => timeline.value.length - visibleTimeline.value.length);
 const cacheMarkdown = computed(() => props.detail.thread.status !== "running");
 
-watch(
-  () => props.detail.thread.id,
-  () => {
-    visibleActivityCount.value = activityPageSize;
-    anchoredToBottom = true;
+const { transcript, onScroll, keepScrollPosition } = useStickyScroll();
+const { visibleTimeline, hiddenActivityCount, showEarlierActivity } = usePagedTimeline();
+
+// Follows a running conversation, but yields the moment the reader scrolls up.
+function useStickyScroll() {
+  const transcript = useTemplateRef<HTMLElement>("transcript");
+  let anchoredToBottom = true;
+
+  const scrollToBottom = (): void => {
+    const element = transcript.value;
+    if (element !== null) element.scrollTop = element.scrollHeight;
+  };
+
+  const onScroll = (): void => {
+    const element = transcript.value;
+    if (element === null) return;
+    anchoredToBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight < bottomAnchorSlack;
+  };
+
+  // Growing the list upwards must not move the entry the reader is looking at.
+  const keepScrollPosition = (grow: () => void): void => {
+    const element = transcript.value;
+    const previousHeight = element?.scrollHeight ?? 0;
+    const previousTop = element?.scrollTop ?? 0;
+    grow();
+    anchoredToBottom = false;
+    void nextTick(() => {
+      const next = transcript.value;
+      if (next !== null) next.scrollTop = previousTop + next.scrollHeight - previousHeight;
+    });
+  };
+
+  watch(
+    () => props.detail.thread.id,
+    () => {
+      anchoredToBottom = true;
+      void nextTick(scrollToBottom);
+    },
+  );
+
+  onMounted(() => {
     void nextTick(scrollToBottom);
-  },
-);
-
-const onScroll = (): void => {
-  const element = transcript.value;
-  if (element === null) return;
-  anchoredToBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 96;
-};
-
-const scrollToBottom = (): void => {
-  const element = transcript.value;
-  if (element !== null) element.scrollTop = element.scrollHeight;
-};
-
-const showEarlierActivity = (): void => {
-  const element = transcript.value;
-  const previousHeight = element?.scrollHeight ?? 0;
-  const previousTop = element?.scrollTop ?? 0;
-  visibleActivityCount.value += activityPageSize;
-  anchoredToBottom = false;
-  void nextTick(() => {
-    const next = transcript.value;
-    if (next !== null) next.scrollTop = previousTop + next.scrollHeight - previousHeight;
   });
-};
 
-onMounted(() => {
-  void nextTick(scrollToBottom);
-});
+  onUpdated(() => {
+    if (!anchoredToBottom) return;
+    void nextTick(scrollToBottom);
+  });
 
-onUpdated(() => {
-  if (!anchoredToBottom) return;
-  void nextTick(scrollToBottom);
-});
+  return { transcript, onScroll, keepScrollPosition };
+}
+
+// Long threads render a page at a time; the reader opts into older activity.
+function usePagedTimeline() {
+  const visibleActivityCount = ref(activityPageSize);
+
+  const visibleTimeline = computed(() => timeline.value.slice(-visibleActivityCount.value));
+  const hiddenActivityCount = computed(() => timeline.value.length - visibleTimeline.value.length);
+
+  const showEarlierActivity = (): void => {
+    keepScrollPosition(() => {
+      visibleActivityCount.value += activityPageSize;
+    });
+  };
+
+  watch(
+    () => props.detail.thread.id,
+    () => {
+      visibleActivityCount.value = activityPageSize;
+    },
+  );
+
+  return { visibleTimeline, hiddenActivityCount, showEarlierActivity };
+}
 </script>
 
 <template>

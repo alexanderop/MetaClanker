@@ -10,7 +10,7 @@ import {
   type NodeMouseEvent,
 } from "@vue-flow/core";
 import { MiniMap } from "@vue-flow/minimap";
-import { computed, ref, watchEffect } from "vue";
+import { computed, ref, watchEffect, type ComputedRef } from "vue";
 
 import type { AgentNode, AgentState, Provider } from "@metaclanker/contracts/wire";
 import { createDeterministicLayout } from "@metaclanker/domain/graph";
@@ -25,68 +25,90 @@ import { StatusBadge } from "../../ui/status-badge/index.js";
 import { ToggleGroup, ToggleGroupItem } from "../../ui/toggle-group/index.js";
 
 const props = defineProps<{ agentNodes: ReadonlyArray<AgentNode> }>();
-const mode = ref<"canvas" | "tree">("canvas");
-const provider = ref<Provider | "all">("all");
-const state = ref<AgentState | "all">("all");
-const selectedId = ref<string | null>(null);
-const flowNodes = ref<Node[]>([]);
-const flowEdges = ref<Edge[]>([]);
 const { fitView } = useVueFlow();
-
-const filteredNodes = computed(() =>
-  props.agentNodes.filter(
-    (node) =>
-      (provider.value === "all" || node.provider === provider.value) &&
-      (state.value === "all" || node.state === state.value),
-  ),
-);
-
-const selected = computed(
-  () => props.agentNodes.find((node) => node.id === selectedId.value) ?? null,
-);
-
-watchEffect(() => {
-  const visible = filteredNodes.value;
-  const visibleIds = new Set(visible.map((node) => node.id));
-  const positions = new Map(createDeterministicLayout(visible).map((point) => [point.id, point]));
-  flowNodes.value = visible.map((node) => ({
-    id: node.id,
-    type: "agent",
-    position: positions.get(node.id) ?? { x: 0, y: 0 },
-    data: node,
-  }));
-  flowEdges.value = visible.flatMap((node) =>
-    node.parentId !== null && visibleIds.has(node.parentId)
-      ? [
-          {
-            id: `${node.parentId}:${node.id}`,
-            source: node.parentId,
-            target: node.id,
-            markerEnd: MarkerType.ArrowClosed,
-          },
-        ]
-      : [],
-  );
-});
-
-const inspectorRows = computed(() => [
-  { label: "Status", value: selected.value?.state ?? "" },
-  { label: "Current activity", value: selected.value?.activity ?? "" },
-  { label: "Changed files", value: String(selected.value?.changedFileCount ?? 0) },
-]);
 
 const filterClass = "min-h-8.5 pr-7 text-xs";
 const inspectorRowClass =
   "grid grid-cols-[6rem_1fr] gap-2 border-t border-border-subtle pt-2 text-xs";
 
-const selectNode = (node: AgentNode): void => {
-  selectedId.value = node.id;
-};
+const mode = ref<"canvas" | "tree">("canvas");
+const { provider, state, filteredNodes } = useAgentFilters();
+const { flowNodes, flowEdges } = useFlowGraph(filteredNodes);
+const { selectedId, selected, inspectorRows, selectNode, onNodeClick } = useNodeSelection();
 
-const onNodeClick = (event: NodeMouseEvent): void => {
-  const node = props.agentNodes.find((candidate) => candidate.id === event.node.id);
-  if (node !== undefined) selectNode(node);
-};
+function useAgentFilters() {
+  const provider = ref<Provider | "all">("all");
+  const state = ref<AgentState | "all">("all");
+
+  const filteredNodes = computed(() =>
+    props.agentNodes.filter(
+      (node) =>
+        (provider.value === "all" || node.provider === provider.value) &&
+        (state.value === "all" || node.state === state.value),
+    ),
+  );
+
+  return { provider, state, filteredNodes };
+}
+
+// Projects the visible agents onto Vue Flow's node/edge model. Layout is
+// deterministic so a re-render never reshuffles the canvas under the user.
+function useFlowGraph(visibleNodes: ComputedRef<ReadonlyArray<AgentNode>>) {
+  const flowNodes = ref<Node[]>([]);
+  const flowEdges = ref<Edge[]>([]);
+
+  watchEffect(() => {
+    const visible = visibleNodes.value;
+    const visibleIds = new Set(visible.map((node) => node.id));
+    const positions = new Map(createDeterministicLayout(visible).map((point) => [point.id, point]));
+    flowNodes.value = visible.map((node) => ({
+      id: node.id,
+      type: "agent",
+      position: positions.get(node.id) ?? { x: 0, y: 0 },
+      data: node,
+    }));
+    flowEdges.value = visible.flatMap((node) =>
+      node.parentId !== null && visibleIds.has(node.parentId)
+        ? [
+            {
+              id: `${node.parentId}:${node.id}`,
+              source: node.parentId,
+              target: node.id,
+              markerEnd: MarkerType.ArrowClosed,
+            },
+          ]
+        : [],
+    );
+  });
+
+  return { flowNodes, flowEdges };
+}
+
+function useNodeSelection() {
+  const selectedId = ref<string | null>(null);
+
+  const selected = computed(
+    () => props.agentNodes.find((node) => node.id === selectedId.value) ?? null,
+  );
+
+  const inspectorRows = computed(() => [
+    { label: "Status", value: selected.value?.state ?? "" },
+    { label: "Current activity", value: selected.value?.activity ?? "" },
+    { label: "Changed files", value: String(selected.value?.changedFileCount ?? 0) },
+  ]);
+
+  const selectNode = (node: AgentNode): void => {
+    selectedId.value = node.id;
+  };
+
+  // The canvas reports raw flow nodes; only ones we still know about select.
+  const onNodeClick = (event: NodeMouseEvent): void => {
+    const node = props.agentNodes.find((candidate) => candidate.id === event.node.id);
+    if (node !== undefined) selectNode(node);
+  };
+
+  return { selectedId, selected, inspectorRows, selectNode, onNodeClick };
+}
 </script>
 
 <template>

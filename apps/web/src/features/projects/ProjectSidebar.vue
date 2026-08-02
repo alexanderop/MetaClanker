@@ -5,7 +5,7 @@ import { useI18n } from "vue-i18n";
 import { onKeyStroke } from "@vueuse/core";
 
 import { ProjectId } from "@metaclanker/contracts/ids";
-import type { DirectoryBrowserResponse } from "@metaclanker/contracts/wire";
+import type { DirectoryBrowserResponse, Project } from "@metaclanker/contracts/wire";
 
 import {
   desktopDirectoryPickerAvailable,
@@ -32,84 +32,46 @@ import { useWorkspaceStore } from "../../shared/workspaceStore.js";
 defineProps<{ open: boolean; collapsed: boolean }>();
 const emit = defineEmits<{ close: []; toggleCollapse: [] }>();
 
+const commandChord =
+  (key: string) =>
+  (event: KeyboardEvent): boolean =>
+    (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLocaleLowerCase() === key;
+
 const workspace = useWorkspaceStore();
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
-const projectOpen = ref(false);
-const paletteOpen = ref(false);
-const settingsOpen = ref(false);
-const projectPathInput = useTemplateRef<{ focus: () => void }>("projectPathInput");
-const directoryList = useTemplateRef<HTMLUListElement>("directoryList");
-const path = ref("");
-const name = ref("");
-const saving = ref(false);
-const addError = ref<string | null>(null);
-const directoryBrowser = ref<DirectoryBrowserResponse | null>(null);
-const browsing = ref(false);
-const browseError = ref<string | null>(null);
-const theme = ref(workspace.settings.theme);
-const graphDensity = ref(workspace.settings.graphDensity);
 
-const visibleProjects = computed(() =>
-  workspace.shell.projects
-    .filter((project) => !project.hidden)
-    .toSorted((left, right) => left.order - right.order),
-);
+const {
+  visibleProjects,
+  selectedThreadId,
+  routeProjectId,
+  threadsForProject,
+  projectName,
+  relativeThreadAge,
+  contextualProjectId,
+} = useSidebarProjects();
+const { paletteOpen, closePalette } = useCommandPalette();
+const {
+  projectOpen,
+  path,
+  name,
+  saving,
+  addError,
+  directoryBrowser,
+  browsing,
+  browseError,
+  openAddProject,
+  browseDirectories,
+  chooseDirectory,
+  addProject,
+} = useAddProject();
+const { settingsOpen, theme, graphDensity, openSettings, saveSettings } = useSettingsDialog();
+useDeepLinkedDialogs({ openAddProject, openSettings });
 
-const selectedThreadId = computed(() =>
-  typeof route.params["threadId"] === "string" ? route.params["threadId"] : null,
-);
-
-const routeProjectId = computed<string | null>(() => {
-  if (route.name === "draft" && typeof route.params["projectId"] === "string") {
-    return route.params["projectId"];
-  }
-  if (route.name === "thread") return workspace.detail?.thread.projectId ?? null;
-  return null;
-});
-
-const threadsForProject = (projectId: ProjectId) =>
-  workspace.shell.threads.filter((thread) => thread.projectId === projectId && !thread.archived);
-
-const relativeThreadAge = (timestamp: string): string => {
-  const elapsed = Math.max(0, Date.now() - new Date(timestamp).getTime());
-  const minutes = Math.floor(elapsed / 60_000);
-  if (minutes < 1) return t("time.now");
-  if (minutes < 60) return t("time.minutesAgo", { count: minutes });
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return t("time.hoursAgo", { count: hours });
-
-  const days = Math.floor(hours / 24);
-  if (days < 30) return t("time.daysAgo", { count: days });
-
-  const months = Math.floor(days / 30);
-  if (months < 12) return t("time.monthsAgo", { count: months });
-  return t("time.yearsAgo", { count: Math.floor(days / 365) });
-};
-
-const projectName = (projectId: ProjectId): string =>
-  workspace.shell.projects.find((project) => project.id === projectId)?.name ??
-  t("projects.unknown");
-
-const contextualProjectId = (): ProjectId | null => {
-  const routeContext = routeProjectId.value;
-  if (routeContext !== null) return ProjectId.make(routeContext);
-  const recentProjectId = workspace.shell.threads.find((thread) => !thread.archived)?.projectId;
-  if (recentProjectId !== undefined) return recentProjectId;
-  return visibleProjects.value[0]?.id ?? null;
-};
-
-// Two modal layers must never overlap: reka returns focus to whatever was focused
-// when a dialog closes, so a replacement opened in the same tick loses focus to it.
-const closePalette = async (): Promise<void> => {
-  if (!paletteOpen.value) return;
-  paletteOpen.value = false;
-  await nextTick();
-};
-
-const newChat = async (projectId = contextualProjectId()): Promise<void> => {
+// The sidebar's single entry into a conversation. It stays at the top level
+// because both the palette and project creation route back through it.
+async function newChat(projectId = contextualProjectId()): Promise<void> {
   await closePalette();
   if (projectId === null) {
     await openAddProject();
@@ -118,125 +80,258 @@ const newChat = async (projectId = contextualProjectId()): Promise<void> => {
   workspace.draftForProject(projectId);
   await router.push({ name: "draft", params: { projectId } });
   emit("close");
-};
+}
 
-const focusProjectPath = async (): Promise<void> => {
-  await nextTick();
-  projectPathInput.value?.focus();
-};
+function useSidebarProjects() {
+  const visibleProjects = computed(() =>
+    workspace.shell.projects
+      .filter((project) => !project.hidden)
+      .toSorted((left, right) => left.order - right.order),
+  );
 
-const openAddProject = async (): Promise<void> => {
-  await closePalette();
-  addError.value = null;
-  if (desktopDirectoryPickerAvailable()) {
-    const selected = await selectDesktopProjectDirectory();
-    if (selected === null) return;
-    path.value = selected;
-    name.value = "";
-    if (await persistProject()) return;
-    projectOpen.value = true;
-    await focusProjectPath();
-    return;
-  }
-  projectOpen.value = true;
-  void browseDirectories();
-};
+  const selectedThreadId = computed(() =>
+    typeof route.params["threadId"] === "string" ? route.params["threadId"] : null,
+  );
 
-const browseDirectories = async (nextPath?: string): Promise<void> => {
-  browsing.value = true;
-  browseError.value = null;
-  try {
-    directoryBrowser.value = await api.browseProjectDirectories(nextPath);
-    path.value = directoryBrowser.value.currentPath;
-    await nextTick();
-    directoryList.value?.querySelector("button")?.focus();
-  } catch (cause) {
-    browseError.value = cause instanceof Error ? cause.message : String(cause);
-  } finally {
-    browsing.value = false;
-  }
-};
-
-const chooseDirectory = async (): Promise<void> => {
-  const selected = await selectDesktopProjectDirectory();
-  if (selected !== null) path.value = selected;
-};
-
-const persistProject = async (): Promise<boolean> => {
-  saving.value = true;
-  addError.value = null;
-  try {
-    const project = await workspace.createProject(path.value.trim(), name.value.trim());
-    path.value = "";
-    name.value = "";
-    projectOpen.value = false;
-    await newChat(project.id);
-    return true;
-  } catch (cause) {
-    addError.value = cause instanceof Error ? cause.message : String(cause);
-    return false;
-  } finally {
-    saving.value = false;
-  }
-};
-
-const addProject = async (): Promise<void> => {
-  if (await persistProject()) return;
-  await focusProjectPath();
-};
-
-const openSettings = async (): Promise<void> => {
-  await closePalette();
-  theme.value = workspace.settings.theme;
-  graphDensity.value = workspace.settings.graphDensity;
-  settingsOpen.value = true;
-};
-
-const saveSettings = async (): Promise<void> => {
-  await workspace.saveSettings({
-    ...workspace.settings,
-    theme: theme.value,
-    graphDensity: graphDensity.value,
+  const routeProjectId = computed<string | null>(() => {
+    if (route.name === "draft" && typeof route.params["projectId"] === "string") {
+      return route.params["projectId"];
+    }
+    if (route.name === "thread") return workspace.detail?.thread.projectId ?? null;
+    return null;
   });
-  settingsOpen.value = false;
-};
 
-const commandChord =
-  (key: string) =>
-  (event: KeyboardEvent): boolean =>
-    (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLocaleLowerCase() === key;
+  const threadsForProject = (projectId: ProjectId) =>
+    workspace.shell.threads.filter((thread) => thread.projectId === projectId && !thread.archived);
 
-onKeyStroke(commandChord("k"), (event) => {
-  event.preventDefault();
-  paletteOpen.value = true;
-});
+  const projectName = (projectId: ProjectId): string =>
+    workspace.shell.projects.find((project) => project.id === projectId)?.name ??
+    t("projects.unknown");
 
-onKeyStroke(commandChord("n"), (event) => {
-  event.preventDefault();
-  void newChat();
-});
+  const relativeThreadAge = (timestamp: string): string => {
+    const elapsed = Math.max(0, Date.now() - new Date(timestamp).getTime());
+    const minutes = Math.floor(elapsed / 60_000);
+    if (minutes < 1) return t("time.now");
+    if (minutes < 60) return t("time.minutesAgo", { count: minutes });
 
-watch(projectOpen, (isOpen) => {
-  if (!isOpen) addError.value = null;
-});
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return t("time.hoursAgo", { count: hours });
 
-watch(
-  () => route.query["addProject"],
-  (requested) => {
-    if (requested !== "true") return;
-    void router.replace({ query: {} }).then(openAddProject);
-  },
-  { immediate: true },
-);
+    const days = Math.floor(hours / 24);
+    if (days < 30) return t("time.daysAgo", { count: days });
 
-watch(
-  () => route.query["settings"],
-  (requested) => {
-    if (requested !== "true") return;
-    void router.replace({ query: {} }).then(openSettings);
-  },
-  { immediate: true },
-);
+    const months = Math.floor(days / 30);
+    if (months < 12) return t("time.monthsAgo", { count: months });
+    return t("time.yearsAgo", { count: Math.floor(days / 365) });
+  };
+
+  // Where a new conversation lands when the user did not pick a project.
+  const contextualProjectId = (): ProjectId | null => {
+    const routeContext = routeProjectId.value;
+    if (routeContext !== null) return ProjectId.make(routeContext);
+    const recentProjectId = workspace.shell.threads.find((thread) => !thread.archived)?.projectId;
+    if (recentProjectId !== undefined) return recentProjectId;
+    return visibleProjects.value[0]?.id ?? null;
+  };
+
+  return {
+    visibleProjects,
+    selectedThreadId,
+    routeProjectId,
+    threadsForProject,
+    projectName,
+    relativeThreadAge,
+    contextualProjectId,
+  };
+}
+
+function useCommandPalette() {
+  const paletteOpen = ref(false);
+
+  // Two modal layers must never overlap: reka returns focus to whatever was focused
+  // when a dialog closes, so a replacement opened in the same tick loses focus to it.
+  const closePalette = async (): Promise<void> => {
+    if (!paletteOpen.value) return;
+    paletteOpen.value = false;
+    await nextTick();
+  };
+
+  onKeyStroke(commandChord("k"), (event) => {
+    event.preventDefault();
+    paletteOpen.value = true;
+  });
+
+  onKeyStroke(commandChord("n"), (event) => {
+    event.preventDefault();
+    void newChat();
+  });
+
+  return { paletteOpen, closePalette };
+}
+
+function useDirectoryBrowser() {
+  const directoryList = useTemplateRef<HTMLUListElement>("directoryList");
+  const directoryBrowser = ref<DirectoryBrowserResponse | null>(null);
+  const browsing = ref(false);
+  const browseError = ref<string | null>(null);
+
+  // Resolves to the directory now being shown, or null when browsing failed.
+  const browse = async (nextPath?: string): Promise<string | null> => {
+    browsing.value = true;
+    browseError.value = null;
+    try {
+      directoryBrowser.value = await api.browseProjectDirectories(nextPath);
+      await nextTick();
+      directoryList.value?.querySelector("button")?.focus();
+      return directoryBrowser.value.currentPath;
+    } catch (cause) {
+      browseError.value = cause instanceof Error ? cause.message : String(cause);
+      return null;
+    } finally {
+      browsing.value = false;
+    }
+  };
+
+  return { directoryBrowser, browsing, browseError, browse };
+}
+
+function useAddProject() {
+  const { directoryBrowser, browsing, browseError, browse } = useDirectoryBrowser();
+  const projectPathInput = useTemplateRef<{ focus: () => void }>("projectPathInput");
+  const projectOpen = ref(false);
+  const path = ref("");
+  const name = ref("");
+  const saving = ref(false);
+  const addError = ref<string | null>(null);
+
+  const focusProjectPath = async (): Promise<void> => {
+    await nextTick();
+    projectPathInput.value?.focus();
+  };
+
+  const browseDirectories = async (nextPath?: string): Promise<void> => {
+    const currentPath = await browse(nextPath);
+    if (currentPath !== null) path.value = currentPath;
+  };
+
+  const chooseDirectory = async (): Promise<void> => {
+    const selected = await selectDesktopProjectDirectory();
+    if (selected !== null) path.value = selected;
+  };
+
+  // Creates the project and resets the form. Navigation is the caller's job, so
+  // that creating a project and starting its first chat stay separable.
+  const persistProject = async (): Promise<Project | null> => {
+    saving.value = true;
+    addError.value = null;
+    try {
+      const project = await workspace.createProject(path.value.trim(), name.value.trim());
+      path.value = "";
+      name.value = "";
+      projectOpen.value = false;
+      return project;
+    } catch (cause) {
+      addError.value = cause instanceof Error ? cause.message : String(cause);
+      return null;
+    } finally {
+      saving.value = false;
+    }
+  };
+
+  const openAddProject = async (): Promise<void> => {
+    await closePalette();
+    addError.value = null;
+    if (desktopDirectoryPickerAvailable()) {
+      const selected = await selectDesktopProjectDirectory();
+      if (selected === null) return;
+      path.value = selected;
+      name.value = "";
+      const created = await persistProject();
+      if (created !== null) {
+        await newChat(created.id);
+        return;
+      }
+      projectOpen.value = true;
+      await focusProjectPath();
+      return;
+    }
+    projectOpen.value = true;
+    void browseDirectories();
+  };
+
+  const addProject = async (): Promise<void> => {
+    const created = await persistProject();
+    if (created !== null) {
+      await newChat(created.id);
+      return;
+    }
+    await focusProjectPath();
+  };
+
+  watch(projectOpen, (isOpen) => {
+    if (!isOpen) addError.value = null;
+  });
+
+  return {
+    projectOpen,
+    path,
+    name,
+    saving,
+    addError,
+    directoryBrowser,
+    browsing,
+    browseError,
+    openAddProject,
+    browseDirectories,
+    chooseDirectory,
+    addProject,
+  };
+}
+
+function useSettingsDialog() {
+  const settingsOpen = ref(false);
+  const theme = ref(workspace.settings.theme);
+  const graphDensity = ref(workspace.settings.graphDensity);
+
+  const openSettings = async (): Promise<void> => {
+    await closePalette();
+    theme.value = workspace.settings.theme;
+    graphDensity.value = workspace.settings.graphDensity;
+    settingsOpen.value = true;
+  };
+
+  const saveSettings = async (): Promise<void> => {
+    await workspace.saveSettings({
+      ...workspace.settings,
+      theme: theme.value,
+      graphDensity: graphDensity.value,
+    });
+    settingsOpen.value = false;
+  };
+
+  return { settingsOpen, theme, graphDensity, openSettings, saveSettings };
+}
+
+// `?addProject=true` and `?settings=true` let other views open a sidebar dialog.
+// The query is cleared first so a back navigation does not reopen it.
+function useDeepLinkedDialogs(dialogs: {
+  openAddProject: () => Promise<void>;
+  openSettings: () => Promise<void>;
+}) {
+  const openOnQuery = (key: string, open: () => Promise<void>): void => {
+    watch(
+      () => route.query[key],
+      (requested) => {
+        if (requested !== "true") return;
+        void router.replace({ query: {} }).then(open);
+      },
+      { immediate: true },
+    );
+  };
+
+  openOnQuery("addProject", dialogs.openAddProject);
+  openOnQuery("settings", dialogs.openSettings);
+}
 </script>
 
 <template>
