@@ -9,6 +9,7 @@
     "typecheck": "vue-tsc -p tsconfig.app.json --noEmit"
   },
   "dependencies": {
+    "@effect/atom-vue": "catalog:",
     "@metaclanker/contracts": "workspace:*",
     "@metaclanker/domain": "workspace:*",
     "@vue-flow/background": "1.3.2",

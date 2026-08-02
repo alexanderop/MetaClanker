@@ -12,6 +12,7 @@ import {
 import type { ThreadDetail } from "@metaclanker/contracts/wire";
 import { renderFeature } from "@metaclanker/testing/vue/render-feature";
 
+import { createAppAtomModel } from "../../app-atom-model.js";
 import { i18n } from "../../shared/i18n.js";
 import Transcript from "./Transcript.vue";
 
@@ -52,6 +53,7 @@ const detail: ThreadDetail = {
 
 test("tool-only activity does not also announce an empty conversation", async () => {
   const screen = await renderFeature(Transcript, {
+    atomModel: createAppAtomModel(),
     props: { detail },
     global: { plugins: [createPinia(), i18n] },
   });
@@ -79,6 +81,7 @@ test("large histories disclose older activity in bounded pages", async () => {
     latestSequence: 205,
   };
   const screen = await renderFeature(Transcript, {
+    atomModel: createAppAtomModel(),
     props: { detail: history },
     global: { plugins: [createPinia(), i18n] },
   });

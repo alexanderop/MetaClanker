@@ -1,95 +1,33 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-
-import { CommandId, type ThreadId } from "@metaclanker/contracts/ids";
-import type { RestorePreviewResponse, ReviewResponse } from "@metaclanker/contracts/wire";
+import type { ThreadId } from "@metaclanker/contracts/ids";
 
 import { Button } from "../../ui/button/index.js";
 import { Eyebrow } from "../../ui/eyebrow/index.js";
 import { FieldError } from "../../ui/field/index.js";
-import { api } from "../../shared/apiClient.js";
+import { useReviewModel } from "./review-model.js";
 
 const props = defineProps<{ threadId: ThreadId }>();
 const emit = defineEmits<{ close: []; restored: [] }>();
 
-const { busy, error, run } = useAsyncTask();
-const { review, preTurnCheckpoints } = useCheckpoints();
-const { preview, previewRows, selectedCheckpointId, confirmed, selectCheckpoint, restore } =
-  useRestore();
-
-// Every request in this panel shares one busy flag and one error slot, because
-// the panel only ever runs one of them at a time.
-function useAsyncTask() {
-  const busy = ref(false);
-  const error = ref<string | null>(null);
-
-  const run = async <T>(operation: () => Promise<T>): Promise<T | null> => {
-    busy.value = true;
-    error.value = null;
-    try {
-      return await operation();
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : String(cause);
-      return null;
-    } finally {
-      busy.value = false;
-    }
-  };
-
-  return { busy, error, run };
-}
-
-function useCheckpoints() {
-  const review = ref<ReviewResponse | null>(null);
-
-  const preTurnCheckpoints = computed(
-    () =>
-      review.value?.checkpoints.filter((record) => record.kind === "pre-turn").toReversed() ?? [],
-  );
-
-  onMounted(async () => {
-    review.value = await run(() => api.review(props.threadId));
-  });
-
-  return { review, preTurnCheckpoints };
-}
-
-function useRestore() {
-  const preview = ref<RestorePreviewResponse | null>(null);
-  const selectedCheckpointId = ref<string | null>(null);
-  const confirmed = ref(false);
-
-  const previewRows = computed(() => [
-    { label: "Files added back", value: preview.value?.additions.length ?? 0 },
-    { label: "Files overwritten", value: preview.value?.modifications.length ?? 0 },
-    { label: "Files deleted", value: preview.value?.deletions.length ?? 0 },
-    { label: "Ignored files covered", value: preview.value?.includesIgnoredFiles ? "Yes" : "No" },
-  ]);
-
-  const selectCheckpoint = async (checkpointId: string): Promise<void> => {
-    confirmed.value = false;
-    selectedCheckpointId.value = checkpointId;
-    preview.value = await run(() => api.restorePreview(props.threadId, checkpointId));
-  };
-
-  // Restoring is destructive, so it needs both a preview and an explicit tick.
-  const restore = async (): Promise<void> => {
-    const checkpointId = selectedCheckpointId.value;
-    if (!confirmed.value || checkpointId === null) return;
-    const restored = await run(() =>
-      api.restoreFiles(props.threadId, {
-        commandId: CommandId.make(crypto.randomUUID()),
-        checkpointId,
-        confirmed: true,
-      }),
-    );
-    if (restored === null) return;
-    emit("restored");
-    emit("close");
-  };
-
-  return { preview, previewRows, selectedCheckpointId, confirmed, selectCheckpoint, restore };
-}
+const {
+  review,
+  preview,
+  preTurnCheckpoints,
+  selectedCheckpointId,
+  confirmed,
+  pending,
+  refreshing,
+  busy,
+  message,
+  previewRows,
+  refresh,
+  selectCheckpoint,
+  restore,
+} = useReviewModel({
+  threadId: () => props.threadId,
+  onRestored: () => emit("restored"),
+  onClose: () => emit("close"),
+});
 
 const sectionHeadingClass = "m-0 mb-2.5 flex items-center justify-between text-base";
 const proseClass = "mt-1.5 mb-3 text-sm leading-normal text-text-muted";
@@ -117,15 +55,21 @@ const previewRowClass = "flex justify-between gap-4 text-xs";
       </Button>
     </div>
 
-    <div v-if="busy && review === null" :class="proseClass">Loading checkpoints…</div>
-    <FieldError v-if="error">{{ error }}</FieldError>
+    <div v-if="pending" :class="proseClass">Loading checkpoints…</div>
+    <FieldError v-if="message">{{ message }}</FieldError>
 
     <template v-if="review">
       <section class="border-b border-border-subtle py-4">
         <h3 :class="sectionHeadingClass">
-          Latest turn diff
-          <span class="rounded-full bg-canvas px-1.5 py-0.5 text-2xs text-text-muted">
-            {{ review.diff.files.length }}
+          <span>Latest turn diff</span>
+          <span class="flex items-center gap-2">
+            <small v-if="refreshing" role="status" class="text-text-muted">Refreshing…</small>
+            <Button variant="ghost" size="sm" type="button" :disabled="refreshing" @click="refresh">
+              Refresh review
+            </Button>
+            <span class="rounded-full bg-canvas px-1.5 py-0.5 text-2xs text-text-muted">
+              {{ review.diff.files.length }}
+            </span>
           </span>
         </h3>
         <p v-if="review.diff.files.length === 0" :class="proseClass">No file changes captured.</p>

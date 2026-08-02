@@ -56,3 +56,26 @@ test("extracts static, re-export, and dynamic imports from Vue script blocks", (
     "@/views/LazyView.vue",
   ]);
 });
+
+test("keeps Atom and Effect runtime APIs behind project-owned Vue facades", () => {
+  const component = resolve(root, "apps/web/src/features/conversation/ReviewPanel.vue");
+  const model = resolve(root, "apps/web/src/features/conversation/review-model.ts");
+  const primitive = resolve(root, "apps/web/src/ui/button/Button.vue");
+
+  assert.equal(
+    architectureViolationForImport(component, "@effect/atom-vue", root),
+    "Vue SFCs cannot import Atom or Effect runtime modules",
+  );
+  assert.equal(
+    architectureViolationForImport(component, "effect/Effect", root),
+    "Vue SFCs cannot import Atom or Effect runtime modules",
+  );
+  assert.equal(
+    architectureViolationForImport(model, "effect/unstable/reactivity/Atom", root),
+    "web code must use the public Atom Vue re-exports",
+  );
+  assert.equal(
+    architectureViolationForImport(primitive, "@effect/atom-vue", root),
+    "Vue SFCs cannot import Atom or Effect runtime modules",
+  );
+});

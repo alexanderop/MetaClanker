@@ -75,6 +75,11 @@ Do **not** group:
 
 A composable that returns one value and owns no effect is usually a `computed` wearing a costume.
 
+Project-owned Atom binding composables are the exception at the client-state boundary: they may
+return named Vue refs and intents to an SFC, but the SFC never imports Atom, Effect runtime modules,
+raw Causes, or a registry. A `use*Model()` call is one named responsibility in the component table
+of contents and follows the same object-return convention as other composables.
+
 ## 4. When to extract to a file instead
 
 Move an inline composable out of the SFC when **any** of these becomes true:

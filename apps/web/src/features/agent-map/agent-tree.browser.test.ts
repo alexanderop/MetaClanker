@@ -5,6 +5,7 @@ import { AgentNodeId, ThreadId } from "@metaclanker/contracts/ids";
 import type { AgentNode } from "@metaclanker/contracts/wire";
 import { renderFeature } from "@metaclanker/testing/vue/render-feature";
 
+import { createAppAtomModel } from "../../app-atom-model.js";
 import AgentTree from "./AgentTree.vue";
 
 const threadId = ThreadId.make("thread:tree-browser");
@@ -26,6 +27,7 @@ test("tree arrows move between a parent and its first child", async () => {
   const root = node("node:root", "Root agent", null);
   const child = node("node:child", "Child agent", root.id);
   const screen = await renderFeature(AgentTree, {
+    atomModel: createAppAtomModel(),
     props: { nodes: [root, child], selectedId: null },
   });
 

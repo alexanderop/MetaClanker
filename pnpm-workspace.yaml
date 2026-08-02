@@ -8,6 +8,7 @@ catalog:
   "@agentclientprotocol/codex-acp": 1.1.7
   "@agentclientprotocol/claude-agent-acp": 0.64.0
   "@effect/sql-sqlite-node": 4.0.0-beta.102
+  "@effect/atom-vue": 4.0.0-beta.102
   effect: 4.0.0-beta.102
   "@effect/vitest": 4.0.0-beta.102
   typescript: 6.0.3

@@ -107,7 +107,7 @@ File restoration inside a thread is separate from database recovery. The review 
 ## Architecture
 
 ```text
-apps/web       Vue 3, Pinia, Vue Router, Vue Flow, browser-only presentation
+apps/web       Vue 3, app-scoped Effect Atom plus transitional Pinia, Vue Router, Vue Flow
     │ HTTP + authenticated WebSocket (Effect Schema wire contracts)
 apps/server    Nitro Node server, Effect composition root, auth and orchestration
     ├── packages/persistence  SQLite events, projections, migrations, receipts, backups

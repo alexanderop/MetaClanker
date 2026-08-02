@@ -11,6 +11,7 @@ import { defaultUserSettings } from "@metaclanker/contracts/wire";
 import { renderFeature } from "@metaclanker/testing/vue/render-feature";
 
 import App from "../../App.vue";
+import { createAppAtomModel } from "../../app-atom-model.js";
 import { i18n } from "../../shared/i18n.js";
 import { useWorkspaceStore } from "../../shared/workspaceStore.js";
 
@@ -22,6 +23,12 @@ const deferred = (): { readonly promise: Promise<void>; readonly resolve: () => 
   return { promise, resolve: resolvePromise };
 };
 import { router } from "../../views/router.js";
+
+const renderApp = (pinia = createPinia()) =>
+  renderFeature(App, {
+    atomModel: createAppAtomModel(),
+    global: { plugins: [pinia, router, i18n] },
+  });
 
 const project = {
   id: ProjectId.make("project:browser"),
@@ -148,7 +155,7 @@ afterAll(() => worker.stop());
 test("project onboarding continues to a local draft and first send promotes exactly once", async () => {
   await router.push("/");
   await router.isReady();
-  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderApp();
 
   await screen.getByRole("button", { name: "Add project" }).first().click();
   const projectDialog = screen.getByRole("dialog", { name: "Choose a server project directory" });
@@ -209,7 +216,7 @@ test("a stored project draft survives a fresh app mount with its controls and cu
   );
   await router.push({ name: "draft", params: { projectId: project.id } });
   await router.isReady();
-  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderApp();
 
   const composer = screen.getByRole("textbox", {
     name: "Ask the agent to build, investigate, or explain…",
@@ -242,7 +249,7 @@ test("a new chat uses the conversation shell with a bottom composer", async () =
   );
   await router.push({ name: "draft", params: { projectId: project.id } });
   await router.isReady();
-  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderApp();
 
   await expect.element(screen.getByRole("heading", { name: "New chat" })).toBeVisible();
   await expect
@@ -267,7 +274,7 @@ test("a completed live turn updates its sidebar status without a reload", async 
   );
   await router.push({ name: "thread", params: { threadId: thread.id } });
   await router.isReady();
-  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderApp();
 
   await expect
     .element(screen.getByRole("status", { name: "Thread status: running" }))
@@ -303,7 +310,7 @@ test("the project tree shows compact relative thread ages", async () => {
   );
   await router.push("/");
   await router.isReady();
-  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderApp();
 
   await expect.element(screen.getByText("3d ago", { exact: true })).toBeVisible();
   await expect
@@ -324,7 +331,7 @@ test("a slower previous thread load cannot replace the latest conversation", asy
   await router.push({ name: "thread", params: { threadId: thread.id } });
   await router.isReady();
   const pinia = createPinia();
-  const screen = await renderFeature(App, { global: { plugins: [pinia, router, i18n] } });
+  const screen = await renderApp(pinia);
   const workspace = useWorkspaceStore(pinia);
   await expect.element(screen.getByRole("heading", { name: thread.title })).toBeVisible();
 
@@ -370,7 +377,7 @@ test("a required thread snapshot replaces the cursor and resumes the live view",
   );
   await router.push({ name: "thread", params: { threadId: thread.id } });
   await router.isReady();
-  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderApp();
   await expect
     .element(screen.getByRole("status", { name: "Thread status: running" }))
     .toBeVisible();
@@ -398,7 +405,7 @@ test("a rejected first send preserves every local draft field and reuses its com
   );
   await router.push({ name: "draft", params: { projectId: project.id } });
   await router.isReady();
-  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
+  const screen = await renderApp();
 
   await screen
     .getByRole("textbox", { name: "Ask the agent to build, investigate, or explain…" })

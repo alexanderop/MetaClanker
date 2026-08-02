@@ -156,7 +156,7 @@ invariants, command idempotency models, and settings migrations.
 
 - SQLite transactions.
 - ACP stdio framing.
-- Vue, Pinia, router, or browser behavior.
+- Vue, client-model, router, or browser behavior.
 - Simple getters, constructors, or pass-through wrappers.
 
 #### Location and command
@@ -313,7 +313,7 @@ This is the default layer for user-visible behavior.
 #### Owns
 
 - Real Vue component collaboration.
-- Pinia state and router behavior.
+- App-scoped client state and router behavior.
 - Composer interaction and keyboard behavior.
 - Draft-to-durable thread presentation.
 - Transcript streaming and scroll anchoring.
@@ -327,7 +327,8 @@ This is the default layer for user-visible behavior.
 
 - Run in real Chromium through Vitest Browser Mode.
 - Render real parent and child components with `vitest-browser-vue`.
-- Use the real router, Pinia, i18n, design tokens, and shared client state.
+- Use the real router, i18n, design tokens, and shared client state. Every Atom-backed render gets a
+  fresh explicit registry and runtime memo map, unmounts Vue first, and then disposes the registry.
 - Use MSW only at the HTTP and WebSocket transport boundary.
 - Query by role and accessible name, then label or visible text.
 - Use `expect.element` and browser-visible state for synchronization.
@@ -570,7 +571,7 @@ condition.
 
 ### 8.4 Centralize browser setup
 
-Replace per-file router, Pinia, i18n, and MSW setup with one `renderFeature` path. Default handlers
+Replace per-file router, client-model, i18n, and MSW setup with one `renderFeature` path. Default handlers
 describe the smallest valid server. Scenario overrides reset after every test. Unexpected
 MetaClanker API calls fail immediately.
 

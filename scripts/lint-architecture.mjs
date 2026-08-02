@@ -48,10 +48,29 @@ const resolveImportTarget = (importer, specifier, root) => {
 };
 
 export const architectureViolationForImport = (importer, specifier, root = repositoryRoot) => {
+  const sourceArea = webArea(importer, root);
+  if (
+    sourceArea !== null &&
+    extname(importer) === ".vue" &&
+    (specifier === "@effect/atom-vue" ||
+      /^effect\/(?:Effect|Stream|Layer|Scope|Fiber)(?:\.js)?$/u.test(specifier) ||
+      specifier.startsWith("effect/unstable/reactivity/"))
+  ) {
+    return "Vue SFCs cannot import Atom or Effect runtime modules";
+  }
+  if (
+    sourceArea === "ui" &&
+    (specifier === "@effect/atom-vue" || specifier.includes("/shared/client/"))
+  ) {
+    return "web UI primitives cannot import the client atom model";
+  }
+  if (sourceArea !== null && specifier.startsWith("effect/unstable/reactivity/")) {
+    return "web code must use the public Atom Vue re-exports";
+  }
+
   const target = resolveImportTarget(importer, specifier, root);
   if (target === null) return null;
 
-  const sourceArea = webArea(importer, root);
   const targetArea = webArea(target, root);
   if (sourceArea === "shared" && (targetArea === "features" || targetArea === "views")) {
     return "web shared code cannot import features or views";
@@ -150,6 +169,13 @@ export const findArchitectureViolations = async (root = repositoryRoot) => {
   const violations = [];
   for (const file of files) {
     const source = await readFile(file, "utf8");
+    if (source.includes("defaultRegistry")) {
+      violations.push({
+        file: relative(root, file),
+        specifier: "defaultRegistry",
+        reason: "application source cannot use Atom Vue's implicit registry",
+      });
+    }
     for (const specifier of importedSpecifiers(source, file)) {
       const reason = architectureViolationForImport(file, specifier, root);
       if (reason !== null) {

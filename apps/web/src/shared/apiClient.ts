@@ -4,7 +4,6 @@ import type { ThreadId } from "@metaclanker/contracts/ids";
 import type {
   CancelPromptRequest,
   CreateProjectRequest,
-  RestoreThreadFilesRequest,
   StartThreadRequest,
 } from "@metaclanker/contracts/wire";
 import {
@@ -12,11 +11,8 @@ import {
   DirectoryBrowserResponse,
   Message,
   PendingInteraction,
-  PersistedCheckpointWire,
   Project,
   ProviderReadinessResponse,
-  RestorePreviewResponse,
-  ReviewResponse,
   ServerEvent,
   ShellSnapshot,
   StartThreadResponse,
@@ -109,18 +105,6 @@ export const api = {
   settings: () => request("/api/settings", UserSettings),
   saveSettings: (settings: typeof UserSettings.Type) =>
     request("/api/settings", UserSettings, { method: "PUT", body: JSON.stringify(settings) }),
-  review: (id: ThreadId) =>
-    request(`/api/threads/${encodeURIComponent(id)}/review`, ReviewResponse),
-  restorePreview: (id: ThreadId, checkpointId: string) =>
-    request(`/api/threads/${encodeURIComponent(id)}/restore-preview`, RestorePreviewResponse, {
-      method: "POST",
-      body: JSON.stringify({ checkpointId }),
-    }),
-  restoreFiles: (id: ThreadId, input: RestoreThreadFilesRequest) =>
-    request(`/api/threads/${encodeURIComponent(id)}/restore`, PersistedCheckpointWire, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
 };
 
 export const schemas = { AgentNode, Message, PendingInteraction, ServerEvent, ToolCall };

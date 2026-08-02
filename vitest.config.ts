@@ -46,6 +46,9 @@ export default defineConfig({
       },
       {
         plugins: [vue()],
+        optimizeDeps: {
+          entries: ["apps/web/src/**/*.{ts,vue}"],
+        },
         publicDir: "apps/web/public",
         test: {
           name: "browser-ui",

@@ -593,7 +593,9 @@ crash limits, and cleanup before feature work depends on the desktop topology.
   Milestone 0 compatibility spike. Do not maintain duplicate configuration sources; `vue-tsc`
   remains an explicit gate until the selected toolchain fully covers Vue SFC checking.
 - Vue Router for named routes.
-- Pinia for genuinely shared or cross-route client state; component-local state stays local.
+- Effect Atom for shared asynchronous, keyed, cached, or resource-owning client state, with one
+  explicit registry and fresh runtime memo map per app mount. Pinia remains only as a transitional
+  owner for unmigrated slices; no writable slice is authoritative in both systems.
 - Vue Flow for the map.
 - Tailwind CSS using semantic design tokens.
 - Reka UI primitives for accessible behavior.
@@ -602,6 +604,9 @@ crash limits, and cleanup before feature work depends on the desktop topology.
 ### 9.2 Vue rules
 
 - Components render state and emit user intent; domain decisions live in pure modules.
+- SFCs consume project-owned `use*Model` composables that return Vue refs and named intents. Atom
+  definitions, Effects, Layers, Streams, runtime construction, raw Causes, and registry access stay
+  outside `.vue` files; UI primitives import none of the client model.
 - A `use*.ts` module must use Vue reactivity or a store. Otherwise it is a utility and is named as
   such.
 - Prefer Vue 3.5 APIs, including template refs and explicit component APIs.
@@ -643,7 +648,7 @@ Each behavior has one primary owner at the cheapest layer that still exercises t
 | Node unit/property | pure rules, reducers, policies, normalization, state-machine invariants |
 | ACP contract | framing, capabilities, protocol ordering, adapter compatibility |
 | Backend integration | Effect services with real temporary SQLite, Git, filesystem, and ACP stdio |
-| Browser integration | user-visible Vue behavior with real components, router, Pinia, and browser APIs |
+| Browser integration | user-visible Vue behavior with real components, router, the real app-scoped client model, and browser APIs |
 | Playwright E2E | a few critical journeys through production web and server processes |
 | Packaging smoke | Electron artifact startup, preload boundary, native ABI, and shutdown |
 
@@ -701,7 +706,7 @@ and settings migration. State-machine models must be simpler than the production
 Failure output preserves the seed and replay path so every counterexample is reproducible.
 
 Do not unit-test trivial getters, pass-through wrappers, constructors, Vue refs/watchers, or isolated
-Pinia actions by default. A store receives a unit test only when it exposes a genuinely
+client-state actions by default. A model receives a unit test only when it exposes a genuinely
 framework-independent domain algorithm; normal store/router/composable collaboration belongs in a
 rendered feature test.
 
@@ -762,7 +767,7 @@ accessible name first, then label or visible text. Test IDs are reserved for non
 no accessible representation.
 
 `renderFeature` and `createTestApp` are the normal helpers. They render real parent/child Vue
-components, Pinia, router, message catalog, design tokens, and domain code. `renderComponent` is
+components, the app-scoped client model, router, message catalog, design tokens, and domain code. `renderComponent` is
 exceptional and limited to reusable interactive primitives or genuinely complex leaf widgets.
 Tests must not mock child components, stores, composables, the router, or internal application
 services.
