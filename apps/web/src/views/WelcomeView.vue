@@ -27,14 +27,14 @@ const start = async (): Promise<void> => {
   >
     <h1
       id="welcome-title"
-      class="m-0 mb-[0.55rem] max-w-[28rem] text-[clamp(1.5rem,3vw,2.2rem)] font-normal leading-[1.1] tracking-[-0.035em] text-text"
+      class="m-0 mb-2 max-w-112 text-display font-normal leading-tight tracking-tightest text-text"
     >
       {{ projects.length === 0 ? $t("welcome.noProjectsTitle") : $t("welcome.readyTitle") }}
     </h1>
-    <p class="m-0 max-w-[30rem] leading-[1.55]">
+    <p class="m-0 max-w-120 leading-normal">
       {{ projects.length === 0 ? $t("welcome.noProjectsBody") : $t("welcome.readyBody") }}
     </p>
-    <div class="mt-[1.2rem] flex flex-wrap justify-center gap-[0.65rem]">
+    <div class="mt-5 flex flex-wrap justify-center gap-2.5">
       <Button variant="primary" type="button" @click="start">
         {{ projects.length === 0 ? $t("projects.add") : $t("navigation.newChat") }}
       </Button>

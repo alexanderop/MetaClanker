@@ -10,7 +10,7 @@ const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 <template>
   <DialogDescription
     data-slot="dialog-description"
-    :class="cn('m-0 text-[0.75rem] leading-relaxed text-text-muted', props.class)"
+    :class="cn('m-0 text-base leading-relaxed text-text-muted', props.class)"
   >
     <slot />
   </DialogDescription>

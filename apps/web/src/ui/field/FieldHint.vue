@@ -7,10 +7,7 @@ const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 </script>
 
 <template>
-  <small
-    data-slot="field-hint"
-    :class="cn('text-[0.6rem] font-normal text-text-muted', props.class)"
-  >
+  <small data-slot="field-hint" :class="cn('text-2xs font-normal text-text-muted', props.class)">
     <slot />
   </small>
 </template>

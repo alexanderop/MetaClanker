@@ -101,52 +101,109 @@ The shipped set is `button`, `card`, `collapsible`, `dialog`, `empty-state`, `ey
 
 ## 5. Token model
 
-Tokens are declared in `apps/web/src/shared/styles.css` in two tiers.
+Tokens are declared in `apps/web/src/shared/styles.css` in three tiers. The governing rule is that
+**every value a designer would want to change lives in exactly one place**, and a surface that needs a
+value the scales do not have adds the step rather than writing the number.
 
-### 5.1 Base tier
+### 5.0 Tier 0: the palette
 
-The base palette, radii, and shadows are declared in a `@theme` block. This is deliberately not
-`@theme inline`. Non-inline `@theme` does two things at once:
+A plain `:root` block declares the raw inks — `--ink-navy`, `--ink-magenta`, `--ink-charcoal`, and the
+rest — named after what they look like. Nothing outside that block may name an ink, and
+`check-design-tokens.mjs` enforces it. Re-skinning the product is editing tier 0 and nothing else.
+
+### 5.1 Tier 1: semantic colour
+
+A `@theme` block maps inks onto roles: `--color-canvas`, `--color-surface`, `--color-text`,
+`--color-border`, `--color-accent`. This is deliberately not `@theme inline`. Non-inline `@theme` does
+two things at once:
 
 1. Generates Tailwind utilities (`bg-surface`, `rounded-md`, `shadow-soft`).
 2. Re-emits every token as a custom property on `:root`.
 
-Consequence (2) is what makes the migration incremental: all remaining hand-written CSS continues to
-resolve `var(--color-surface)` unchanged. Consequence (1) combined with non-inline resolution means
-utilities reference the variable rather than its value, so the existing `prefers-color-scheme` and
-`[data-theme]` override blocks flip every utility without a `dark:` variant.
+Consequence (2) is what lets the remaining hand-written shell CSS resolve `var(--color-surface)`
+unchanged. Consequence (1) combined with non-inline resolution means utilities reference the variable
+rather than its value, so a theme flip reaches every utility without a `dark:` variant.
 
-### 5.2 Semantic tier
+Each role is declared once, for both themes, through `light-dark()`:
 
-A second `@theme inline` block maps the shadcn token contract onto the base tier:
-`--color-background`, `--color-foreground`, `--color-muted-foreground`, `--color-card`,
-`--color-primary`, `--color-primary-foreground`, `--color-destructive`, `--color-ring`.
+```css
+--color-surface: light-dark(var(--ink-paper), var(--ink-navy-raised));
+```
+
+`light-dark()` resolves against `color-scheme`, so the entire dark mode is three declarations —
+`:root { color-scheme: light dark }` plus a `light` and a `dark` override keyed on `[data-theme]`.
+This replaced four blocks that restated the same twelve tokens; changing the sidebar colour previously
+meant editing three of them and silently getting it wrong in the fourth. A role that is the same ink in
+both themes names that ink once, which is itself the documentation.
+
+Tier 1 also holds the derived colours that components used to mix inline:
+
+- `--color-*-tint` and `--color-*-rim` for a severity worn by a panel — the fill and the border of a
+  warning or danger card. Six inline `color-mix()` calls at five different percentages became two pairs.
+- `--color-surface-glass` and `--color-canvas-glass` for a bar or panel floating over scrolling
+  content, paired with `backdrop-blur-lg`.
+- `--color-sidebar-text`, `--color-sidebar-text-dim`, `--color-sidebar-text-faint`,
+  `--color-sidebar-row`, and `--color-sidebar-rule`, taken as alphas of `--sidebar-fg`. The sidebar is
+  a fixed dark chrome in both themes, so its foreground scale is its own group rather than a tint of
+  `--color-text`.
+
+### 5.2 Tier 1: the non-colour scales
+
+A second `@theme` block owns type, weight, tracking, leading, radius, elevation, and the breakpoint.
+Each namespace is **reset to `initial` before ours is declared**, including `--color-*`. Tailwind's
+defaults are built for a page; this is a dense application shell whose body text is 0.75rem, two steps
+below a stock `text-sm`. Leaving the defaults in place means every surface silently chooses between two
+competing scales. After the reset, an off-scale name generates no class at all — a visible failure
+rather than a quiet one.
+
+| Namespace | Steps |
+| --------- | ----- |
+| `--text-*` | `2xs` 0.58 · `xs` 0.65 · `sm` 0.7 · `base` 0.75 · `md` 0.82 · `lg` 0.88 · `xl` 1.05 · `2xl` 1.15 · `display` (fluid clamp) |
+| `--font-weight-*` | `normal` 400 · `medium` 560 · `semibold` 650 · `bold` 750 · `extrabold` 850 |
+| `--tracking-*` | `tight` · `tighter` · `tightest` · `wide` · `wider` |
+| `--leading-*` | `tight` 1.2 · `snug` 1.35 · `normal` 1.5 · `relaxed` 1.65 |
+| `--radius-*` | `xs` 0.4 · `sm` 0.5 · `md` 0.75 · `lg` 1 · `xl` 1.35 · `full` |
+| `--shadow-*` | `soft` · `raised` · `popover` · `inset` · `ring` · `ring-sm` · `selected` |
+
+The weight ramp is heavier than Tailwind's because the type is small: at 0.6rem a stock 600 reads as
+regular weight. Every type step carries its own `--line-height`, so `text-sm` sets both and a surface
+spells out `leading-*` only where it genuinely departs from the step. `--shadow-selected` is the halo
+and the lift as one token, because a `box-shadow` utility replaces another rather than adding to it.
+
+Spacing is the one namespace kept at Tailwind's default: a 0.25rem base with half steps already gives
+0.125rem resolution, and the migration snapped every off-grid literal onto it.
+
+`--breakpoint-narrow` (51.25rem) is the one viewport at which the shell stops being two columns. The
+hand-written shell CSS reads it back with `@media (width <= theme(--breakpoint-narrow))` rather than
+repeating `820px`, and the shell's own geometry — `--sidebar-width`, `--sidebar-width-collapsed`, and
+the four `--layer-*` stacking tiers — sits beside it.
+
+### 5.3 Tier 2: semantic aliases
+
+A `@theme inline` block maps the shadcn token contract onto tier 1: `--color-background`,
+`--color-foreground`, `--color-muted-foreground`, `--color-card`, `--color-primary`,
+`--color-primary-foreground`, `--color-destructive`, `--color-ring`.
 
 `inline` is correct here: the alias resolves to `var(--color-*)` at build time and still flips at
 runtime. This tier exists so upstream patterns and examples drop in without translation.
 
-### 5.3 Elevation and sidebar tiers
-
-Two further base-tier groups were added while migrating, both because acceptance criterion 1
-forbids a component from declaring a colour, radius, or shadow value of its own:
-
-- `--shadow-ring`, `--shadow-ring-sm`, `--shadow-raised`, `--shadow-inset`, and `--color-scrim`.
-  These are the accent halo on a focused or selected control, the composer's resting elevation,
-  the pressed-in look of the active toggle, and the dialog backdrop.
-- `--color-sidebar-text`, `--color-sidebar-text-dim`, `--color-sidebar-text-faint`,
-  `--color-sidebar-row`, and `--color-sidebar-rule`. The sidebar is a fixed dark surface in both
-  themes, so its foreground scale is its own tier rather than a tint of `--color-text`.
-
-`--radius-xs` (0.4rem) was added and the assorted one-off radii between 0.3rem and 0.58rem were
-snapped onto the scale. `--font-mono` and `--breakpoint-narrow` (51.25rem, the one viewport at
-which the shell stops being two columns) are declared for the same reason: they were previously
-repeated literals.
-
 ### 5.4 Domain tokens
 
 Provider and status colours (`--color-codex`, `--color-claude`, `--color-warning`, `--color-danger`)
-stay in the base tier and are consumed through `data-*` attribute variants. A provider identity is not
-a semantic role and must not be aliased into the semantic tier.
+stay in tier 1 and are consumed through `data-*` attribute variants. A provider identity is not a
+semantic role and must not be aliased into tier 2.
+
+### 5.5 Enforcement
+
+`scripts/check-design-tokens.mjs` runs inside `pnpm check:styles` and fails on a component that writes
+a literal size, weight, radius, shadow, or colour instead of a scale step, on a component that names a
+tier 0 ink, and on a hex colour anywhere in the stylesheet outside the palette block. Expressions are
+not literals: `w-[min(31rem,calc(100vw-2rem))]`, grid track lists, and `em` sizes relative to inherited
+type are layout and remain allowed.
+
+The check exists because the failure mode is invisible. A `text-[0.63rem]` beside a `text-xs` renders
+fine, reviews fine, and quietly ends the scale's usefulness; the 289 arbitrary utilities this migration
+replaced accumulated exactly that way, one reasonable-looking line at a time.
 
 ## 6. Component authoring rules
 
@@ -334,20 +391,25 @@ tokens throughout rather than repeating `rgb(244 247 240 / …)` literals.
 
 ## 11. Ratchet
 
-Status: implemented. `scripts/check-stylesheet-ratchet.mjs` runs as `pnpm check:styles` inside
-`pnpm check`.
+Status: implemented. `scripts/check-stylesheet-ratchet.mjs` and `scripts/check-design-tokens.mjs` run
+as `pnpm check:styles` inside `pnpm check`.
 
 The ratchet is strict in both directions. Exceeding the ceiling fails, and so does falling under it,
 with an instruction to lower the constant. A one-directional ratchet lets a deletion go unrecorded,
 which leaves headroom for the next rule to be added silently.
 
-The ceiling was seeded at 2,493 before slice 2 landed and now stands at **761**.
+The ceiling was seeded at 2,493 before slice 2 landed, fell to 761, and now stands at **872**. The
+token restructure is the one deliberate rise: the type, weight, tracking, leading, and elevation scales
+moved into this file precisely so that no component declares them, and the token check enforces that
+they stay there. A token block growing is the system working; a rule block growing is not, and the two
+checks together are what distinguishes the cases.
 
 ## 12. Acceptance criteria
 
 | # | Criterion | Status |
 | - | --------- | ------ |
-| 1 | No component declares a colour, radius, or shadow value outside the token blocks | Met |
+| 1 | No component declares a colour, radius, or shadow value outside the token blocks | Met, and now enforced |
+| 1a | No component declares a font size, weight, tracking, or leading value either | Met, enforced by `check-design-tokens.mjs` |
 | 2 | Every primitive accepts and last-merges a `class` prop | Met |
 | 3 | Focus, portal, and roving-tabindex behavior is delegated to reka-ui | Met |
 | 4 | `ui` imports nothing from `shared`, `features`, or `views` | Met |

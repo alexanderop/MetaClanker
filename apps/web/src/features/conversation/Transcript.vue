@@ -12,7 +12,7 @@ import { EmptyState } from "../../ui/empty-state/index.js";
 // Provider output is untrusted text of unbounded width, so a code block scrolls and
 // wraps inside a bounded box rather than stretching the transcript column.
 const codeBlockClass =
-  "m-0 mx-3 mb-3 max-h-[14rem] overflow-auto rounded-xs bg-sidebar p-3 font-mono text-[0.75em] whitespace-pre-wrap text-text-inverse";
+  "m-0 mx-3 mb-3 max-h-56 overflow-auto rounded-xs bg-sidebar p-3 font-mono text-[0.75em] whitespace-pre-wrap text-text-inverse";
 
 const props = defineProps<{ detail: ThreadDetail }>();
 const transcript = useTemplateRef<HTMLElement>("transcript");
@@ -87,7 +87,7 @@ onUpdated(() => {
     <button
       v-if="hiddenActivityCount > 0"
       type="button"
-      class="mx-auto mb-5 block rounded-sm border border-border bg-surface px-3 py-2 text-xs text-text-muted hover:text-text"
+      class="mx-auto mb-5 block rounded-sm border border-border bg-surface px-3 py-2 text-base text-text-muted hover:text-text"
       @click="showEarlierActivity"
     >
       Show {{ Math.min(activityPageSize, hiddenActivityCount) }} earlier activities
@@ -112,9 +112,7 @@ onUpdated(() => {
             v-if="entry.message.role === 'thought'"
             class="mt-1 border-l-2 border-border pl-3 text-text-muted"
           >
-            <summary class="w-fit cursor-pointer text-[0.7rem] text-text-muted">
-              Thought summary
-            </summary>
+            <summary class="w-fit cursor-pointer text-sm text-text-muted">Thought summary</summary>
             <div class="markdown" v-html="renderMarkdown(entry.message.content, cacheMarkdown)" />
           </details>
           <div
@@ -133,21 +131,21 @@ onUpdated(() => {
         :aria-label="$t('thread.activity')"
       >
         <summary
-          class="grid cursor-pointer list-none grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[0.65rem] px-3 py-[0.65rem] [&::-webkit-details-marker]:hidden"
+          class="grid cursor-pointer list-none grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 px-3 py-2.5 [&::-webkit-details-marker]:hidden"
         >
           <span
-            class="grid size-[1.8rem] place-items-center rounded-xs bg-canvas font-mono text-[0.68rem] text-text-muted"
+            class="grid size-7 place-items-center rounded-xs bg-canvas font-mono text-sm text-text-muted"
             aria-hidden="true"
             >{{ entry.toolCall.kind === "edit" ? "±" : "›_" }}</span
           >
           <span
-            ><strong class="block text-[0.7rem]">{{ entry.toolCall.title }}</strong
-            ><small class="mt-[0.1rem] block text-[0.58rem] text-text-muted capitalize">{{
+            ><strong class="block text-sm">{{ entry.toolCall.title }}</strong
+            ><small class="mt-0.5 block text-2xs text-text-muted capitalize">{{
               entry.toolCall.kind
             }}</small></span
           >
           <span
-            class="text-[0.6rem] text-text-muted capitalize data-[status=completed]:text-accent-strong data-[status=failed]:text-danger"
+            class="text-2xs text-text-muted capitalize data-[status=completed]:text-accent-strong data-[status=failed]:text-danger"
             :data-status="entry.toolCall.status"
             >{{ entry.toolCall.status }}</span
           >

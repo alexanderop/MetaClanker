@@ -105,7 +105,7 @@ const providerLetter = (provider: Provider) => (provider === "codex" ? "C" : "A"
       :key="entry.node.id"
       role="treeitem"
       type="button"
-      class="grid w-full min-h-[3.2rem] cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[0.7rem] border-0 border-b border-border-subtle bg-transparent text-left text-text hover:bg-surface aria-selected:bg-surface"
+      class="grid w-full min-h-13 cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-0 border-b border-border-subtle bg-transparent text-left text-text hover:bg-surface aria-selected:bg-surface"
       :aria-level="entry.depth"
       :aria-selected="entry.node.id === selectedId"
       :tabindex="index === focusedIndex ? 0 : -1"
@@ -118,10 +118,8 @@ const providerLetter = (provider: Provider) => (provider === "codex" ? "C" : "A"
         {{ providerLetter(entry.node.provider) }}
       </ProviderMark>
       <span
-        ><strong class="block text-[0.73rem]">{{ entry.node.name }}</strong
-        ><small class="mt-[0.12rem] block text-[0.62rem] text-text-muted">{{
-          entry.node.activity
-        }}</small></span
+        ><strong class="block text-sm">{{ entry.node.name }}</strong
+        ><small class="mt-0.5 block text-xs text-text-muted">{{ entry.node.activity }}</small></span
       >
       <StatusBadge :status="entry.node.state">{{ entry.node.state }}</StatusBadge>
     </button>

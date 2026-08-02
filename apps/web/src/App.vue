@@ -13,7 +13,7 @@ const sidebarCollapsed = ref(
 );
 
 const centerStateClass =
-  "grid h-full place-items-center content-center gap-[0.8rem] text-center text-text-muted";
+  "grid h-full place-items-center content-center gap-3 text-center text-text-muted";
 
 const toggleSidebarCollapse = (): void => {
   sidebarCollapsed.value = !sidebarCollapsed.value;
@@ -58,7 +58,7 @@ onBeforeUnmount(() => workspace.disconnect());
         :class="centerStateClass"
       >
         <div
-          class="size-[1.7rem] animate-spin rounded-full border-2 border-border border-t-accent-strong"
+          class="size-7 animate-spin rounded-full border-2 border-border border-t-accent-strong"
           aria-hidden="true"
         />
         <p>{{ $t("common.loading") }}</p>

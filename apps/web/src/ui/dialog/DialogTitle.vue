@@ -10,7 +10,7 @@ const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 <template>
   <DialogTitle
     data-slot="dialog-title"
-    :class="cn('mt-[0.2rem] mb-0 text-[1.15rem] tracking-[-0.025em]', props.class)"
+    :class="cn('mt-1 mb-0 text-2xl tracking-tighter', props.class)"
   >
     <slot />
   </DialogTitle>

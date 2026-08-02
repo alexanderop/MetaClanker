@@ -32,7 +32,7 @@ const forwarded = useForwardPropsEmits(reactiveOmit(props, "class"), emits);
       v-bind="{ ...$attrs, ...forwarded }"
       :class="
         cn(
-          'fixed top-1/2 left-1/2 z-50 grid w-[min(31rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border border-border bg-surface p-5 text-text shadow-[var(--shadow-popover)] focus:outline-none',
+          'fixed top-1/2 left-1/2 z-50 grid w-[min(31rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border border-border bg-surface p-5 text-text shadow-popover focus:outline-none',
           props.class,
         )
       "

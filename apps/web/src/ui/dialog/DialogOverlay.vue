@@ -10,6 +10,6 @@ const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 <template>
   <DialogOverlay
     data-slot="dialog-overlay"
-    :class="cn('fixed inset-0 z-50 bg-scrim backdrop-blur-[3px]', props.class)"
+    :class="cn('fixed inset-0 z-50 bg-scrim backdrop-blur-xs', props.class)"
   />
 </template>

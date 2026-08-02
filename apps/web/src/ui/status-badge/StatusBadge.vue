@@ -18,7 +18,7 @@ const props = defineProps<{ status: string; class?: HTMLAttributes["class"] }>()
   >
     <span
       data-slot="status-badge-dot"
-      class="size-[0.36rem] rounded-full bg-current"
+      class="size-1.5 rounded-full bg-current"
       aria-hidden="true"
     />
     <slot />

@@ -21,7 +21,7 @@
     "test:smoke:package": "node tests/package-smoke.mjs",
     "test:types": "tsc -b && pnpm --filter @metaclanker/web typecheck",
     "knip": "knip",
-    "check:styles": "node scripts/check-stylesheet-ratchet.mjs",
+    "check:styles": "node scripts/check-stylesheet-ratchet.mjs && node scripts/check-design-tokens.mjs",
     "check": "pnpm format:check && pnpm lint && pnpm check:styles && pnpm test:types && pnpm test:unit && pnpm test:contract && pnpm test:integration && pnpm test:browser && pnpm build"
   },
   "devDependencies": {

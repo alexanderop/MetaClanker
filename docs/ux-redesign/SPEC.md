@@ -70,9 +70,9 @@ is represented as a durable failed or recovery-required turn and is never disgui
 
 ### 3.5 MetaClanker, not a T3 clone
 
-Reuse the interaction lesson, not T3 Code's visual design or expanded product scope. Keep MetaClanker's
-dark neutral surfaces, lime accent, typography, spacing tokens, provider-neutral ACP behavior, and
-conversation-plus-agent-map identity.
+Reuse the interaction lesson and conversation-shell hierarchy without copying T3 Code's component code,
+assets, or expanded product scope. Keep MetaClanker's tokens, provider-neutral ACP behavior, durable
+command contracts, recovery model, privacy rules, and conversation-plus-agent-map identity.
 
 ## 4. Goals and non-goals
 
@@ -94,7 +94,7 @@ conversation-plus-agent-map identity.
 - WSL specialization.
 - Automatic worktree or branch creation.
 - Snoozed, settled, or inbox-style thread management.
-- Reproducing T3 Code layouts, copy, assets, colors, or component code.
+- Copying T3 Code assets, component code, or unsupported actions and worktree scope.
 - Redesigning transcripts, review, terminal, or agent-map behavior beyond entry-state integration.
 
 ## 5. User-facing terminology
@@ -152,13 +152,14 @@ project selector. The command palette additionally offers `New chat in…` for e
 
 ### 7.2 Draft surface
 
-An unsent conversation opens as a local draft. The empty draft surface contains:
+An unsent conversation opens as a local draft in the same visual shell as a durable conversation. The
+empty draft surface contains:
 
-- The compact heading `What should we work on in {project}?`.
-- An inline or adjacent project selector.
-- A restrained, focused version of the normal composer.
+- A slim `New chat` header with an adjacent project selector and discard action.
+- A quiet empty timeline message that does not compete with the composer.
+- A restrained version of the normal composer anchored to the bottom of the conversation surface.
 - Provider, model, effort, permission, and negotiated provider controls.
-- Attach and send actions.
+- Progressive-disclosure attach and send actions.
 - A concise local-processing/privacy cue.
 
 The composer receives focus when the draft opens. The empty workspace and draft surface omit decorative

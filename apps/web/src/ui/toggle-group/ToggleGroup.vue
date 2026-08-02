@@ -21,10 +21,7 @@ const model = defineModel<TValue>({ required: true });
     data-slot="toggle-group"
     type="single"
     :class="
-      cn(
-        'inline-flex items-center rounded-sm border border-border bg-canvas p-[0.22rem]',
-        props.class,
-      )
+      cn('inline-flex items-center rounded-sm border border-border bg-canvas p-1', props.class)
     "
   >
     <slot />

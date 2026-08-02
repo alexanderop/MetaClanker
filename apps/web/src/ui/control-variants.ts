@@ -10,8 +10,8 @@ import { cva } from "class-variance-authority";
 export const controlVariants = cva("rounded-sm border border-border bg-surface-raised text-text", {
   variants: {
     size: {
-      default: "min-h-[2.55rem] px-[0.7rem] py-[0.6rem] text-[0.75rem]",
-      sm: "min-h-[2.25rem] w-full px-[0.55rem] py-[0.4rem] text-[0.68rem]",
+      default: "min-h-10 px-3 py-2.5 text-base",
+      sm: "min-h-9 w-full px-2 py-1.5 text-sm",
     },
   },
   defaultVariants: {

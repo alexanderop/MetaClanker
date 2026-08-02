@@ -8,8 +8,7 @@ export const cardVariants = cva("rounded-md border", {
     tone: {
       default: "border-border bg-surface",
       // A card that is asking for something, not reporting something.
-      warning:
-        "border-[color-mix(in_srgb,var(--color-warning)_55%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-warning)_7%,var(--color-surface))]",
+      warning: "border-warning-rim bg-warning-tint",
     },
   },
   defaultVariants: {

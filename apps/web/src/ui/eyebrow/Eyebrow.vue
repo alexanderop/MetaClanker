@@ -11,12 +11,7 @@ const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 <template>
   <p
     data-slot="eyebrow"
-    :class="
-      cn(
-        'm-0 text-[0.67rem] font-[750] tracking-[0.12em] text-accent-strong uppercase',
-        props.class,
-      )
-    "
+    :class="cn('m-0 text-xs font-bold tracking-wide text-accent-strong uppercase', props.class)"
   >
     <slot />
   </p>

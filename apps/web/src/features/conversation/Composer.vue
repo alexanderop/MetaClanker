@@ -56,14 +56,12 @@ const onKeydown = (event: KeyboardEvent): void => {
 <template>
   <footer class="bg-transparent px-[max(1rem,calc((100%-48rem)/2))] pt-2 pb-4">
     <div
-      class="overflow-hidden rounded-[1.35rem] border border-border-subtle bg-[color-mix(in_srgb,var(--color-surface)_94%,transparent)] shadow-soft backdrop-blur-[16px] transition-[border-color,box-shadow] duration-150 focus-within:border-[color-mix(in_srgb,var(--color-accent-strong)_45%,var(--color-border))] focus-within:shadow-[var(--shadow-ring),var(--shadow-soft)]"
-      :class="
-        active ? 'border-[color-mix(in_srgb,var(--color-info)_48%,var(--color-border))]' : undefined
-      "
+      class="overflow-hidden rounded-xl border border-border-subtle bg-surface-glass shadow-soft backdrop-blur-lg transition-[border-color,box-shadow] duration-150 focus-within:border-accent-rim focus-within:shadow-selected"
+      :class="active ? 'border-info-rim' : undefined"
     >
       <Textarea
         :value="draft"
-        class="max-h-48 min-h-16 px-4 pt-3.5 pb-1 text-[0.86rem] leading-[1.5]"
+        class="max-h-48 min-h-16 px-4 pt-3.5 pb-1 text-lg leading-normal"
         rows="2"
         :placeholder="$t('thread.composerPlaceholder')"
         :aria-label="$t('thread.composerPlaceholder')"
@@ -72,10 +70,7 @@ const onKeydown = (event: KeyboardEvent): void => {
         @keydown="onKeydown"
       />
       <div class="flex items-center justify-between px-3 pt-1 pb-3">
-        <div
-          class="flex items-center gap-2 text-[0.65rem] text-text-muted"
-          aria-label="Agent settings"
-        >
+        <div class="flex items-center gap-2 text-xs text-text-muted" aria-label="Agent settings">
           <span class="capitalize">{{ thread.provider }}</span>
           <span aria-hidden="true">·</span>
           <span>{{ thread.model ?? "Default model" }}</span>
@@ -85,7 +80,7 @@ const onKeydown = (event: KeyboardEvent): void => {
           variant="danger"
           size="icon"
           type="button"
-          class="text-[0.65rem]"
+          class="text-xs"
           :aria-label="$t('thread.stop')"
           @click="workspace.cancelPrompt"
         >

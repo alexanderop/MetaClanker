@@ -53,9 +53,11 @@ const addProject = async (page: Page, projectPath: string, name: string): Promis
   await dialog.getByText("Advanced", { exact: true }).click();
   await dialog.getByLabel("Display name").fill(name);
   await dialog.getByRole("button", { name: "Add project" }).click();
-  await expect(
-    page.getByRole("heading", { name: new RegExp(`What should we work on in.*${name}`) }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "New chat" })).toBeVisible();
+  const projectSelect = page.getByLabel("Project", { exact: true });
+  const projectValue = await projectSelect.getByRole("option", { name }).getAttribute("value");
+  expect(projectValue).not.toBeNull();
+  await expect(projectSelect).toHaveValue(projectValue!);
 };
 
 test("a user streams a Codex-like turn, approves work, and opens review", async ({

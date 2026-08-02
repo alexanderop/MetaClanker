@@ -9,8 +9,14 @@ import { fileURLToPath } from "node:url";
  *
  * Raising this number is not a routine edit: a new rule belongs in a `src/ui`
  * primitive unless it is a token, a reset, shell layout, or a third-party override.
+ *
+ * The one deliberate exception was the token restructure, which raised the ceiling
+ * while deleting rules: the type, weight, tracking, leading and elevation scales
+ * moved *into* this file precisely so that no component declares them, and
+ * `check-design-tokens.mjs` now enforces that. A token block growing is the system
+ * working; a rule block growing is not.
  */
-const ceiling = 766;
+const ceiling = 872;
 
 const stylesheet = fileURLToPath(new URL("../apps/web/src/shared/styles.css", import.meta.url));
 const contents = await readFile(stylesheet, "utf8");

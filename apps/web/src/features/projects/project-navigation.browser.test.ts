@@ -155,9 +155,8 @@ test("project onboarding continues to a local draft and first send promotes exac
   await expect.element(projectDialog.getByText(project.path)).toBeVisible();
   await projectDialog.getByRole("button", { name: "Add project" }).click();
 
-  await expect
-    .element(screen.getByRole("heading", { name: /What should we work on in.*Demo workspace/ }))
-    .toBeVisible();
+  await expect.element(screen.getByRole("heading", { name: "New chat" })).toBeVisible();
+  await expect.element(screen.getByLabelText("Project", { exact: true })).toHaveValue(project.id);
   const composer = screen.getByRole("textbox", {
     name: "Ask the agent to build, investigate, or explain…",
   });
@@ -235,6 +234,31 @@ test("a stored project draft survives a fresh app mount with its controls and cu
   ).toEqual([]);
 });
 
+test("a new chat uses the conversation shell with a bottom composer", async () => {
+  worker.use(
+    http.get("/api/shell", () =>
+      HttpResponse.json({ projects: [project], threads: [], latestSequence: 0 }),
+    ),
+  );
+  await router.push({ name: "draft", params: { projectId: project.id } });
+  await router.isReady();
+  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
+
+  await expect.element(screen.getByRole("heading", { name: "New chat" })).toBeVisible();
+  await expect
+    .element(screen.getByText("Send a message to start the conversation.", { exact: true }))
+    .toBeVisible();
+  const attachmentToggle = screen.getByRole("button", { name: "Add attachment" });
+  await expect.element(attachmentToggle).toHaveAttribute("aria-expanded", "false");
+  await expect
+    .element(screen.getByLabelText("Attach a server file or resource URI"))
+    .not.toBeInTheDocument();
+
+  await attachmentToggle.click();
+  await expect.element(attachmentToggle).toHaveAttribute("aria-expanded", "true");
+  await expect.element(screen.getByLabelText("Attach a server file or resource URI")).toBeVisible();
+});
+
 test("a completed live turn updates its sidebar status without a reload", async () => {
   worker.use(
     http.get("/api/shell", () =>
@@ -264,6 +288,27 @@ test("a completed live turn updates its sidebar status without a reload", async 
   await expect
     .element(screen.getByRole("link", { name: new RegExp(`${thread.title}.*completed`, "i") }))
     .toBeVisible();
+});
+
+test("the project tree shows compact relative thread ages", async () => {
+  const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1_000).toISOString();
+  worker.use(
+    http.get("/api/shell", () =>
+      HttpResponse.json({
+        projects: [project],
+        threads: [{ ...thread, updatedAt: threeDaysAgo }],
+        latestSequence: 1,
+      }),
+    ),
+  );
+  await router.push("/");
+  await router.isReady();
+  const screen = await renderFeature(App, { global: { plugins: [createPinia(), router, i18n] } });
+
+  await expect.element(screen.getByText("3d ago", { exact: true })).toBeVisible();
+  await expect
+    .element(screen.getByRole("button", { name: `Show or hide conversations in ${project.name}` }))
+    .toHaveAttribute("aria-expanded", "true");
 });
 
 test("a slower previous thread load cannot replace the latest conversation", async () => {
@@ -362,6 +407,7 @@ test("a rejected first send preserves every local draft field and reuses its com
   await screen.getByLabelText("Model").fill("claude-test-model");
   await screen.getByLabelText("Effort").selectOptions("high");
   await screen.getByLabelText("Permissions").selectOptions("read-only");
+  await screen.getByRole("button", { name: "Add attachment" }).click();
   await screen.getByLabelText("Attach a server file or resource URI").fill("file:///srv/demo.md");
   await screen.getByRole("button", { name: "Attach", exact: true }).click();
 

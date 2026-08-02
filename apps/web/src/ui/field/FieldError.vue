@@ -12,7 +12,7 @@ const props = defineProps<{ class?: HTMLAttributes["class"] }>();
   <p
     data-slot="field-error"
     role="alert"
-    :class="cn('m-0 text-[0.7rem] font-normal text-danger', props.class)"
+    :class="cn('m-0 text-sm font-normal text-danger', props.class)"
   >
     <slot />
   </p>

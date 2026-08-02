@@ -4,7 +4,7 @@ import { cva } from "class-variance-authority";
 export { default as Button } from "./Button.vue";
 
 export const buttonVariants = cva(
-  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-[0.4rem] whitespace-nowrap rounded-sm font-[650] outline-none focus-visible:outline-2 focus-visible:outline-offset-[3px] focus-visible:outline-accent-strong disabled:cursor-not-allowed disabled:opacity-40",
+  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-semibold outline-none focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-accent-strong disabled:cursor-not-allowed disabled:opacity-40",
   {
     variants: {
       variant: {
@@ -20,11 +20,11 @@ export const buttonVariants = cva(
         list: "justify-start rounded-sm bg-transparent text-left font-normal whitespace-normal text-text hover:not-disabled:bg-canvas",
       },
       size: {
-        default: "min-h-[2.2rem] px-[0.8rem] py-[0.46rem] text-[0.7rem]",
-        sm: "min-h-[1.8rem] rounded-[0.4rem] px-[0.48rem] py-[0.25rem] text-[0.62rem]",
-        icon: "size-8 p-0 text-base",
-        "icon-sm": "size-[1.7rem] rounded-[0.4rem] p-0",
-        list: "min-h-[2.6rem] w-full px-[0.7rem] py-[0.55rem] text-[0.75rem]",
+        default: "min-h-9 px-3 py-2 text-sm",
+        sm: "min-h-7 rounded-xs px-2 py-1 text-xs",
+        icon: "size-8 p-0 text-xl",
+        "icon-sm": "size-7 rounded-xs p-0",
+        list: "min-h-10.5 w-full px-3 py-2 text-base",
       },
     },
     defaultVariants: {

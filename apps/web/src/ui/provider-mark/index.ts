@@ -9,12 +9,12 @@ export { default as ProviderMark } from "./ProviderMark.vue";
  * Codex is the default because it is the fallback provider everywhere else too.
  */
 export const providerMarkVariants = cva(
-  "grid flex-none place-items-center rounded-sm bg-codex font-[800] text-accent-ink data-[provider=claude]:bg-claude",
+  "grid flex-none place-items-center rounded-sm bg-codex font-extrabold text-accent-ink data-[provider=claude]:bg-claude",
   {
     variants: {
       size: {
-        default: "size-[2.45rem]",
-        sm: "size-[1.65rem] text-[0.65rem]",
+        default: "size-10",
+        sm: "size-6.5 text-xs",
       },
     },
     defaultVariants: {

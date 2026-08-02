@@ -75,9 +75,9 @@ const inspectorRows = computed(() => [
   { label: "Changed files", value: String(selected.value?.changedFileCount ?? 0) },
 ]);
 
-const filterClass = "min-h-[2.15rem] pr-[1.7rem] text-[0.65rem]";
+const filterClass = "min-h-8.5 pr-7 text-xs";
 const inspectorRowClass =
-  "grid grid-cols-[6rem_1fr] gap-2 border-t border-border-subtle pt-[0.55rem] text-[0.65rem]";
+  "grid grid-cols-[6rem_1fr] gap-2 border-t border-border-subtle pt-2 text-xs";
 
 const selectNode = (node: AgentNode): void => {
   selectedId.value = node.id;
@@ -95,13 +95,13 @@ const onNodeClick = (event: NodeMouseEvent): void => {
     aria-labelledby="agent-map-title"
   >
     <div
-      class="flex items-center justify-between gap-4 border-b border-border bg-surface px-4 py-[0.85rem] max-narrow:flex-col max-narrow:items-stretch"
+      class="flex items-center justify-between gap-4 border-b border-border bg-surface px-4 py-3.5 max-narrow:flex-col max-narrow:items-stretch"
     >
       <div>
         <Eyebrow>Live hierarchy</Eyebrow>
-        <h2 id="agent-map-title" class="mt-[0.1rem] mb-0 text-base">{{ $t("map.title") }}</h2>
+        <h2 id="agent-map-title" class="mt-0.5 mb-0 text-xl">{{ $t("map.title") }}</h2>
       </div>
-      <div class="flex items-center gap-[0.45rem] max-narrow:flex-wrap max-narrow:items-stretch">
+      <div class="flex items-center gap-2 max-narrow:flex-wrap max-narrow:items-stretch">
         <label>
           <span class="sr-only">Provider filter</span>
           <NativeSelect v-model="provider" size="sm" :class="filterClass">
@@ -147,30 +147,22 @@ const onNodeClick = (event: NodeMouseEvent): void => {
       >
         <template #node-agent="{ data }">
           <button
-            class="grid w-60 cursor-pointer gap-[0.55rem] rounded-lg border border-border bg-surface p-[0.8rem] text-left text-text shadow-[var(--shadow-soft)] hover:border-accent-strong hover:shadow-[var(--shadow-ring),var(--shadow-soft)]"
+            class="grid w-60 cursor-pointer gap-2 rounded-lg border border-border bg-surface p-3 text-left text-text shadow-soft hover:border-accent-strong hover:shadow-selected"
             type="button"
-            :class="
-              data.id === selectedId
-                ? 'border-accent-strong shadow-[var(--shadow-ring),var(--shadow-soft)]'
-                : undefined
-            "
+            :class="data.id === selectedId ? 'border-accent-strong shadow-selected' : undefined"
             @click="selectNode(data)"
           >
-            <span class="flex items-center justify-between gap-[0.4rem]">
+            <span class="flex items-center justify-between gap-1.5">
               <ProviderMark :provider="data.provider" size="sm">
                 {{ data.provider === "codex" ? "C" : "A" }}
               </ProviderMark>
               <StatusBadge :status="data.state">{{ data.state }}</StatusBadge>
             </span>
-            <strong class="text-[0.78rem]">{{ data.name }}</strong>
-            <small
-              class="overflow-hidden text-[0.65rem] text-ellipsis whitespace-nowrap text-text-muted"
-            >
+            <strong class="text-base">{{ data.name }}</strong>
+            <small class="overflow-hidden text-xs text-ellipsis whitespace-nowrap text-text-muted">
               {{ data.activity }}
             </small>
-            <span
-              class="flex items-center justify-start gap-[0.4rem] text-[0.55rem] text-text-muted"
-            >
+            <span class="flex items-center justify-start gap-1.5 text-2xs text-text-muted">
               <span>{{ data.childCount }} children</span>
               <span v-if="data.pendingApproval">Needs approval</span>
               <span v-if="data.changedFileCount">{{ data.changedFileCount }} files</span>
@@ -186,16 +178,16 @@ const onNodeClick = (event: NodeMouseEvent): void => {
 
       <aside
         v-if="selected"
-        class="absolute top-4 right-4 z-[5] w-[min(20rem,calc(100%-2rem))] rounded-lg border border-border bg-[color-mix(in_srgb,var(--color-surface)_94%,transparent)] p-[0.85rem] shadow-[var(--shadow-popover)] backdrop-blur-[14px]"
+        class="absolute top-4 right-4 z-5 w-[min(20rem,calc(100%-2rem))] rounded-lg border border-border bg-surface-glass p-3.5 shadow-popover backdrop-blur-lg"
         aria-live="polite"
       >
-        <div class="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[0.65rem]">
+        <div class="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5">
           <ProviderMark :provider="selected.provider" size="sm">
             {{ selected.provider === "codex" ? "C" : "A" }}
           </ProviderMark>
           <div>
-            <strong class="block text-[0.75rem]">{{ selected.name }}</strong
-            ><small class="mt-[0.15rem] block text-[0.6rem] text-text-muted capitalize"
+            <strong class="block text-base">{{ selected.name }}</strong
+            ><small class="mt-0.5 block text-2xs text-text-muted capitalize"
               >{{ selected.provider }} · {{ selected.model ?? "default model" }}</small
             >
           </div>
@@ -209,7 +201,7 @@ const onNodeClick = (event: NodeMouseEvent): void => {
             ×
           </Button>
         </div>
-        <dl class="m-0 mt-4 grid gap-[0.55rem]">
+        <dl class="m-0 mt-4 grid gap-2">
           <div v-for="row in inspectorRows" :key="row.label" :class="inspectorRowClass">
             <dt class="text-text-muted">{{ row.label }}</dt>
             <dd class="m-0 capitalize">{{ row.value }}</dd>

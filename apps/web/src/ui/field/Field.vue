@@ -9,7 +9,7 @@ const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 </script>
 
 <template>
-  <label data-slot="field" :class="cn('grid gap-[0.35rem] text-[0.72rem] font-[650]', props.class)">
+  <label data-slot="field" :class="cn('grid gap-1.5 text-sm font-semibold', props.class)">
     <slot />
   </label>
 </template>

@@ -19,6 +19,7 @@ import { Eyebrow } from "../ui/eyebrow/index.js";
 import { Field, FieldError } from "../ui/field/index.js";
 import { Input } from "../ui/input/index.js";
 import { NativeSelect } from "../ui/native-select/index.js";
+import { ProviderMark } from "../ui/provider-mark/index.js";
 import { Textarea } from "../ui/textarea/index.js";
 import { useWorkspaceStore } from "../shared/workspaceStore.js";
 
@@ -30,6 +31,7 @@ const discardOpen = ref(false);
 const sending = ref(false);
 const sendError = ref<string | null>(null);
 const attachmentValue = ref("");
+const attachmentsOpen = ref(false);
 const acceptedDraft = shallowRef<ConversationDraft | null>(null);
 
 const projectId = computed(() => ProjectId.make(String(route.params["projectId"] ?? "")));
@@ -51,14 +53,6 @@ const sendReady = computed(
 const selectedProviderReadiness = computed(() =>
   workspace.providerReadiness.find((item) => item.provider === draft.value.provider),
 );
-
-// The draft controls are a single scrolling row of small captions, so they read one
-// step quieter and one step tighter than a standalone field.
-const draftViewClass =
-  "grid min-h-full overflow-y-auto bg-canvas p-[clamp(1rem,4vw,3rem)] max-narrow:px-[0.85rem] max-narrow:pt-[4.25rem] max-narrow:pb-[1.2rem]";
-
-const draftFieldClass =
-  "min-w-[6rem] max-narrow:min-w-0 flex-[1_1_7rem] gap-[0.2rem] text-[0.58rem] text-text-muted";
 
 const selection = (target: HTMLTextAreaElement) => ({
   cursorStart: target.selectionStart,
@@ -193,6 +187,7 @@ watch(
   projectId,
   () => {
     sendError.value = null;
+    attachmentsOpen.value = draft.value.attachments.length > 0;
     focusComposer();
   },
   { immediate: true },
@@ -200,19 +195,24 @@ watch(
 </script>
 
 <template>
-  <section v-if="project" :class="draftViewClass" aria-labelledby="draft-title">
-    <div class="m-auto w-[min(48rem,100%)] self-center">
-      <h1
-        id="draft-title"
-        class="m-0 mb-8 text-center text-[clamp(1.5rem,3vw,2rem)] font-normal leading-[1.2] tracking-[-0.03em]"
-      >
-        {{ $t("draft.title") }}
-        <label>
+  <section
+    v-if="project"
+    class="grid h-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-canvas"
+    aria-labelledby="draft-title"
+  >
+    <header
+      class="flex min-h-13 items-center justify-between gap-3 border-b border-border-subtle bg-canvas-glass px-4 py-1.5 backdrop-blur-lg max-narrow:pl-17"
+    >
+      <div class="flex min-w-0 items-center gap-2.5">
+        <h1 id="draft-title" class="m-0 shrink-0 text-lg font-semibold tracking-tight">
+          {{ $t("draft.newTitle") }}
+        </h1>
+        <label class="min-w-0">
           <span class="sr-only">{{ $t("draft.project") }}</span>
           <NativeSelect
             :model-value="String(projectId)"
             :aria-label="$t('draft.project')"
-            class="min-h-0 max-w-[min(18rem,70vw)] rounded-none border-0 border-b border-b-border bg-transparent px-0 py-0 text-[length:inherit] font-[650] text-text"
+            class="min-h-7 max-w-48 rounded-xs border-border bg-surface-raised px-2 py-0 text-sm font-semibold"
             @update:model-value="changeProject"
           >
             <option v-for="item in workspace.shell.projects" :key="item.id" :value="item.id">
@@ -221,140 +221,57 @@ watch(
             <option value="__add-project">{{ $t("draft.addProject") }}</option>
           </NativeSelect>
         </label>
-        ?
-      </h1>
+      </div>
+      <Button variant="ghost" size="sm" type="button" @click="discard">
+        <svg aria-hidden="true" viewBox="0 0 24 24" class="size-3.5" fill="none">
+          <path
+            d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <span class="max-narrow:sr-only">{{ $t("draft.discard") }}</span>
+      </Button>
+    </header>
 
-      <div
-        class="overflow-hidden rounded-[1.35rem] border border-border-subtle bg-[color-mix(in_srgb,var(--color-surface)_94%,transparent)] shadow-soft backdrop-blur-[16px]"
-      >
-        <Textarea
-          ref="promptInput"
-          class="min-h-28 px-4 pt-4 pb-2 text-[0.9rem] leading-[1.55]"
-          :value="draft.prompt"
-          rows="5"
-          :placeholder="$t('thread.composerPlaceholder')"
-          :aria-label="$t('thread.composerPlaceholder')"
-          :aria-describedby="sendError ? 'draft-send-error' : undefined"
-          :disabled="sending"
-          @input="updatePrompt"
-          @keydown="onKeydown"
-          @keyup="updateCursor"
-          @select="updateCursor"
-        />
-        <FieldError v-if="sendError" id="draft-send-error" class="px-[0.65rem]">
-          {{ sendError }} Your draft is still here.
-        </FieldError>
+    <div class="grid min-h-0 place-items-center px-4 text-center">
+      <p class="m-0 max-w-full text-sm text-text-muted/45">
+        {{ $t("draft.emptyMessage") }}
+      </p>
+    </div>
+
+    <div
+      class="relative z-10 min-w-0 px-[clamp(0.75rem,3vw,2rem)] pb-[clamp(0.75rem,2.5vw,1.5rem)]"
+    >
+      <div class="mx-auto min-w-0 w-full max-w-3xl">
         <div
-          class="flex items-end gap-1.5 overflow-x-auto border-t border-border-subtle px-3 py-2.5 max-narrow:grid max-narrow:grid-cols-2 max-narrow:overflow-visible"
+          class="min-w-0 w-full overflow-hidden rounded-xl border border-border bg-surface-glass shadow-soft backdrop-blur-lg transition-[border-color,box-shadow] duration-150 focus-within:border-accent-rim focus-within:shadow-selected"
         >
-          <Field :class="draftFieldClass">
-            <span>{{ $t("draft.provider") }}</span>
-            <NativeSelect
-              :model-value="draft.provider"
-              size="sm"
-              @update:model-value="updateProvider"
-            >
-              <option
-                v-for="providerState in workspace.providerReadiness"
-                :key="providerState.provider"
-                :value="providerState.provider"
-                :disabled="providerState.status !== 'ready'"
-              >
-                {{ providerState.provider === "codex" ? "Codex" : "Claude"
-                }}{{ providerState.status === "ready" ? "" : " — unavailable" }}
-              </option>
-            </NativeSelect>
-          </Field>
-          <Field :class="draftFieldClass">
-            <span>{{ $t("draft.model") }}</span>
-            <Input
-              :model-value="draft.model ?? ''"
-              size="sm"
-              autocomplete="off"
-              :placeholder="$t('draft.providerDefault')"
-              @update:model-value="updateModel"
-            />
-          </Field>
-          <Field :class="draftFieldClass">
-            <span>{{ $t("draft.effort") }}</span>
-            <NativeSelect
-              :model-value="draft.effort ?? ''"
-              size="sm"
-              @update:model-value="updateEffort"
-            >
-              <option value="">{{ $t("draft.default") }}</option>
-              <option value="low">{{ $t("draft.low") }}</option>
-              <option value="medium">{{ $t("draft.medium") }}</option>
-              <option value="high">{{ $t("draft.high") }}</option>
-            </NativeSelect>
-          </Field>
-          <Field :class="draftFieldClass">
-            <span>{{ $t("draft.permission") }}</span>
-            <NativeSelect
-              :model-value="draft.permissionMode ?? ''"
-              size="sm"
-              @update:model-value="updatePermissionMode"
-            >
-              <option value="">{{ $t("draft.default") }}</option>
-              <option value="read-only">{{ $t("draft.readOnly") }}</option>
-              <option value="workspace-write">{{ $t("draft.workspaceWrite") }}</option>
-              <option value="full-access">{{ $t("draft.fullAccess") }}</option>
-            </NativeSelect>
-          </Field>
-          <Button variant="ghost" type="button" @click="discard">
-            {{ $t("draft.discard") }}
-          </Button>
-          <Button
-            variant="primary"
-            size="icon"
-            type="button"
-            class="size-10 shrink-0 justify-self-end"
-            :aria-label="$t('thread.send')"
-            :disabled="sending || !sendReady"
-            @click="send"
-          >
-            <span aria-hidden="true">↑</span>
-          </Button>
-        </div>
-        <p
-          v-if="selectedProviderReadiness?.status === 'unavailable'"
-          class="m-0 border-t border-[color-mix(in_srgb,var(--color-danger)_35%,var(--color-border))] px-[0.8rem] py-[0.65rem] text-[0.68rem] text-danger"
-          role="status"
-        >
-          {{
-            $t("draft.unavailable", {
-              provider: selectedProviderReadiness.provider === "codex" ? "Codex" : "Claude",
-              reason: selectedProviderReadiness.reason,
-            })
-          }}
-        </p>
-        <div class="grid gap-2 border-t border-border-subtle px-3 py-2.5">
-          <Field class="gap-[0.35rem] text-[0.62rem] font-normal text-text-muted">
-            <span>{{ $t("draft.attachLabel") }}</span>
-            <span
-              class="grid grid-cols-[minmax(0,1fr)_auto] gap-[0.45rem] max-narrow:grid-cols-1 max-narrow:items-stretch"
-            >
-              <Input
-                v-model="attachmentValue"
-                size="sm"
-                autocomplete="off"
-                placeholder="file:///srv/project/notes.md"
-                @keydown.enter.prevent="addAttachment"
-              />
-              <Button variant="secondary" type="button" @click="addAttachment">
-                {{ $t("draft.attach") }}
-              </Button>
-            </span>
-          </Field>
+          <Textarea
+            ref="promptInput"
+            class="max-h-52 min-h-20 resize-none px-4 pt-4 pb-2 text-lg leading-normal"
+            :value="draft.prompt"
+            rows="3"
+            :placeholder="$t('thread.composerPlaceholder')"
+            :aria-label="$t('thread.composerPlaceholder')"
+            :aria-describedby="sendError ? 'draft-send-error' : undefined"
+            :disabled="sending"
+            @input="updatePrompt"
+            @keydown="onKeydown"
+            @keyup="updateCursor"
+            @select="updateCursor"
+          />
           <ul
             v-if="draft.attachments.length > 0"
-            class="m-0 flex list-none flex-wrap gap-[0.35rem] p-0"
+            class="m-0 flex list-none flex-wrap gap-1.5 px-4 pb-2 p-0"
             :aria-label="$t('draft.attachments')"
           >
             <li
               v-for="attachment in draft.attachments"
               :key="attachment"
-              class="flex max-w-full items-center gap-[0.35rem] rounded-full bg-surface-raised px-[0.45rem] py-[0.3rem] text-[0.62rem]"
+              class="flex max-w-full items-center gap-1.5 rounded-full bg-surface-raised px-2 py-1 text-xs"
             >
               <span class="overflow-hidden text-ellipsis whitespace-nowrap">{{ attachment }}</span>
               <button
@@ -367,14 +284,172 @@ watch(
               </button>
             </li>
           </ul>
+          <FieldError v-if="sendError" id="draft-send-error" class="px-4 pb-2">
+            {{ sendError }} {{ $t("draft.stillHere") }}
+          </FieldError>
+          <div
+            v-if="attachmentsOpen"
+            class="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 border-t border-border-subtle px-3 py-2.5 max-narrow:grid-cols-1"
+          >
+            <Field class="gap-1 text-2xs font-normal text-text-muted">
+              <span>{{ $t("draft.attachLabel") }}</span>
+              <Input
+                v-model="attachmentValue"
+                size="sm"
+                autocomplete="off"
+                placeholder="file:///srv/project/notes.md"
+                @keydown.enter.prevent="addAttachment"
+              />
+            </Field>
+            <Button variant="secondary" type="button" @click="addAttachment">
+              {{ $t("draft.attach") }}
+            </Button>
+          </div>
+          <p
+            v-if="selectedProviderReadiness?.status === 'unavailable'"
+            class="m-0 border-t border-danger-rim px-3 py-2 text-sm text-danger"
+            role="status"
+          >
+            {{
+              $t("draft.unavailable", {
+                provider: selectedProviderReadiness.provider === "codex" ? "Codex" : "Claude",
+                reason: selectedProviderReadiness.reason,
+              })
+            }}
+          </p>
+          <div
+            class="flex min-w-0 items-center gap-1 overflow-x-auto border-t border-border-subtle px-3 py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            <Field class="flex shrink-0 items-center gap-1 text-2xs font-normal">
+              <span class="sr-only">{{ $t("draft.provider") }}</span>
+              <ProviderMark
+                :provider="draft.provider"
+                size="sm"
+                class="size-4 rounded-full text-2xs"
+              >
+                {{ draft.provider === "codex" ? "C" : "A" }}
+              </ProviderMark>
+              <NativeSelect
+                :model-value="draft.provider"
+                size="sm"
+                class="min-h-8 w-auto max-w-24 border-0 bg-transparent px-1.5 py-1 font-semibold text-text-muted hover:bg-surface-raised hover:text-text"
+                @update:model-value="updateProvider"
+              >
+                <option
+                  v-for="providerState in workspace.providerReadiness"
+                  :key="providerState.provider"
+                  :value="providerState.provider"
+                  :disabled="providerState.status !== 'ready'"
+                >
+                  {{ providerState.provider === "codex" ? "Codex" : "Claude"
+                  }}{{ providerState.status === "ready" ? "" : " — unavailable" }}
+                </option>
+              </NativeSelect>
+            </Field>
+            <span aria-hidden="true" class="mx-0.5 h-4 w-px shrink-0 bg-border-subtle" />
+            <Field class="flex shrink-0 items-center text-2xs font-normal">
+              <span class="sr-only">{{ $t("draft.model") }}</span>
+              <Input
+                :model-value="draft.model ?? ''"
+                size="sm"
+                class="min-h-8 w-32 border-0 bg-transparent px-1.5 py-1 font-semibold text-text-muted hover:bg-surface-raised hover:text-text"
+                autocomplete="off"
+                :placeholder="$t('draft.providerDefault')"
+                @update:model-value="updateModel"
+              />
+            </Field>
+            <span aria-hidden="true" class="mx-0.5 h-4 w-px shrink-0 bg-border-subtle" />
+            <Field class="flex shrink-0 items-center text-2xs font-normal">
+              <span class="sr-only">{{ $t("draft.effort") }}</span>
+              <NativeSelect
+                :model-value="draft.effort ?? ''"
+                size="sm"
+                class="min-h-8 w-auto border-0 bg-transparent px-1.5 py-1 font-semibold text-text-muted hover:bg-surface-raised hover:text-text"
+                @update:model-value="updateEffort"
+              >
+                <option value="">{{ $t("draft.default") }}</option>
+                <option value="low">{{ $t("draft.low") }}</option>
+                <option value="medium">{{ $t("draft.medium") }}</option>
+                <option value="high">{{ $t("draft.high") }}</option>
+              </NativeSelect>
+            </Field>
+            <span aria-hidden="true" class="mx-0.5 h-4 w-px shrink-0 bg-border-subtle" />
+            <Field class="flex shrink-0 items-center text-2xs font-normal">
+              <span class="sr-only">{{ $t("draft.permission") }}</span>
+              <NativeSelect
+                :model-value="draft.permissionMode ?? ''"
+                size="sm"
+                class="min-h-8 w-auto border-0 bg-transparent px-1.5 py-1 font-semibold text-text-muted hover:bg-surface-raised hover:text-text"
+                @update:model-value="updatePermissionMode"
+              >
+                <option value="">{{ $t("draft.default") }}</option>
+                <option value="read-only">{{ $t("draft.readOnly") }}</option>
+                <option value="workspace-write">{{ $t("draft.workspaceWrite") }}</option>
+                <option value="full-access">{{ $t("draft.fullAccess") }}</option>
+              </NativeSelect>
+            </Field>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              type="button"
+              class="ml-0.5"
+              :aria-label="$t('draft.addAttachment')"
+              :aria-expanded="attachmentsOpen"
+              @click="attachmentsOpen = !attachmentsOpen"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" class="size-3.5" fill="none">
+                <path
+                  d="m8.5 12.5 6.1-6.1a3.2 3.2 0 0 1 4.5 4.5l-8.2 8.2a5 5 0 0 1-7.1-7.1l8.1-8.1"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </Button>
+            <Button
+              variant="primary"
+              size="icon"
+              type="button"
+              class="ml-auto size-9 shrink-0 rounded-full"
+              :aria-label="$t('thread.send')"
+              :disabled="sending || !sendReady"
+              @click="send"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" class="size-4" fill="none">
+                <path
+                  d="M12 19V5m0 0-5 5m5-5 5 5"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </Button>
+          </div>
         </div>
+        <div class="flex items-center justify-between gap-3 px-5.5 pt-2 text-xs text-text-muted">
+          <span class="flex min-w-0 items-center gap-1.5">
+            <svg aria-hidden="true" viewBox="0 0 24 24" class="size-3.5 shrink-0" fill="none">
+              <path
+                d="M3 6.5A1.5 1.5 0 0 1 4.5 5h5l2 2h8A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5Z"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span>{{ $t("draft.serverProject") }}</span>
+          </span>
+          <span class="truncate">{{ project.gitBranch ?? $t("draft.gitUnavailable") }}</span>
+        </div>
+        <p class="mt-2 mb-0 text-center text-2xs text-text-muted/75">
+          {{ $t("draft.privacy") }}
+        </p>
       </div>
-      <p class="mt-3 mb-0 text-center text-[0.65rem] text-text-muted">{{ $t("draft.privacy") }}</p>
     </div>
   </section>
   <section
     v-else
-    class="grid h-full place-items-center content-center gap-[0.8rem] text-center text-text-muted"
+    class="grid h-full place-items-center content-center gap-3 text-center text-text-muted"
     role="alert"
   >
     <h1>{{ $t("draft.unavailableProject") }}</h1>
