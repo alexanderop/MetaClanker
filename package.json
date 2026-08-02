@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@effect/eslint-plugin": "0.3.2",
+    "@effect/language-service": "0.87.1",
     "@effect/vitest": "catalog:",
     "@electron/fuses": "2.1.3",
     "@electron/packager": "20.0.4",

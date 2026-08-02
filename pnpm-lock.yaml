@@ -45,6 +45,9 @@ importers:
       '@effect/eslint-plugin':
         specifier: 0.3.2
         version: 0.3.2
+      '@effect/language-service':
+        specifier: 0.87.1
+        version: 0.87.1
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.0-beta.102(effect@4.0.0-beta.102)(vitest@4.1.10)
@@ -685,6 +688,10 @@ packages:
 
   '@effect/eslint-plugin@0.3.2':
     resolution: {integrity: sha512-c4Vs9t3r54A4Zpl+wo8+PGzZz3JWYsip41H+UrebRLjQ2Hk/ap63IeCgN/HWcYtxtyhRopjp7gW9nOQ2Snbl+g==}
+
+  '@effect/language-service@0.87.1':
+    resolution: {integrity: sha512-kcljlJmEgqg5mFAM6UShJYJjMqJb3TbHHxrK8Qoubvwugc0aVWpRkbdgQvK5b17puOt3BKXXKOmcV+oQt0oQqQ==}
+    hasBin: true
 
   '@effect/sql-sqlite-node@4.0.0-beta.102':
     resolution: {integrity: sha512-MtHf58b33hP8t5wJ9SrQCoLwIWQntxtFdcAN3aSLTSczBgKk+d/BPGfyv6iIgDkWWyMKHOYrJ29C7vprgjqeyA==}
@@ -5941,6 +5948,8 @@ snapshots:
       '@dprint/formatter': 0.4.1
       '@dprint/typescript': 0.91.8
       prettier-linter-helpers: 1.0.1
+
+  '@effect/language-service@0.87.1': {}
 
   '@effect/sql-sqlite-node@4.0.0-beta.102(effect@4.0.0-beta.102)':
     dependencies:
