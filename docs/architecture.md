@@ -242,6 +242,12 @@ they must not read arbitrary persisted JSON.
   Absent or null optional capabilities mean unsupported; unknown future fields do not break decoding.
 - Derive model, effort, fast-mode, permission, and other controls from session modes and config
   options, including dynamic updates, instead of hardcoding provider-specific pickers.
+- A local draft never opens a provider session for catalog discovery. After a real session opens,
+  persist its currently advertised model identifiers as a replaceable provider-scoped cache. The
+  draft model catalog combines that cache with local recent/custom values and labels an empty cache
+  honestly; it does not imply that a provider supports an unadvertised model. Opening the catalog
+  refreshes readiness metadata so models learned by an earlier turn become available without an app
+  restart.
 - Require pre-existing local provider authentication for the MVP. Do not inspect credential files.
   Derive `unknown`, `ready`, or `authentication-required` from operations and advertised auth flows.
 - Display advertised authentication methods. Agent-handled methods and terminal authentication are
@@ -535,6 +541,7 @@ Initial tables:
 - `environments`
 - `projects`
 - `provider_adapters`
+- `provider_models` (replaceable ACP-advertised metadata, not conversation authority)
 - `threads`
 - `turns`
 - `command_receipts`
@@ -578,6 +585,18 @@ has `nodeIntegration: false`, `contextIsolation: true`, sandboxing enabled, a st
 and new-window allowlists, explicit permission handlers, and hardened Electron fuses. The preload
 exposes individual typed operations rather than raw IPC primitives, and the main process validates
 the sender of every privileged call.
+
+Presentation preferences that must survive Electron's dynamic loopback ports use that same typed
+bridge and a mode-0600 file in the application-data directory. The browser surface keeps its
+same-origin `localStorage` fallback; the bridge never exposes a general filesystem or key-value API.
+
+Unsent conversation drafts require the same cross-origin continuity but are not presentation
+preferences. Electron therefore stores their already-schema-shaped JSON in a separate mode-0600
+application-data file through dedicated read/write bridge operations. The main process validates the
+sender, JSON object shape, and a bounded payload size; the renderer still performs the authoritative
+Effect Schema decode. Writes are serialized and flushed during shutdown. Draft content is never
+placed in process arguments, logs, errors, or a generic storage API, and browser-only deployments
+retain the same-origin `localStorage` implementation.
 
 The packaged server must load the native SQLite driver on each supported OS and architecture. A
 Milestone 0 spike verifies native-module ABI, bundling/unpacking, application-data paths, readiness,

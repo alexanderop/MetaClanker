@@ -134,7 +134,9 @@ export const useReviewModel = (options: UseReviewModelOptions) => {
   );
   const pending = computed(() => review.value === null && reviewResult.value.waiting);
   const refreshing = computed(() => review.value !== null && reviewResult.value.waiting);
-  const busy = computed(() => restoreResult.value.waiting || previewResult.value.waiting);
+  const previewing = computed(() => previewResult.value.waiting);
+  const restoring = computed(() => restoreResult.value.waiting);
+  const busy = computed(() => restoring.value || previewing.value);
   const message = computed(
     () =>
       resultMessage(restoreResult.value) ??
@@ -142,10 +144,14 @@ export const useReviewModel = (options: UseReviewModelOptions) => {
       resultMessage(reviewResult.value),
   );
   const previewRows = computed(() => [
-    { label: "Files added back", value: preview.value?.additions.length ?? 0 },
-    { label: "Files overwritten", value: preview.value?.modifications.length ?? 0 },
-    { label: "Files deleted", value: preview.value?.deletions.length ?? 0 },
-    { label: "Ignored files covered", value: preview.value?.includesIgnoredFiles ? "Yes" : "No" },
+    { label: "review.additions", value: preview.value?.additions.length ?? 0 },
+    { label: "review.modifications", value: preview.value?.modifications.length ?? 0 },
+    { label: "review.deletions", value: preview.value?.deletions.length ?? 0 },
+    {
+      label: "review.ignoredFiles",
+      value: preview.value?.includesIgnoredFiles ? "review.yes" : "review.no",
+      translateValue: true,
+    },
   ]);
 
   const refresh = (): void => model.refreshReview(options.threadId());
@@ -187,6 +193,8 @@ export const useReviewModel = (options: UseReviewModelOptions) => {
     confirmed,
     pending,
     refreshing,
+    previewing,
+    restoring,
     busy,
     message,
     previewRows,

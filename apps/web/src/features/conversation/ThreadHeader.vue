@@ -28,6 +28,12 @@ const selectedSurface = computed({
   get: () => props.surface,
   set: (next) => emit("changeSurface", next),
 });
+
+const reviewUnavailable = computed(() => props.project?.gitStatus === "unavailable");
+
+const openReview = (): void => {
+  if (!reviewUnavailable.value) emit("openReview");
+};
 </script>
 
 <template>
@@ -52,20 +58,22 @@ const selectedSurface = computed({
           <StatusBadge
             :status="thread.status"
             role="status"
-            :aria-label="`Thread status: ${thread.status}`"
+            :aria-label="$t('thread.statusLabel', { status: $t(`thread.status.${thread.status}`) })"
           >
-            {{ thread.status }}
+            {{ $t(`thread.status.${thread.status}`) }}
           </StatusBadge>
         </div>
         <p class="mt-0.5 mb-0 text-2xs text-text-muted capitalize max-narrow:hidden">
-          <span>{{ thread.provider }}</span>
+          <span>{{ $t(`providers.${thread.provider}`) }}</span>
           <span v-if="thread.model">· {{ thread.model }}</span>
           <span v-if="project?.gitBranch">· {{ $t("thread.branch") }} {{ project.gitBranch }}</span>
-          <span v-if="project?.gitStatus === 'unavailable'">· Git unavailable</span>
+          <span v-if="project?.gitStatus === 'unavailable'"
+            >· {{ $t("thread.gitUnavailable") }}</span
+          >
         </p>
       </div>
     </div>
-    <ToggleGroup v-model="selectedSurface" aria-label="Workspace surface">
+    <ToggleGroup v-model="selectedSurface" :aria-label="$t('thread.workspaceSurface')">
       <ToggleGroupItem value="conversation">
         <span aria-hidden="true">▤</span>{{ $t("thread.conversation") }}
       </ToggleGroupItem>
@@ -82,15 +90,13 @@ const selectedSurface = computed({
       <Button
         variant="secondary"
         type="button"
-        :disabled="project?.gitStatus === 'unavailable'"
-        :title="
-          project?.gitStatus === 'unavailable'
-            ? 'Git review is unavailable for this project'
-            : undefined
-        "
-        @click="$emit('openReview')"
+        :aria-disabled="reviewUnavailable"
+        :title="reviewUnavailable ? $t('thread.reviewUnavailable') : undefined"
+        :class="reviewUnavailable ? 'cursor-not-allowed opacity-55' : undefined"
+        @click="openReview"
       >
-        <span aria-hidden="true">±</span>{{ $t("thread.review") }}
+        <span aria-hidden="true">±</span
+        >{{ $t(reviewUnavailable ? "thread.reviewUnavailableShort" : "thread.review") }}
       </Button>
     </div>
   </header>

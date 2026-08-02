@@ -14,6 +14,20 @@ import {
 
 const NonEmptyTrimmedString = Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1));
 
+export const ResourceUri = NonEmptyTrimmedString.check(
+  Schema.makeFilter(
+    (value) => {
+      try {
+        return new URL(value).protocol.length > 0;
+      } catch {
+        return false;
+      }
+    },
+    { expected: "an absolute resource URI" },
+  ),
+);
+export type ResourceUri = typeof ResourceUri.Type;
+
 export const Provider = Schema.Literals(["codex", "claude"]);
 export type Provider = typeof Provider.Type;
 
@@ -218,6 +232,7 @@ export const ProviderReadiness = Schema.Struct({
   provider: Provider,
   status: Schema.Literals(["ready", "unavailable"]),
   reason: Schema.NullOr(Schema.String),
+  models: Schema.Array(Schema.String),
 });
 export type ProviderReadiness = typeof ProviderReadiness.Type;
 
@@ -250,7 +265,7 @@ export const SendPromptRequest = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   prompt: Schema.NonEmptyString,
-  attachments: Schema.optionalKey(Schema.Array(Schema.String)),
+  attachments: Schema.optionalKey(Schema.Array(ResourceUri)),
 });
 export type SendPromptRequest = typeof SendPromptRequest.Type;
 
@@ -276,7 +291,7 @@ export const StartThreadRequest = Schema.Struct({
     Schema.Literals(["read-only", "workspace-write", "full-access"]),
   ),
   prompt: Schema.String,
-  attachments: Schema.optionalKey(Schema.Array(NonEmptyTrimmedString)),
+  attachments: Schema.optionalKey(Schema.Array(ResourceUri)),
 });
 export type StartThreadRequest = typeof StartThreadRequest.Type;
 

@@ -34,7 +34,8 @@ const inspectorRowClass =
 const mode = ref<"canvas" | "tree">("canvas");
 const { provider, state, filteredNodes } = useAgentFilters();
 const { flowNodes, flowEdges } = useFlowGraph(filteredNodes);
-const { selectedId, selected, inspectorRows, selectNode, onNodeClick } = useNodeSelection();
+const { selectedId, selected, inspectorRows, selectNode, onNodeClick } =
+  useNodeSelection(filteredNodes);
 
 function useAgentFilters() {
   const provider = ref<Provider | "all">("all");
@@ -84,12 +85,21 @@ function useFlowGraph(visibleNodes: ComputedRef<ReadonlyArray<AgentNode>>) {
   return { flowNodes, flowEdges };
 }
 
-function useNodeSelection() {
+function useNodeSelection(visibleNodes: ComputedRef<ReadonlyArray<AgentNode>>) {
   const selectedId = ref<string | null>(null);
 
   const selected = computed(
-    () => props.agentNodes.find((node) => node.id === selectedId.value) ?? null,
+    () => visibleNodes.value.find((node) => node.id === selectedId.value) ?? null,
   );
+
+  watchEffect(() => {
+    if (
+      selectedId.value !== null &&
+      !visibleNodes.value.some((node) => node.id === selectedId.value)
+    ) {
+      selectedId.value = null;
+    }
+  });
 
   const inspectorRows = computed(() => [
     { label: "Status", value: selected.value?.state ?? "" },
@@ -171,6 +181,7 @@ function useNodeSelection() {
           <button
             class="grid w-60 cursor-pointer gap-2 rounded-lg border border-border bg-surface p-3 text-left text-text shadow-soft hover:border-accent-strong hover:shadow-selected"
             type="button"
+            :aria-pressed="data.id === selectedId"
             :class="data.id === selectedId ? 'border-accent-strong shadow-selected' : undefined"
             @click="selectNode(data)"
           >

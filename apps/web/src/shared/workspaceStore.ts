@@ -3,7 +3,7 @@ import { defineStore } from "pinia";
 import { computed, onScopeDispose, ref, shallowRef } from "vue";
 
 import { CommandId, ProjectId } from "@metaclanker/contracts/ids";
-import type { ThreadId } from "@metaclanker/contracts/ids";
+import type { CommandId as CommandIdValue, ThreadId } from "@metaclanker/contracts/ids";
 import type {
   PendingInteraction,
   Project,
@@ -16,6 +16,10 @@ import type {
 import { Provider as ProviderSchema, defaultUserSettings } from "@metaclanker/contracts/wire";
 
 import { api, schemas } from "./apiClient.js";
+import {
+  persistDesktopConversationDrafts,
+  readDesktopConversationDrafts,
+} from "./desktopBridge.js";
 import { applyShellEvent } from "./live-shell-state.js";
 import { applyThreadEvent } from "./live-thread-state.js";
 import { createSerialConsumer } from "./serial-consumer.js";
@@ -38,15 +42,17 @@ const ConversationDraftSchema = Schema.Struct({
 export type ConversationDraft = typeof ConversationDraftSchema.Type;
 const ConversationDraftRecordSchema = Schema.Record(Schema.String, ConversationDraftSchema);
 
-const loadConversationDrafts = (): Record<string, ConversationDraft> => {
+const decodeConversationDrafts = (serialized: string | null): Record<string, ConversationDraft> => {
   try {
-    const serialized = window.localStorage.getItem(conversationDraftStorageKey);
     if (serialized === null) return {};
     return Schema.decodeUnknownSync(ConversationDraftRecordSchema)(JSON.parse(serialized));
   } catch {
     return {};
   }
 };
+
+const loadConversationDrafts = (): Record<string, ConversationDraft> =>
+  decodeConversationDrafts(window.localStorage.getItem(conversationDraftStorageKey));
 
 const applyTheme = (theme: UserSettings["theme"]): void => {
   if (theme === "system") delete document.documentElement.dataset["theme"];
@@ -59,8 +65,13 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   const shell = ref<ShellSnapshot>(emptyShell);
   const detail = shallowRef<ThreadDetail | null>(null);
   const loading = ref(true);
-  const error = ref<string | null>(null);
+  const workspaceError = ref<string | null>(null);
+  const threadError = ref<string | null>(null);
+  const error = computed(() => threadError.value ?? workspaceError.value);
   const drafts = ref<Record<string, string>>({});
+  const draftCommandIds: Record<string, CommandIdValue> = {};
+  const cancelCommandIds: Record<string, CommandIdValue> = {};
+  const interactionCommandIds: Record<string, CommandIdValue> = {};
   const conversationDrafts = ref<Record<string, ConversationDraft>>(loadConversationDrafts());
   const settings = ref<UserSettings>(defaultUserSettings);
   const providerReadiness = ref<ReadonlyArray<ProviderReadiness>>([]);
@@ -144,26 +155,35 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     closeShellSocket();
     clearShellReconnectTimer();
     loading.value = true;
-    error.value = null;
+    workspaceError.value = null;
     try {
       await api.authenticateLocal();
-      const [nextShell, nextSettings, nextProviderReadiness] = await Promise.all([
-        api.shell(),
-        api.settings(),
-        api.providerReadiness(),
-      ]);
+      const [nextShell, nextSettings, nextProviderReadiness, desktopConversationDrafts] =
+        await Promise.all([
+          api.shell(),
+          api.settings(),
+          api.providerReadiness(),
+          readDesktopConversationDrafts(),
+        ]);
       if (generation !== bootstrapGeneration) return;
       shell.value = nextShell;
       settings.value = nextSettings;
       providerReadiness.value = nextProviderReadiness;
+      if (desktopConversationDrafts !== null) {
+        conversationDrafts.value = decodeConversationDrafts(desktopConversationDrafts);
+      }
       applyTheme(nextSettings.theme);
       await subscribeShell();
     } catch (cause) {
       if (generation !== bootstrapGeneration) return;
-      error.value = cause instanceof Error ? cause.message : String(cause);
+      workspaceError.value = cause instanceof Error ? cause.message : String(cause);
     } finally {
       if (generation === bootstrapGeneration) loading.value = false;
     }
+  };
+
+  const refreshProviderReadiness = async (): Promise<void> => {
+    providerReadiness.value = await api.providerReadiness();
   };
 
   const loadThread = async (id: ThreadId): Promise<void> => {
@@ -173,7 +193,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     clearReconnectTimer();
     snapshotLoading = false;
     loading.value = true;
-    error.value = null;
+    threadError.value = null;
     try {
       const snapshot = await api.thread(id);
       if (generation !== threadLoadGeneration || selectedThreadId !== id) return;
@@ -181,10 +201,18 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       await subscribe(id);
     } catch (cause) {
       if (generation !== threadLoadGeneration || selectedThreadId !== id) return;
-      error.value = cause instanceof Error ? cause.message : String(cause);
+      threadError.value = cause instanceof Error ? cause.message : String(cause);
     } finally {
       if (generation === threadLoadGeneration) loading.value = false;
     }
+  };
+
+  const retry = async (): Promise<void> => {
+    if (threadError.value !== null && selectedThreadId !== null) {
+      await loadThread(selectedThreadId);
+      return;
+    }
+    await bootstrap();
   };
 
   const applyEvent = (event: ServerEvent): void => {
@@ -212,12 +240,12 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       const snapshot = await api.thread(id);
       if (selectedThreadId !== id) return;
       detail.value = snapshot;
-      error.value = null;
+      threadError.value = null;
       snapshotLoading = false;
       await subscribe(id);
     } catch (cause) {
       if (selectedThreadId !== id) return;
-      error.value = `The conversation could not be resynchronized: ${cause instanceof Error ? cause.message : String(cause)}`;
+      threadError.value = `The conversation could not be resynchronized: ${cause instanceof Error ? cause.message : String(cause)}`;
       const delay = Math.min(10_000, 500 * 2 ** reconnectAttempt) + Math.random() * 250;
       reconnectAttempt += 1;
       reconnectTimer = setTimeout(() => {
@@ -238,7 +266,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       reconnectTimer = null;
       void subscribe(id).catch((cause: unknown) => {
         if (selectedThreadId !== id) return;
-        error.value = `The conversation could not reconnect: ${cause instanceof Error ? cause.message : String(cause)}`;
+        threadError.value = `The conversation could not reconnect: ${cause instanceof Error ? cause.message : String(cause)}`;
         scheduleThreadReconnect(id);
       });
     }, delay);
@@ -258,7 +286,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     nextSocket.addEventListener("open", () => {
       if (generation !== threadSocketGeneration) return;
       reconnectAttempt = 0;
-      error.value = null;
+      threadError.value = null;
     });
     const eventConsumer = createSerialConsumer(
       (event: ServerEvent) => {
@@ -266,7 +294,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       },
       (cause) => {
         if (generation === threadSocketGeneration) {
-          error.value = `The live update stream sent invalid data: ${String(cause)}`;
+          threadError.value = `The live update stream sent invalid data: ${String(cause)}`;
         }
       },
     );
@@ -302,11 +330,11 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     clearShellReconnectTimer();
     try {
       shell.value = await api.shell();
-      error.value = null;
+      workspaceError.value = null;
       shellSnapshotLoading = false;
       await subscribeShell();
     } catch (cause) {
-      error.value = `The workspace could not be resynchronized: ${cause instanceof Error ? cause.message : String(cause)}`;
+      workspaceError.value = `The workspace could not be resynchronized: ${cause instanceof Error ? cause.message : String(cause)}`;
       const delay = Math.min(10_000, 500 * 2 ** shellReconnectAttempt) + Math.random() * 250;
       shellReconnectAttempt += 1;
       shellReconnectTimer = setTimeout(() => {
@@ -330,7 +358,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       const reconnectGeneration = shellSocketGeneration;
       void reconnect.catch((cause: unknown) => {
         if (reconnectGeneration !== shellSocketGeneration) return;
-        error.value = `The workspace could not reconnect: ${cause instanceof Error ? cause.message : String(cause)}`;
+        workspaceError.value = `The workspace could not reconnect: ${cause instanceof Error ? cause.message : String(cause)}`;
         scheduleShellReconnect();
       });
     }, delay);
@@ -350,7 +378,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     nextSocket.addEventListener("open", () => {
       if (generation !== shellSocketGeneration) return;
       shellReconnectAttempt = 0;
-      error.value = null;
+      workspaceError.value = null;
     });
     const eventConsumer = createSerialConsumer(
       (event: ServerEvent) => {
@@ -358,7 +386,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       },
       (cause) => {
         if (generation === shellSocketGeneration) {
-          error.value = `The workspace update stream sent invalid data: ${String(cause)}`;
+          workspaceError.value = `The workspace update stream sent invalid data: ${String(cause)}`;
         }
       },
     );
@@ -397,10 +425,9 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   onScopeDispose(disconnect);
 
   const persistConversationDrafts = (): void => {
-    window.localStorage.setItem(
-      conversationDraftStorageKey,
-      JSON.stringify(conversationDrafts.value),
-    );
+    const serialized = JSON.stringify(conversationDrafts.value);
+    window.localStorage.setItem(conversationDraftStorageKey, serialized);
+    void persistDesktopConversationDrafts(serialized);
   };
 
   const createProject = async (path: string, name?: string): Promise<Project> => {
@@ -421,15 +448,19 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     applyTheme(settings.value.theme);
   };
 
+  const previewTheme = (theme: UserSettings["theme"]): void => applyTheme(theme);
+
   const sendPrompt = async (text: string): Promise<void> => {
     const current = detail.value;
     if (current === null) return;
-    drafts.value[current.thread.id] = "";
+    const commandId = draftCommandIds[current.thread.id] ?? CommandId.make(crypto.randomUUID());
+    draftCommandIds[current.thread.id] = commandId;
     await api.prompt(current.thread.id, {
-      commandId: CommandId.make(crypto.randomUUID()),
+      commandId,
       threadId: current.thread.id,
       prompt: text,
     });
+    delete draftCommandIds[current.thread.id];
   };
 
   const draftForProject = (projectId: ProjectId): ConversationDraft => {
@@ -502,15 +533,23 @@ export const useWorkspaceStore = defineStore("workspace", () => {
 
   const cancelPrompt = async (): Promise<void> => {
     if (detail.value === null) return;
-    await api.cancel(detail.value.thread.id, { commandId: CommandId.make(crypto.randomUUID()) });
+    const threadId = detail.value.thread.id;
+    const commandId = cancelCommandIds[threadId] ?? CommandId.make(crypto.randomUUID());
+    cancelCommandIds[threadId] = commandId;
+    await api.cancel(threadId, { commandId });
+    delete cancelCommandIds[threadId];
   };
 
   const respond = async (interaction: PendingInteraction, optionId: string): Promise<void> => {
+    const commandKey = `${interaction.id}:${optionId}`;
+    const commandId = interactionCommandIds[commandKey] ?? CommandId.make(crypto.randomUUID());
+    interactionCommandIds[commandKey] = commandId;
     const resolved = await api.respond(interaction.id, {
-      commandId: CommandId.make(crypto.randomUUID()),
+      commandId,
       interactionId: interaction.id,
       optionId,
     });
+    delete interactionCommandIds[commandKey];
     if (detail.value === null) return;
     detail.value = {
       ...detail.value,
@@ -524,6 +563,8 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   const draftFor = (id: ThreadId): string => drafts.value[id] ?? "";
   const setDraft = (id: ThreadId, value: string): void => {
     drafts.value[id] = value;
+    if (value.length === 0) delete draftCommandIds[id];
+    else draftCommandIds[id] ??= CommandId.make(crypto.randomUUID());
   };
 
   return {
@@ -539,6 +580,8 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     resolvedTheme,
     toggleTheme,
     bootstrap,
+    retry,
+    refreshProviderReadiness,
     loadThread,
     disconnect,
     createProject,
@@ -547,6 +590,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     discardConversationDraft,
     startConversation,
     saveSettings,
+    previewTheme,
     sendPrompt,
     cancelPrompt,
     respond,

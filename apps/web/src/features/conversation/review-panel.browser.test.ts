@@ -1,12 +1,14 @@
 import { HttpResponse, http } from "msw";
 import { setupWorker } from "msw/browser";
 import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
+import { userEvent } from "vitest/browser";
 import { defineComponent, ref } from "vue";
 
 import { ThreadId } from "@metaclanker/contracts/ids";
 import { renderFeature } from "@metaclanker/testing/vue/render-feature";
 
 import { createAppAtomModel } from "../../app-atom-model.js";
+import { i18n } from "../../shared/i18n.js";
 import ReviewPanel from "./ReviewPanel.vue";
 
 const threadId = ThreadId.make("thread:review-browser");
@@ -66,6 +68,7 @@ const renderReview = () =>
   renderFeature(ReviewPanel, {
     props: { threadId },
     atomModel: createAppAtomModel(),
+    global: { plugins: [i18n] },
   });
 
 test("loads review data and reports a safe initial failure", async () => {
@@ -108,6 +111,43 @@ test("keeps stale review data visible when a refresh fails", async () => {
   await screen.getByRole("button", { name: "Refresh review" }).click();
   await expect.element(screen.getByText("Could not load review (HTTP 503).")).toBeVisible();
   await expect.element(screen.getByText("src/main.ts")).toBeVisible();
+});
+
+test("explains an empty diff and missing restore checkpoints", async () => {
+  worker.use(
+    http.get("/api/threads/:id/review", () =>
+      HttpResponse.json({ checkpoints: [], diff: { files: [] } }),
+    ),
+  );
+  const screen = await renderReview();
+
+  await expect.element(screen.getByText("No file changes captured.")).toBeVisible();
+  await expect.element(screen.getByText("No pre-turn checkpoints are available.")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Refresh review" })).toBeEnabled();
+});
+
+test("announces destructive-preview loading before exposing confirmation", async () => {
+  let releasePreview!: () => void;
+  const heldPreview = new Promise<void>((resolve) => {
+    releasePreview = resolve;
+  });
+  worker.use(
+    http.post("/api/threads/:id/restore-preview", async () => {
+      await heldPreview;
+      return HttpResponse.json(preview);
+    }),
+  );
+  const screen = await renderReview();
+  await expect.element(screen.getByText("src/main.ts")).toBeVisible();
+
+  await screen.getByRole("button", { name: /Before turn/ }).click();
+  await expect.element(screen.getByText("Preparing destructive preview…")).toBeVisible();
+  await expect
+    .element(screen.getByRole("heading", { name: "Destructive preview" }))
+    .not.toBeInTheDocument();
+
+  releasePreview();
+  await expect.element(screen.getByRole("heading", { name: "Destructive preview" })).toBeVisible();
 });
 
 test("reuses one command identity when an uncertain restore is explicitly retried", async () => {
@@ -163,7 +203,7 @@ test("reuses one command identity when an uncertain restore is explicitly retrie
   expect((restoreInputs[1] as { commandId?: unknown }).commandId).toBe(
     (restoreInputs[0] as { commandId?: unknown }).commandId,
   );
-  await expect.element(restore).toBeDisabled();
+  await expect.element(screen.getByRole("button", { name: "Restoring files…" })).toBeDisabled();
   releaseSecondResponse();
   await expect.element(restore).toBeEnabled();
   expect(screen.emitted("restored")).toHaveLength(1);
@@ -211,6 +251,7 @@ test("closing the panel interrupts its pending review request without disposing 
   };
   const screen = await renderFeature(Host, {
     atomModel: createAppAtomModel({ fetch: observedFetch }),
+    global: { plugins: [i18n] },
   });
   await started;
 
@@ -227,4 +268,32 @@ test("the close control emits without dispatching a restore", async () => {
 
   expect(screen.emitted("close")).toHaveLength(1);
   expect(restoreInputs).toHaveLength(0);
+});
+
+test("the review drawer owns modal keyboard focus and restores its trigger", async () => {
+  const Host = defineComponent({
+    components: { ReviewPanel },
+    setup() {
+      const open = ref(false);
+      return { open, threadId };
+    },
+    template: `
+      <button type="button" @click="open = true">Open review</button>
+      <ReviewPanel v-if="open" :thread-id="threadId" @close="open = false" />
+    `,
+  });
+  const screen = await renderFeature(Host, {
+    atomModel: createAppAtomModel(),
+    global: { plugins: [i18n] },
+  });
+  const trigger = screen.getByRole("button", { name: "Open review" });
+
+  await trigger.click();
+  const dialog = screen.getByRole("dialog", { name: "Review changes" });
+  await expect.element(dialog).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Close review" })).toHaveFocus();
+
+  await userEvent.keyboard("{Escape}");
+  await expect.element(dialog).not.toBeInTheDocument();
+  await expect.element(trigger).toHaveFocus();
 });

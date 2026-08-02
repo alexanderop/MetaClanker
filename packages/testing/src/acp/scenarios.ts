@@ -18,6 +18,7 @@ export interface AcpScenario {
     readonly mode: FakePromptMode;
     readonly message: string;
   };
+  readonly models: ReadonlyArray<string>;
   readonly crashAt: FakeCrashPoint | null;
 }
 
@@ -25,6 +26,7 @@ export type AcpScenarioOverrides = {
   readonly protocolVersion?: number;
   readonly sessionCapabilities?: Partial<AcpScenario["sessionCapabilities"]>;
   readonly prompt?: Partial<AcpScenario["prompt"]>;
+  readonly models?: ReadonlyArray<string>;
   readonly crashAt?: FakeCrashPoint | null;
 };
 
@@ -35,6 +37,7 @@ const defaults: AcpScenario = {
     mode: "permission",
     message: "I’ll inspect the project and make the requested change.",
   },
+  models: ["fake-fast", "fake-deep"],
   crashAt: null,
 };
 
@@ -48,6 +51,7 @@ export const acpScenario = (overrides: AcpScenarioOverrides = {}): AcpScenario =
     ...defaults.prompt,
     ...overrides.prompt,
   },
+  models: overrides.models ?? defaults.models,
   crashAt: overrides.crashAt ?? defaults.crashAt,
 });
 
@@ -98,6 +102,10 @@ export const scenarioFromEnvironment = (value: string | undefined): AcpScenario 
         : {}),
       sessionCapabilities: capabilityOverrides,
       prompt: promptOverrides,
+      ...(Array.isArray(input["models"]) &&
+      input["models"].every((model) => typeof model === "string")
+        ? { models: input["models"] }
+        : {}),
       ...(input["crashAt"] === null || isCrashPoint(input["crashAt"])
         ? { crashAt: input["crashAt"] }
         : {}),

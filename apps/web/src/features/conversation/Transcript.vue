@@ -17,6 +17,15 @@ const codeBlockClass =
 // A reader scrolled this close to the end still counts as reading the tail.
 const bottomAnchorSlack = 96;
 const activityPageSize = 200;
+const timestampFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+const formatTimestamp = (value: string): string => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : timestampFormatter.format(date);
+};
 
 const props = defineProps<{ detail: ThreadDetail }>();
 
@@ -109,7 +118,7 @@ function usePagedTimeline() {
   <section
     ref="transcript"
     class="min-h-0 overflow-y-auto px-[max(1rem,calc((100%-48rem)/2))] pt-8 pb-10"
-    aria-label="Conversation transcript"
+    :aria-label="$t('thread.transcript')"
     @scroll="onScroll"
   >
     <EmptyState
@@ -125,7 +134,11 @@ function usePagedTimeline() {
       class="mx-auto mb-5 block rounded-sm border border-border bg-surface px-3 py-2 text-base text-text-muted hover:text-text"
       @click="showEarlierActivity"
     >
-      Show {{ Math.min(activityPageSize, hiddenActivityCount) }} earlier activities
+      {{
+        $t("thread.earlierActivities", {
+          count: Math.min(activityPageSize, hiddenActivityCount),
+        })
+      }}
     </button>
     <template v-for="entry in visibleTimeline" :key="timelineEntryKey(entry)">
       <article
@@ -133,7 +146,7 @@ function usePagedTimeline() {
         class="w-full min-w-0 [&+&]:mt-4"
         style="content-visibility: auto; contain-intrinsic-size: auto 96px"
         :class="entry.message.role === 'user' ? 'message-user' : undefined"
-        :aria-label="`${entry.message.role} message`"
+        :aria-label="$t(`thread.messageRole.${entry.message.role}`)"
       >
         <div
           class="min-w-0"
@@ -147,14 +160,29 @@ function usePagedTimeline() {
             v-if="entry.message.role === 'thought'"
             class="mt-1 border-l-2 border-border pl-3 text-text-muted"
           >
-            <summary class="w-fit cursor-pointer text-sm text-text-muted">Thought summary</summary>
+            <summary class="flex w-fit cursor-pointer items-center gap-2 text-sm text-text-muted">
+              <span>{{ $t("thread.thoughtSummary") }}</span>
+              <time
+                class="text-2xs"
+                :datetime="entry.message.createdAt"
+                :aria-label="
+                  $t('thread.sentAt', { time: formatTimestamp(entry.message.createdAt) })
+                "
+                >{{ formatTimestamp(entry.message.createdAt) }}</time
+              >
+            </summary>
             <div class="markdown" v-html="renderMarkdown(entry.message.content, cacheMarkdown)" />
           </details>
-          <div
-            v-else
-            class="markdown"
-            v-html="renderMarkdown(entry.message.content, cacheMarkdown)"
-          />
+          <template v-else>
+            <div class="markdown" v-html="renderMarkdown(entry.message.content, cacheMarkdown)" />
+            <time
+              class="mt-1 block text-2xs text-text-muted"
+              :class="entry.message.role === 'user' ? 'text-right' : undefined"
+              :datetime="entry.message.createdAt"
+              :aria-label="$t('thread.sentAt', { time: formatTimestamp(entry.message.createdAt) })"
+              >{{ formatTimestamp(entry.message.createdAt) }}</time
+            >
+          </template>
         </div>
       </article>
 
@@ -163,7 +191,7 @@ function usePagedTimeline() {
         as="details"
         class="mt-4"
         style="content-visibility: auto; contain-intrinsic-size: auto 64px"
-        :aria-label="$t('thread.activity')"
+        :aria-label="$t('thread.activityLabel', { title: entry.toolCall.title })"
       >
         <summary
           class="grid cursor-pointer list-none grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 px-3 py-2.5 [&::-webkit-details-marker]:hidden"
@@ -179,11 +207,21 @@ function usePagedTimeline() {
               entry.toolCall.kind
             }}</small></span
           >
-          <span
-            class="text-2xs text-text-muted capitalize data-[status=completed]:text-accent-strong data-[status=failed]:text-danger"
-            :data-status="entry.toolCall.status"
-            >{{ entry.toolCall.status }}</span
-          >
+          <span class="text-right text-2xs text-text-muted">
+            <span
+              class="block capitalize data-[status=completed]:text-accent-strong data-[status=failed]:text-danger"
+              :data-status="entry.toolCall.status"
+              >{{ entry.toolCall.status }}</span
+            >
+            <time
+              class="mt-0.5 block"
+              :datetime="entry.toolCall.updatedAt"
+              :aria-label="
+                $t('thread.updatedAt', { time: formatTimestamp(entry.toolCall.updatedAt) })
+              "
+              >{{ formatTimestamp(entry.toolCall.updatedAt) }}</time
+            >
+          </span>
         </summary>
         <pre v-if="entry.toolCall.content" :class="codeBlockClass">{{
           entry.toolCall.content
@@ -198,7 +236,7 @@ function usePagedTimeline() {
     />
 
     <div class="sr-only" aria-live="polite" aria-atomic="true">
-      {{ detail.thread.status === "completed" ? "Agent turn completed" : "" }}
+      {{ detail.thread.status === "completed" ? $t("thread.turnCompleted") : "" }}
     </div>
   </section>
 </template>

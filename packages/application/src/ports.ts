@@ -199,6 +199,15 @@ export interface CommandMutation<A> {
 
 export interface MetaClankerStore {
   readonly shellSnapshot: Effect.Effect<ShellSnapshot, StoreError>;
+  readonly listProviderModels: Effect.Effect<
+    ReadonlyArray<{ readonly provider: Provider; readonly model: string }>,
+    StoreError
+  >;
+  readonly replaceProviderModels: (
+    provider: Provider,
+    models: ReadonlyArray<string>,
+    discoveredAt: string,
+  ) => Effect.Effect<void, StoreError>;
   readonly createProject: (
     input: CreateProjectRecord,
   ) => Effect.Effect<CommandMutation<Project>, StoreError>;

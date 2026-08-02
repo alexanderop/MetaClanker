@@ -1,23 +1,92 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 
 const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 30_000;
 const SHUTDOWN_GRACE_MS = 3_000;
+const MAX_CONVERSATION_DRAFT_BYTES = 2 * 1024 * 1024;
 
 let server: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
 let serverOrigin: string | null = null;
 let quitting = false;
 const restartTimes: number[] = [];
+let conversationDraftWrite = Promise.resolve();
 const smokeLog = (message: string): void => {
   if (process.env["METACLANKER_PACKAGE_SMOKE"] === "1") {
     process.stdout.write(`METACLANKER_SMOKE ${message}\n`);
   }
+};
+
+const readSidebarCollapsed = async (): Promise<boolean> => {
+  try {
+    const value = JSON.parse(
+      await readFile(join(app.getPath("userData"), "presentation-state.json"), "utf8"),
+    ) as unknown;
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      "sidebarCollapsed" in value &&
+      value.sidebarCollapsed === true
+    );
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT" || cause instanceof SyntaxError) {
+      return false;
+    }
+    throw cause;
+  }
+};
+
+const writeSidebarCollapsed = async (collapsed: boolean): Promise<void> => {
+  await writeFile(
+    join(app.getPath("userData"), "presentation-state.json"),
+    JSON.stringify({ sidebarCollapsed: collapsed }),
+    { encoding: "utf8", mode: 0o600 },
+  );
+};
+
+const validateConversationDrafts = (serialized: string): void => {
+  if (Buffer.byteLength(serialized, "utf8") > MAX_CONVERSATION_DRAFT_BYTES) {
+    throw new Error("Conversation draft state is too large");
+  }
+  const value = JSON.parse(serialized) as unknown;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Invalid conversation draft state");
+  }
+};
+
+const readConversationDrafts = async (): Promise<string | null> => {
+  try {
+    const serialized = await readFile(
+      join(app.getPath("userData"), "conversation-drafts.json"),
+      "utf8",
+    );
+    validateConversationDrafts(serialized);
+    return serialized;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT" || cause instanceof SyntaxError) {
+      return null;
+    }
+    throw cause;
+  }
+};
+
+const enqueueConversationDraftWrite = (serialized: string): Promise<void> => {
+  validateConversationDrafts(serialized);
+  conversationDraftWrite = conversationDraftWrite
+    .catch(() => undefined)
+    .then(() =>
+      writeFile(join(app.getPath("userData"), "conversation-drafts.json"), serialized, {
+        encoding: "utf8",
+        mode: 0o600,
+      }),
+    );
+  return conversationDraftWrite;
 };
 
 const randomToken = (): string => randomBytes(32).toString("base64url");
@@ -136,9 +205,27 @@ const installPrivilegedHandlers = (): void => {
     const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
     return result.canceled ? null : (result.filePaths[0] ?? null);
   });
+  ipcMain.handle("desktop:set-sidebar-collapsed", async (event, collapsed: unknown) => {
+    const sender = event.senderFrame;
+    if (sender === null || !validSender(sender.url)) throw new Error("Untrusted renderer sender");
+    if (typeof collapsed !== "boolean") throw new Error("Invalid sidebar state");
+    await writeSidebarCollapsed(collapsed);
+  });
+  ipcMain.handle("desktop:read-conversation-drafts", async (event) => {
+    const sender = event.senderFrame;
+    if (sender === null || !validSender(sender.url)) throw new Error("Untrusted renderer sender");
+    return readConversationDrafts();
+  });
+  ipcMain.handle("desktop:set-conversation-drafts", async (event, serialized: unknown) => {
+    const sender = event.senderFrame;
+    if (sender === null || !validSender(sender.url)) throw new Error("Untrusted renderer sender");
+    if (typeof serialized !== "string") throw new Error("Invalid conversation draft state");
+    await enqueueConversationDraftWrite(serialized);
+  });
 };
 
 const createWindow = async (origin: string): Promise<BrowserWindow> => {
+  const sidebarCollapsed = await readSidebarCollapsed();
   const window = new BrowserWindow({
     width: 1440,
     height: 940,
@@ -153,6 +240,7 @@ const createWindow = async (origin: string): Promise<BrowserWindow> => {
       contextIsolation: true,
       sandbox: true,
       webSecurity: true,
+      additionalArguments: [`--metaclanker-sidebar-collapsed=${String(sidebarCollapsed)}`],
     },
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -178,13 +266,17 @@ const createWindow = async (origin: string): Promise<BrowserWindow> => {
   smokeLog("renderer-loaded");
   if (process.env["METACLANKER_PACKAGE_SMOKE"] === "1") {
     const bridgeReady = await window.webContents
-      .executeJavaScript("typeof window.metaClankerDesktop?.selectProjectDirectory === 'function'")
+      .executeJavaScript(
+        "typeof window.metaClankerDesktop?.selectProjectDirectory === 'function' && typeof window.metaClankerDesktop?.setSidebarCollapsed === 'function' && typeof window.metaClankerDesktop?.readConversationDrafts === 'function' && typeof window.metaClankerDesktop?.setConversationDrafts === 'function'",
+      )
       .then((value: unknown) => value === true);
     if (bridgeReady !== true) throw new Error("Electron preload bridge did not initialize");
     smokeLog("preload-ready");
-    const smokeProject = process.env["METACLANKER_PACKAGE_SMOKE_PROJECT"];
-    if (smokeProject === undefined) throw new Error("Packaged smoke project was not configured");
-    const pickerReachedDraft: unknown = await window.webContents.executeJavaScript(`(async () => {
+    const smokePhase = process.env["METACLANKER_PACKAGE_SMOKE_PHASE"] ?? "setup";
+    if (smokePhase === "setup") {
+      const smokeProject = process.env["METACLANKER_PACKAGE_SMOKE_PROJECT"];
+      if (smokeProject === undefined) throw new Error("Packaged smoke project was not configured");
+      const pickerReachedDraft: unknown = await window.webContents.executeJavaScript(`(async () => {
       const waitFor = (check) => new Promise((resolveWait, rejectWait) => {
         const immediate = check();
         if (immediate) {
@@ -210,9 +302,109 @@ const createWindow = async (origin: string): Promise<BrowserWindow> => {
       await new Promise(requestAnimationFrame);
       return document.activeElement === draftTextarea;
     })()`);
-    if (pickerReachedDraft !== true)
-      throw new Error("Native picker did not reach the focused draft");
-    smokeLog("native-picker-draft");
+      if (pickerReachedDraft !== true)
+        throw new Error("Native picker did not reach the focused draft");
+      smokeLog("native-picker-draft");
+      const draftSaved: unknown = await window.webContents.executeJavaScript(`(async () => {
+        const textarea = document.querySelector('textarea[aria-label="Ask the agent to build, investigate, or explain…"]');
+        const controlFor = (label) => Array.from(document.querySelectorAll('label')).find(
+          (element) => element.querySelector('.sr-only')?.textContent?.trim() === label,
+        )?.querySelector('input, select');
+        const model = controlFor('Model');
+        const effort = controlFor('Effort');
+        const permissions = controlFor('Permissions');
+        if (!(textarea instanceof HTMLTextAreaElement)) return false;
+        if (!(model instanceof HTMLInputElement)) return false;
+        if (!(effort instanceof HTMLSelectElement)) return false;
+        if (!(permissions instanceof HTMLSelectElement)) return false;
+        textarea.value = 'PACKAGED_DRAFT_RESTORED';
+        textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+        model.value = 'package-smoke-model';
+        model.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+        effort.value = 'medium';
+        effort.dispatchEvent(new Event('change', { bubbles: true }));
+        permissions.value = 'read-only';
+        permissions.dispatchEvent(new Event('change', { bubbles: true }));
+        textarea.focus();
+        textarea.setSelectionRange(8, 8);
+        textarea.dispatchEvent(new Event('select', { bubbles: true }));
+        await new Promise(requestAnimationFrame);
+        await new Promise(requestAnimationFrame);
+        const serialized = localStorage.getItem('metaclanker:conversation-drafts:v2');
+        if (serialized === null) return false;
+        await window.metaClankerDesktop?.setConversationDrafts?.(serialized);
+        return serialized.includes('PACKAGED_DRAFT_RESTORED') && serialized.includes('package-smoke-model');
+      })()`);
+      if (draftSaved !== true) throw new Error("Conversation draft was not prepared for relaunch");
+      smokeLog("conversation-draft-saved");
+      const collapsed: unknown = await window.webContents.executeJavaScript(`(async () => {
+        const collapse = document.querySelector('[aria-label="Collapse sidebar"]');
+        if (!(collapse instanceof HTMLButtonElement)) return false;
+        collapse.click();
+        await window.metaClankerDesktop.setSidebarCollapsed(true);
+        return document.querySelector('[aria-label="Expand sidebar"]') !== null;
+      })()`);
+      if (collapsed !== true) throw new Error("Sidebar did not collapse and persist");
+      smokeLog("sidebar-collapsed-saved");
+    } else if (smokePhase === "verify-sidebar") {
+      const restored: unknown = await window.webContents.executeJavaScript(
+        "document.querySelector('[aria-label=\"Expand sidebar\"]') !== null",
+      );
+      if (restored !== true) throw new Error("Sidebar collapsed state was not restored");
+      smokeLog("sidebar-collapsed-restored");
+      const draftRestored: unknown = await window.webContents.executeJavaScript(`(async () => {
+        const waitFor = (check) => new Promise((resolveWait, rejectWait) => {
+          const immediate = check();
+          if (immediate) {
+            resolveWait(immediate);
+            return;
+          }
+          const observer = new MutationObserver(() => {
+            const result = check();
+            if (!result) return;
+            clearTimeout(timeout);
+            observer.disconnect();
+            resolveWait(result);
+          });
+          const timeout = setTimeout(() => {
+            observer.disconnect();
+            rejectWait(new Error("Timed out waiting for packaged draft restoration"));
+          }, 8000);
+          observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+        });
+        const expand = document.querySelector('[aria-label="Expand sidebar"]');
+        if (!(expand instanceof HTMLButtonElement)) return false;
+        expand.click();
+        const projectDraft = await waitFor(() => Array.from(document.querySelectorAll('button')).find(
+          (button) => button.getAttribute('aria-label')?.startsWith('New chat in '),
+        ));
+        projectDraft.click();
+        const textarea = await waitFor(() => location.pathname.startsWith('/new/')
+          ? document.querySelector('textarea[aria-label="Ask the agent to build, investigate, or explain…"]')
+          : null);
+        const controlFor = (label) => Array.from(document.querySelectorAll('label')).find(
+          (element) => element.querySelector('.sr-only')?.textContent?.trim() === label,
+        )?.querySelector('input, select');
+        const model = controlFor('Model');
+        const effort = controlFor('Effort');
+        const permissions = controlFor('Permissions');
+        return textarea instanceof HTMLTextAreaElement
+          && textarea.value === 'PACKAGED_DRAFT_RESTORED'
+          && textarea.selectionStart === 8
+          && textarea.selectionEnd === 8
+          && document.activeElement === textarea
+          && model instanceof HTMLInputElement
+          && model.value === 'package-smoke-model'
+          && effort instanceof HTMLSelectElement
+          && effort.value === 'medium'
+          && permissions instanceof HTMLSelectElement
+          && permissions.value === 'read-only';
+      })()`);
+      if (draftRestored !== true) throw new Error("Conversation draft was not restored");
+      smokeLog("conversation-draft-restored");
+    } else {
+      throw new Error("Unknown packaged smoke phase");
+    }
   }
   return window;
 };
@@ -265,5 +457,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   quitting = true;
   smokeLog("shutdown-started");
-  void stopServer().finally(() => app.exit(0));
+  void Promise.all([stopServer(), conversationDraftWrite.catch(() => undefined)]).finally(() =>
+    app.exit(0),
+  );
 });

@@ -89,6 +89,11 @@ const ThreadRow = Schema.Struct({
   updated_at: Schema.String,
 });
 
+const ProviderModelRow = Schema.Struct({
+  provider: Provider,
+  model: Schema.String,
+});
+
 const MessageRow = Schema.Struct({
   id: MessageId,
   thread_id: ThreadId,
@@ -747,6 +752,26 @@ const makeStore = Effect.gen(function* () {
         latestSequence: sequence,
       };
     }).pipe(Effect.mapError((cause) => storeError("shell snapshot", cause))),
+    listProviderModels: Effect.gen(function* () {
+      const rows = yield* sql<{
+        readonly provider: string;
+        readonly model: string;
+      }>`SELECT provider, model FROM provider_models
+        ORDER BY provider, model`;
+      return yield* decode("provider models", Schema.Array(ProviderModelRow), rows);
+    }).pipe(Effect.mapError((cause) => storeError("list provider models", cause))),
+    replaceProviderModels: (provider, models, discoveredAt) =>
+      Effect.gen(function* () {
+        yield* sql`DELETE FROM provider_models WHERE provider = ${provider}`;
+        for (const model of [...new Set(models.map((value) => value.trim()))].filter(Boolean)) {
+          yield* sql`INSERT INTO provider_models (provider, model, discovered_at)
+            VALUES (${provider}, ${model}, ${discoveredAt})`;
+        }
+      }).pipe(
+        sql.withTransaction,
+        Effect.asVoid,
+        Effect.mapError((cause) => storeError("replace provider models", cause)),
+      ),
     createProject,
     renameProject: (id, name) =>
       Effect.gen(function* () {

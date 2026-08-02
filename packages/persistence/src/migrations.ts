@@ -7,6 +7,7 @@ const baseSchema = [
   `CREATE TABLE IF NOT EXISTS environments (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, git_branch TEXT, git_status TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS provider_adapters (id TEXT PRIMARY KEY, provider TEXT NOT NULL, version TEXT NOT NULL, protocol_version INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS provider_models (provider TEXT NOT NULL, model TEXT NOT NULL, discovered_at TEXT NOT NULL, PRIMARY KEY (provider, model))`,
   `CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, provider TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, model TEXT, archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, status TEXT NOT NULL, prompt TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS command_receipts (command_id TEXT PRIMARY KEY, status TEXT NOT NULL, aggregate_id TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL)`,
@@ -73,4 +74,8 @@ export const runMigrations = Effect.gen(function* () {
     END
     WHERE phase = 'admitted'`;
   yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (7, datetime('now'))`;
+  yield* sql`CREATE TABLE IF NOT EXISTS provider_models
+    (provider TEXT NOT NULL, model TEXT NOT NULL, discovered_at TEXT NOT NULL,
+      PRIMARY KEY (provider, model))`;
+  yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (8, datetime('now'))`;
 }).pipe(Effect.withSpan("persistence.migrations"));

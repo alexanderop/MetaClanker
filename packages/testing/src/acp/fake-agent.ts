@@ -29,6 +29,17 @@ const sessionModes = () => ({
   availableModes: [{ id: "default", name: "Default", description: "Deterministic mode" }],
 });
 
+const modelConfig = (currentValue = scenario.models[0] ?? "default") => [
+  {
+    type: "select" as const,
+    id: "model",
+    name: "Model",
+    category: "model",
+    currentValue,
+    options: scenario.models.map((model) => ({ value: model, name: model })),
+  },
+];
+
 const app = acp
   .agent({ name: "MetaClanker deterministic fake" })
   .onRequest(acp.methods.agent.initialize, ({ params }) => {
@@ -55,6 +66,7 @@ const app = acp
     return {
       sessionId,
       modes: sessionModes(),
+      configOptions: modelConfig(),
       _meta: { cwd: params.cwd },
     };
   })
@@ -62,9 +74,13 @@ const app = acp
     sessions.add(params.sessionId);
     return {
       modes: sessionModes(),
+      configOptions: modelConfig(),
       _meta: { cwd: params.cwd },
     };
   })
+  .onRequest(acp.methods.agent.session.setConfigOption, ({ params }) => ({
+    configOptions: modelConfig(String(params.value)),
+  }))
   .onRequest(acp.methods.agent.session.prompt, async ({ client, params }) => {
     if (!sessions.has(params.sessionId)) {
       throw new Error("Unknown fake session");

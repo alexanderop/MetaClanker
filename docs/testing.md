@@ -458,9 +458,15 @@ availability never gates an ordinary pull request.
 - Contract: `threads/start` schema and discriminated error responses.
 - Integration: thread plus first-turn transaction, accepted receipt, retry, pre-acceptance failure,
   post-acceptance ACP failure, and uncertain prompt dispatch.
-- Browser: local draft persistence, provider selection, validation, optimistic transition, preserved
-  prompt on rejection, and route replacement after acceptance.
+- Browser: local draft persistence, provider and searchable model-catalog selection, custom-model
+  fallback, validation, optimistic transition, preserved prompt on rejection, focus restoration,
+  and route replacement after acceptance.
+- ACP contract and persistence integration: config-option model extraction plus provider-scoped
+  cache replacement, deduplication, and restart retention. Catalog discovery must not open a session
+  from a draft.
 - E2E: one successful first send through the production stack.
+- Packaged smoke: one unsent draft survives a second Electron launch with the same isolated profile
+  and a different dynamic loopback origin, including controls, cursor, and restored composer focus.
 
 ### 7.3 Conversation streaming
 

@@ -28,6 +28,7 @@ export interface AgentCommandsService {
       readonly provider: Provider;
       readonly status: "ready" | "unavailable";
       readonly reason: string | null;
+      readonly models: ReadonlyArray<string>;
     }>,
     ApplicationError
   >;

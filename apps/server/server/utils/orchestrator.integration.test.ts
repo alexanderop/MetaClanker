@@ -9,8 +9,30 @@ import { CommandId, ProjectId } from "@metaclanker/contracts/ids";
 import { CheckpointsService } from "@metaclanker/git/checkpoints";
 
 import { withOrchestrationHarness } from "../test-support/orchestration.js";
-import { dispatchPrompt, restoreThreadFiles } from "./orchestrator.js";
+import { subscribeToShell } from "./hub.js";
+import {
+  cancelPrompt,
+  dispatchPrompt,
+  respondToInteraction,
+  restoreThreadFiles,
+} from "./orchestrator.js";
 import { runApplication } from "./runtime.js";
+
+const waitForShellStatus = async (
+  status: "needs-input" | "running" | "completed",
+): Promise<{
+  readonly wait: Promise<void>;
+  readonly unsubscribe: () => void;
+}> => {
+  let resolveStatus: (() => void) | undefined;
+  const wait = new Promise<void>((resolve) => {
+    resolveStatus = resolve;
+  });
+  const unsubscribe = await subscribeToShell((event) => {
+    if (event.type === "thread-status" && event.status === status) resolveStatus?.();
+  });
+  return { wait, unsubscribe };
+};
 
 test("first send rejects before persistence and preserves an accepted provider failure exactly once", async () => {
   await withOrchestrationHarness(
@@ -99,6 +121,12 @@ test("an accepted first send streams through the production ACP supervisor exact
     const replayed = await harness.startThreadWithPrompt(input);
     await harness.drain();
     const detail = await harness.threadDetail(accepted.thread.id);
+    const providerModels = await runApplication(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        return yield* store.listProviderModels;
+      }),
+    );
 
     expect(replayed).toEqual(accepted);
     expect(detail?.thread.status).toBe("completed");
@@ -106,7 +134,113 @@ test("an accepted first send streams through the production ACP supervisor exact
     expect(detail?.messages.map((message) => message.content).join(" ")).toContain(
       "Integration fake completed",
     );
+    expect(providerModels).toEqual([
+      { provider: "claude", model: "fake-deep" },
+      { provider: "claude", model: "fake-fast" },
+    ]);
   });
+});
+
+test("a permission request publishes needs-input before returning to running and completing", async () => {
+  await withOrchestrationHarness(
+    async (harness) => {
+      const projectId = ProjectId.make("project:orchestrator-permission-status");
+      await harness.createProject({
+        id: projectId,
+        commandId: CommandId.make("command:orchestrator-permission-project"),
+        name: "Orchestrator permission project",
+        path: harness.projectDirectory,
+        gitBranch: null,
+        gitStatus: "unavailable",
+        createdAt: "2026-08-02T00:00:00.000Z",
+      });
+      const needsInput = await waitForShellStatus("needs-input");
+      const started = await harness.startThreadWithPrompt({
+        commandId: CommandId.make("command:orchestrator-permission-start"),
+        projectId,
+        provider: "codex",
+        model: null,
+        effort: null,
+        permissionMode: null,
+        prompt: "Request deterministic permission",
+        attachments: [],
+      });
+
+      await needsInput.wait;
+      needsInput.unsubscribe();
+      const waiting = await harness.threadDetail(started.thread.id);
+      const interaction = waiting?.interactions.find((candidate) => candidate.status === "pending");
+      expect(waiting?.thread.status).toBe("needs-input");
+      expect(interaction?.title).toBe("Write implementation file");
+
+      const running = await waitForShellStatus("running");
+      await respondToInteraction(
+        CommandId.make("command:orchestrator-permission-allow"),
+        interaction!.id,
+        "allow",
+      );
+      await running.wait;
+      running.unsubscribe();
+      await harness.drain();
+
+      const completed = await harness.threadDetail(started.thread.id);
+      expect(completed?.thread.status).toBe("completed");
+      expect(completed?.interactions[0]?.status).toBe("resolved");
+      expect(completed?.messages.map((message) => message.content).join(" ")).toContain(
+        "Permission granted",
+      );
+    },
+    {
+      fakeAcpScenario: JSON.stringify({
+        prompt: { mode: "permission", message: "Permission status test" },
+      }),
+    },
+  );
+});
+
+test("cancelling a permission-blocked turn clears its pending interaction", async () => {
+  await withOrchestrationHarness(
+    async (harness) => {
+      const projectId = ProjectId.make("project:orchestrator-permission-cancel");
+      await harness.createProject({
+        id: projectId,
+        commandId: CommandId.make("command:orchestrator-permission-cancel-project"),
+        name: "Orchestrator permission cancellation project",
+        path: harness.projectDirectory,
+        gitBranch: null,
+        gitStatus: "unavailable",
+        createdAt: "2026-08-02T00:00:00.000Z",
+      });
+      const needsInput = await waitForShellStatus("needs-input");
+      const started = await harness.startThreadWithPrompt({
+        commandId: CommandId.make("command:orchestrator-permission-cancel-start"),
+        projectId,
+        provider: "codex",
+        model: null,
+        effort: null,
+        permissionMode: null,
+        prompt: "Cancel deterministic permission",
+        attachments: [],
+      });
+
+      await needsInput.wait;
+      needsInput.unsubscribe();
+      await cancelPrompt(
+        CommandId.make("command:orchestrator-permission-cancel"),
+        started.thread.id,
+      );
+      await harness.drain();
+
+      const cancelled = await harness.threadDetail(started.thread.id);
+      expect(cancelled?.thread.status).toBe("cancelled");
+      expect(cancelled?.interactions[0]?.status).toBe("cancelled");
+    },
+    {
+      fakeAcpScenario: JSON.stringify({
+        prompt: { mode: "permission", message: "Permission cancellation test" },
+      }),
+    },
+  );
 });
 
 test("a prompt after an adapter disconnect opens a fresh resumable session", async () => {

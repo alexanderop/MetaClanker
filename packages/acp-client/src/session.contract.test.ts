@@ -70,6 +70,7 @@ describe("ACP process supervision", () => {
 
     expect(handle.capabilities.protocolVersion).toBe(1);
     expect(handle.capabilities.resume).toBe(true);
+    expect(handle.capabilities.models).toEqual(["fake-fast", "fake-deep"]);
     expect(result.stopReason).toBe("completed");
     expect(events.map((event) => event.type)).toEqual([
       "agent-message-chunk",

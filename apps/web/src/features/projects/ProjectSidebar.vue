@@ -51,7 +51,14 @@ const {
   relativeThreadAge,
   contextualProjectId,
 } = useSidebarProjects();
-const { paletteOpen, closePalette } = useCommandPalette();
+const {
+  paletteOpen,
+  paletteFirstAction,
+  paletteShortcut,
+  openPalette,
+  closePalette,
+  focusPaletteFirstAction,
+} = useCommandPalette();
 const {
   projectOpen,
   path,
@@ -66,7 +73,16 @@ const {
   chooseDirectory,
   addProject,
 } = useAddProject();
-const { settingsOpen, theme, graphDensity, openSettings, saveSettings } = useSettingsDialog();
+const {
+  settingsOpen,
+  theme,
+  graphDensity,
+  settingsSaving,
+  settingsError,
+  openSettings,
+  saveSettings,
+  preventSettingsDismiss,
+} = useSettingsDialog();
 useDeepLinkedDialogs({ openAddProject, openSettings });
 
 // The sidebar's single entry into a conversation. It stays at the top level
@@ -147,6 +163,16 @@ function useSidebarProjects() {
 
 function useCommandPalette() {
   const paletteOpen = ref(false);
+  const paletteFirstAction = useTemplateRef<HTMLButtonElement>("paletteFirstAction");
+  const paletteShortcut = computed(() =>
+    /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+      ? t("navigation.paletteShortcutMac")
+      : t("navigation.paletteShortcutOther"),
+  );
+
+  const openPalette = (): void => {
+    paletteOpen.value = true;
+  };
 
   // Two modal layers must never overlap: reka returns focus to whatever was focused
   // when a dialog closes, so a replacement opened in the same tick loses focus to it.
@@ -158,7 +184,7 @@ function useCommandPalette() {
 
   onKeyStroke(commandChord("k"), (event) => {
     event.preventDefault();
-    paletteOpen.value = true;
+    openPalette();
   });
 
   onKeyStroke(commandChord("n"), (event) => {
@@ -166,7 +192,19 @@ function useCommandPalette() {
     void newChat();
   });
 
-  return { paletteOpen, closePalette };
+  const focusPaletteFirstAction = (event: Event): void => {
+    event.preventDefault();
+    paletteFirstAction.value?.focus();
+  };
+
+  return {
+    paletteOpen,
+    paletteFirstAction,
+    paletteShortcut,
+    openPalette,
+    closePalette,
+    focusPaletteFirstAction,
+  };
 }
 
 function useDirectoryBrowser() {
@@ -292,24 +330,59 @@ function useSettingsDialog() {
   const settingsOpen = ref(false);
   const theme = ref(workspace.settings.theme);
   const graphDensity = ref(workspace.settings.graphDensity);
+  const settingsSaving = ref(false);
+  const settingsError = ref<string | null>(null);
 
   const openSettings = async (): Promise<void> => {
     await closePalette();
     theme.value = workspace.settings.theme;
     graphDensity.value = workspace.settings.graphDensity;
+    settingsError.value = null;
     settingsOpen.value = true;
   };
 
   const saveSettings = async (): Promise<void> => {
-    await workspace.saveSettings({
-      ...workspace.settings,
-      theme: theme.value,
-      graphDensity: graphDensity.value,
-    });
-    settingsOpen.value = false;
+    if (settingsSaving.value) return;
+    settingsSaving.value = true;
+    settingsError.value = null;
+    try {
+      await workspace.saveSettings({
+        ...workspace.settings,
+        theme: theme.value,
+        graphDensity: graphDensity.value,
+      });
+      settingsOpen.value = false;
+    } catch (cause) {
+      settingsError.value = cause instanceof Error ? cause.message : t("settings.saveFailed");
+    } finally {
+      settingsSaving.value = false;
+    }
   };
 
-  return { settingsOpen, theme, graphDensity, openSettings, saveSettings };
+  const preventSettingsDismiss = (event: Event): void => {
+    if (settingsSaving.value) event.preventDefault();
+  };
+
+  watch(theme, (nextTheme) => {
+    if (settingsOpen.value) workspace.previewTheme(nextTheme);
+  });
+
+  watch(settingsOpen, (isOpen) => {
+    if (isOpen) return;
+    workspace.previewTheme(workspace.settings.theme);
+    settingsError.value = null;
+  });
+
+  return {
+    settingsOpen,
+    theme,
+    graphDensity,
+    settingsSaving,
+    settingsError,
+    openSettings,
+    saveSettings,
+    preventSettingsDismiss,
+  };
 }
 
 // `?addProject=true` and `?settings=true` let other views open a sidebar dialog.
@@ -479,7 +552,13 @@ function useDeepLinkedDialogs(dialogs: {
               <RouterLink
                 :to="{ name: 'thread', params: { threadId: thread.id } }"
                 :class="{ active: selectedThreadId === thread.id }"
-                :aria-label="`${thread.title}, ${projectName(thread.projectId)}, ${thread.status}`"
+                :aria-label="
+                  $t('navigation.threadLabel', {
+                    title: thread.title,
+                    project: projectName(thread.projectId),
+                    status: $t(`thread.status.${thread.status}`),
+                  })
+                "
                 @click="emit('close')"
               >
                 <span class="thread-row-copy">
@@ -499,6 +578,11 @@ function useDeepLinkedDialogs(dialogs: {
     </nav>
 
     <div class="sidebar-footer">
+      <button type="button" :aria-label="$t('navigation.search')" @click="openPalette">
+        <span aria-hidden="true">⌕</span>
+        <span>{{ $t("navigation.search") }}</span>
+        <kbd aria-hidden="true">{{ paletteShortcut }}</kbd>
+      </button>
       <button type="button" @click="openSettings">
         <span aria-hidden="true">⚙</span> {{ $t("settings.title") }}
       </button>
@@ -631,7 +715,7 @@ function useDeepLinkedDialogs(dialogs: {
   </Dialog>
 
   <Dialog v-model:open="paletteOpen">
-    <DialogContent class="p-4.5">
+    <DialogContent class="p-4.5" @open-auto-focus="focusPaletteFirstAction">
       <DialogHeader>
         <Eyebrow>{{ $t("navigation.workspace") }}</Eyebrow>
         <DialogTitle>{{ $t("navigation.palette") }}</DialogTitle>
@@ -645,8 +729,10 @@ function useDeepLinkedDialogs(dialogs: {
         {{ $t("navigation.paletteDescription") }}
       </DialogDescription>
       <div class="grid gap-1">
-        <Button variant="list" size="list" type="button" @click="newChat()">
-          {{ $t("navigation.newChat") }}
+        <Button as-child variant="list" size="list">
+          <button ref="paletteFirstAction" type="button" @click="newChat()">
+            {{ $t("navigation.newChat") }}
+          </button>
         </Button>
         <Button variant="list" size="list" type="button" @click="openAddProject">
           {{ $t("projects.add") }}
@@ -672,21 +758,31 @@ function useDeepLinkedDialogs(dialogs: {
   </Dialog>
 
   <Dialog v-model:open="settingsOpen">
-    <DialogContent>
+    <DialogContent
+      @escape-key-down="preventSettingsDismiss"
+      @pointer-down-outside="preventSettingsDismiss"
+    >
       <form class="grid gap-4" @submit.prevent="saveSettings">
         <DialogHeader>
           <Eyebrow>{{ $t("settings.preferences") }}</Eyebrow>
           <DialogTitle>{{ $t("settings.title") }}</DialogTitle>
           <template #action>
             <DialogClose as-child>
-              <Button variant="outline" size="icon" :aria-label="$t('common.close')">×</Button>
+              <Button
+                variant="outline"
+                size="icon"
+                :aria-label="$t('common.close')"
+                :disabled="settingsSaving"
+              >
+                ×
+              </Button>
             </DialogClose>
           </template>
         </DialogHeader>
         <DialogDescription class="sr-only">{{ $t("settings.description") }}</DialogDescription>
         <Field>
           <span>{{ $t("settings.theme") }}</span>
-          <NativeSelect v-model="theme">
+          <NativeSelect v-model="theme" :disabled="settingsSaving">
             <option value="system">{{ $t("settings.system") }}</option>
             <option value="light">{{ $t("settings.light") }}</option>
             <option value="dark">{{ $t("settings.dark") }}</option>
@@ -694,16 +790,21 @@ function useDeepLinkedDialogs(dialogs: {
         </Field>
         <Field>
           <span>{{ $t("settings.density") }}</span>
-          <NativeSelect v-model="graphDensity">
+          <NativeSelect v-model="graphDensity" :disabled="settingsSaving">
             <option value="comfortable">{{ $t("settings.comfortable") }}</option>
             <option value="compact">{{ $t("settings.compact") }}</option>
           </NativeSelect>
         </Field>
+        <FieldError v-if="settingsError">{{ settingsError }}</FieldError>
         <DialogFooter>
           <DialogClose as-child>
-            <Button variant="secondary">{{ $t("common.cancel") }}</Button>
+            <Button variant="secondary" :disabled="settingsSaving">{{
+              $t("common.cancel")
+            }}</Button>
           </DialogClose>
-          <Button variant="primary" type="submit">{{ $t("common.save") }}</Button>
+          <Button variant="primary" type="submit" :disabled="settingsSaving">{{
+            $t(settingsSaving ? "settings.saving" : "common.save")
+          }}</Button>
         </DialogFooter>
       </form>
     </DialogContent>

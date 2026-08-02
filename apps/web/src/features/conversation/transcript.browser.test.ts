@@ -64,6 +64,64 @@ test("tool-only activity does not also announce an empty conversation", async ()
     .not.toBeInTheDocument();
 });
 
+test("the transcript exposes timestamped role and activity hierarchy", async () => {
+  const hierarchy: ThreadDetail = {
+    ...detail,
+    thread: { ...detail.thread, status: "completed" },
+    messages: [
+      {
+        id: MessageId.make("message:user-hierarchy"),
+        threadId,
+        turnId: TurnId.make("turn:hierarchy"),
+        role: "user",
+        content: "Please inspect the workspace",
+        sequence: 1,
+        createdAt: "2026-08-01T10:00:00.000Z",
+      },
+      {
+        id: MessageId.make("message:thought-hierarchy"),
+        threadId,
+        turnId: TurnId.make("turn:hierarchy"),
+        role: "thought",
+        content: "I should read the project guide first.",
+        sequence: 3,
+        createdAt: "2026-08-01T10:01:00.000Z",
+      },
+      {
+        id: MessageId.make("message:agent-hierarchy"),
+        threadId,
+        turnId: TurnId.make("turn:hierarchy"),
+        role: "agent",
+        content: "The workspace is ready.",
+        sequence: 4,
+        createdAt: "2026-08-01T10:02:00.000Z",
+      },
+    ],
+    toolCalls: [{ ...detail.toolCalls[0]!, sequence: 2 }],
+    latestSequence: 4,
+  };
+  const screen = await renderFeature(Transcript, {
+    atomModel: createAppAtomModel(),
+    props: { detail: hierarchy },
+    global: { plugins: [createPinia(), i18n] },
+  });
+  const userTime = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(hierarchy.messages[0]!.createdAt));
+
+  await expect.element(screen.getByLabelText(`Sent at ${userTime}`)).toBeVisible();
+  await expect
+    .element(screen.getByLabelText("Activity: Inspect workspace"))
+    .toHaveTextContent("running");
+  const thought = screen.getByRole("article", { name: "thought message" });
+  await expect
+    .element(thought.getByText("I should read the project guide first."))
+    .not.toBeVisible();
+  await thought.getByText("Thought summary").click();
+  await expect.element(thought.getByText("I should read the project guide first.")).toBeVisible();
+});
+
 test("large histories disclose older activity in bounded pages", async () => {
   const history: ThreadDetail = {
     ...detail,

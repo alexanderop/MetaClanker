@@ -78,21 +78,6 @@ const submitAgentWork = (
     }),
   );
 
-export const listProviderReadiness = async (): Promise<
-  ReadonlyArray<{
-    provider: Provider;
-    status: "ready" | "unavailable";
-    reason: string | null;
-  }>
-> => {
-  const { readiness } = await applicationProviderAdapters();
-  return (["codex", "claude"] as const).map((provider) => ({
-    provider,
-    status: readiness[provider] ? "ready" : "unavailable",
-    reason: readiness[provider] ? null : "The local ACP adapter is not installed",
-  }));
-};
-
 const applicationError = (code: ApplicationError["code"], message: string): ApplicationError =>
   new ApplicationError({ code, message });
 
@@ -103,6 +88,28 @@ const withStore = <A>(use: (store: MetaClankerStore) => Effect.Effect<A, StoreEr
       return yield* mapStoreError(use(store));
     }),
   );
+
+export const listProviderReadiness = async (): Promise<
+  ReadonlyArray<{
+    provider: Provider;
+    status: "ready" | "unavailable";
+    reason: string | null;
+    models: ReadonlyArray<string>;
+  }>
+> => {
+  const [{ readiness }, persistedModels] = await Promise.all([
+    applicationProviderAdapters(),
+    withStore((store) => store.listProviderModels),
+  ]);
+  return (["codex", "claude"] as const).map((provider) => ({
+    provider,
+    status: readiness[provider] ? "ready" : "unavailable",
+    reason: readiness[provider] ? null : "The local ACP adapter is not installed",
+    models: persistedModels
+      .filter((candidate) => candidate.provider === provider)
+      .map((candidate) => candidate.model),
+  }));
+};
 
 const threadDetail = (id: ThreadId): Promise<ThreadDetail | null> =>
   withStore((store) => store.getThread(id));
@@ -185,6 +192,13 @@ const openThreadSession = async (
       }),
     );
     try {
+      await withStore((store) =>
+        store.replaceProviderModels(
+          detail.thread.provider,
+          handle.capabilities.models,
+          new Date().toISOString(),
+        ),
+      );
       if (detail.thread.providerSessionId !== handle.providerSessionId) {
         await withStore((store) =>
           store.setProviderSession(detail.thread.id, handle.providerSessionId),
@@ -224,8 +238,25 @@ interface TurnContext {
   readonly permissionMode: string | null;
   readonly leaseId: string;
   readonly dispatchStarted: { value: boolean };
+  readonly pendingInteractionIds: Set<PendingInteractionId>;
   readonly finishTurn: () => void;
 }
+
+const settlePendingInteractions = async (
+  context: TurnContext,
+  status: "cancelled" | "stale",
+): Promise<void> => {
+  for (const interactionId of context.pendingInteractionIds) {
+    const current = await withStore((store) => store.findInteraction(interactionId));
+    if (current?.status !== "pending") continue;
+    const persisted = await withStore((store) => store.resolveInteraction(interactionId, status));
+    await publishThreadEvent(persisted.record.threadId, {
+      type: "interaction-upserted",
+      sequence: persisted.eventSequence,
+      interaction: { ...persisted.record, sequence: persisted.eventSequence },
+    });
+  }
+};
 
 const eventWriter =
   (context: TurnContext) =>
@@ -286,7 +317,8 @@ const eventWriter =
           return;
         }
         if (event.type === "permission") {
-          await persistInteraction(event.interaction);
+          const interaction = await persistInteraction(event.interaction);
+          context.pendingInteractionIds.add(interaction.id);
           await persistNode({
             id: context.rootNodeId,
             threadId: context.detail.thread.id,
@@ -300,6 +332,7 @@ const eventWriter =
             pendingApproval: true,
             changedFileCount: 0,
           });
+          await publishStatus(context.detail.thread.id, "needs-input");
           return;
         }
         if (event.type === "agent-node") {
@@ -394,6 +427,14 @@ const executePromptWork = (
       runApplication(eventWriter(context)(event)),
     );
     yield* Effect.tryPromise({
+      try: () =>
+        settlePendingInteractions(
+          context,
+          outcome.stopReason === "cancelled" ? "cancelled" : "stale",
+        ),
+      catch: (cause) => cause,
+    });
+    yield* Effect.tryPromise({
       try: () => publishStatus(context.detail.thread.id, outcome.stopReason),
       catch: (cause) => cause,
     });
@@ -475,6 +516,7 @@ const evictThreadSession = async (threadId: ThreadId): Promise<void> => {
 const recordPromptFailure = async (context: TurnContext, cause: unknown): Promise<void> => {
   const status = context.dispatchStarted.value ? "recovery-required" : failureTurnStatus(cause);
   if (isConnectionFailure(cause)) await evictThreadSession(context.detail.thread.id);
+  await settlePendingInteractions(context, "stale");
   await publishStatus(context.detail.thread.id, status);
   await withStore((store) => store.completeTurn(context.turnId, status, new Date().toISOString()));
   await persistMessage({
@@ -591,6 +633,7 @@ export const dispatchPrompt = async (
     permissionMode: providerDefaults.permissionMode,
     leaseId: crypto.randomUUID(),
     dispatchStarted: { value: false },
+    pendingInteractionIds: new Set(),
     finishTurn: () => supervisor.finishTurn(threadId),
   };
   await submitAgentWork(context, executePrompt(context, text, attachments));
@@ -675,6 +718,7 @@ export const startThreadWithPrompt = async (
     permissionMode: input.permissionMode,
     leaseId: crypto.randomUUID(),
     dispatchStarted: { value: false },
+    pendingInteractionIds: new Set(),
     finishTurn: () => supervisor.finishTurn(started.thread.id),
   };
   await submitAgentWork(
@@ -788,9 +832,13 @@ export const respondToInteraction = async (
       sequence: persisted.eventSequence,
       interaction: stale,
     });
+    await publishStatus(stale.threadId, "recovery-required");
     return stale;
   }
   try {
+    // Publish before the provider can resume and complete, preserving the
+    // durable needs-input -> running -> terminal event order.
+    await publishStatus(admitted.interaction.threadId, "running");
     await runApplication(session.respondInteraction(interactionId, optionId));
   } catch (cause) {
     const persisted = await withStore((store) =>
@@ -808,6 +856,7 @@ export const respondToInteraction = async (
       sequence: persisted.eventSequence,
       interaction: persisted.record,
     });
+    await publishStatus(persisted.record.threadId, "recovery-required");
     throw cause;
   }
   const persisted = await withStore((store) =>

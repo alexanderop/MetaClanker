@@ -4,21 +4,40 @@ import { RouterView } from "vue-router";
 
 import ProjectSidebar from "./features/projects/ProjectSidebar.vue";
 import { Button } from "./ui/button/index.js";
+import { initialSidebarCollapsed, persistSidebarCollapsed } from "./shared/desktopBridge.js";
 import { useWorkspaceStore } from "./shared/workspaceStore.js";
 
 const workspace = useWorkspaceStore();
 const sidebarOpen = ref(false);
-const sidebarCollapsed = ref(
-  window.localStorage.getItem("metaclanker:sidebar-collapsed") === "true",
-);
+const sidebarCollapsed = ref(initialSidebarCollapsed());
+const { retrying, retryMessage, retry } = useRecovery();
 
 const centerStateClass =
   "grid h-full place-items-center content-center gap-3 text-center text-text-muted";
 
 const toggleSidebarCollapse = (): void => {
   sidebarCollapsed.value = !sidebarCollapsed.value;
-  window.localStorage.setItem("metaclanker:sidebar-collapsed", String(sidebarCollapsed.value));
+  void persistSidebarCollapsed(sidebarCollapsed.value);
 };
+
+function useRecovery() {
+  const retrying = ref(false);
+  const retryMessage = ref<string | null>(null);
+
+  const retry = async (): Promise<void> => {
+    if (retrying.value) return;
+    retrying.value = true;
+    retryMessage.value = workspace.error;
+    try {
+      await workspace.retry();
+    } finally {
+      retrying.value = false;
+      retryMessage.value = null;
+    }
+  };
+
+  return { retrying, retryMessage, retry };
+}
 
 onMounted(() => {
   void workspace.bootstrap();
@@ -63,10 +82,10 @@ onBeforeUnmount(() => workspace.disconnect());
         />
         <p>{{ $t("common.loading") }}</p>
       </div>
-      <div v-else-if="workspace.error" :class="centerStateClass" role="alert">
-        <p>{{ workspace.error }}</p>
-        <Button variant="secondary" type="button" @click="workspace.bootstrap">
-          {{ $t("common.retry") }}
+      <div v-else-if="retrying || workspace.error" :class="centerStateClass" role="alert">
+        <p>{{ retryMessage ?? workspace.error }}</p>
+        <Button variant="secondary" type="button" :disabled="retrying" @click="retry">
+          {{ $t(retrying ? "common.retrying" : "common.retry") }}
         </Button>
       </div>
       <RouterView v-else />

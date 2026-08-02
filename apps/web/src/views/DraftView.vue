@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, shallowRef, useTemplateRef, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
 import { ProjectId } from "@metaclanker/contracts/ids";
-import type { Provider } from "@metaclanker/contracts/wire";
+import type { Provider, ProviderReadiness } from "@metaclanker/contracts/wire";
 import type { ConversationDraft } from "../shared/workspaceStore.js";
 
 import {
@@ -13,6 +14,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from "../ui/dialog/index.js";
 import { Button } from "../ui/button/index.js";
 import { Eyebrow } from "../ui/eyebrow/index.js";
@@ -41,8 +43,28 @@ const {
   updateModel,
   updateEffort,
   updatePermissionMode,
+  providerLabel,
+  providerName,
+  permissionDescription,
 } = useDraftFields();
-const { attachmentValue, attachmentsOpen, addAttachment, removeAttachment } = useAttachments();
+const {
+  attachmentInput,
+  attachmentValue,
+  attachmentError,
+  attachmentsOpen,
+  toggleAttachments,
+  addAttachment,
+  removeAttachment,
+} = useAttachments();
+const {
+  modelCatalogOpen,
+  modelQuery,
+  advertisedModels,
+  recentModels,
+  customModel,
+  refreshModelCatalog,
+  chooseModel,
+} = useModelCatalog();
 const { sending, sendError, sendReady, selectedProviderReadiness, send, onKeydown } =
   useSendDraft();
 const { discardOpen, discard, confirmDiscard } = useDiscardDraft();
@@ -107,6 +129,19 @@ function useComposerFocus() {
 }
 
 function useDraftFields() {
+  const { t } = useI18n();
+
+  const providerName = (provider: Provider): string =>
+    t(provider === "codex" ? "providers.codex" : "providers.claude");
+
+  const providerLabel = (readiness: ProviderReadiness): string =>
+    readiness.status === "ready"
+      ? providerName(readiness.provider)
+      : t("draft.providerUnavailableOption", {
+          provider: providerName(readiness.provider),
+          reason: readiness.reason ?? t("draft.unavailableReasonUnknown"),
+        });
+
   const updatePrompt = (event: Event): void => {
     workspace.updateConversationDraft(projectId.value, {
       prompt: (event.target as HTMLTextAreaElement).value,
@@ -154,6 +189,21 @@ function useDraftFields() {
     });
   };
 
+  const permissionDescription = computed(() => {
+    switch (draft.value.permissionMode) {
+      case "read-only":
+        return t("draft.permissionReadOnlyDescription");
+      case "workspace-write":
+        return t("draft.permissionWorkspaceWriteDescription");
+      case "full-access":
+        return t("draft.permissionFullAccessDescription");
+      default:
+        return t("draft.permissionDefaultDescription", {
+          provider: providerName(draft.value.provider),
+        });
+    }
+  });
+
   return {
     updatePrompt,
     updateCursor,
@@ -161,37 +211,132 @@ function useDraftFields() {
     updateModel,
     updateEffort,
     updatePermissionMode,
+    providerLabel,
+    providerName,
+    permissionDescription,
   };
 }
 
 function useAttachments() {
+  const { t } = useI18n();
+  const attachmentInput = useTemplateRef<{ focus: () => void }>("attachmentInput");
   const attachmentValue = ref("");
+  const attachmentError = ref<string | null>(null);
   const attachmentsOpen = ref(false);
+
+  const focusAttachmentInput = (): void => {
+    void nextTick(() => attachmentInput.value?.focus());
+  };
+
+  const toggleAttachments = (): void => {
+    attachmentsOpen.value = !attachmentsOpen.value;
+    if (attachmentsOpen.value) focusAttachmentInput();
+  };
 
   const addAttachment = (): void => {
     const attachment = attachmentValue.value.trim();
-    if (attachment.length === 0 || draft.value.attachments.includes(attachment)) return;
+    try {
+      if (attachment.length === 0 || new URL(attachment).protocol.length === 0) throw new Error();
+    } catch {
+      attachmentError.value = t("draft.invalidAttachment");
+      focusAttachmentInput();
+      return;
+    }
+    if (draft.value.attachments.includes(attachment)) {
+      attachmentError.value = t("draft.duplicateAttachment");
+      focusAttachmentInput();
+      return;
+    }
     workspace.updateConversationDraft(projectId.value, {
       attachments: [...draft.value.attachments, attachment],
     });
     attachmentValue.value = "";
+    attachmentError.value = null;
+    focusAttachmentInput();
   };
 
   const removeAttachment = (attachment: string): void => {
     workspace.updateConversationDraft(projectId.value, {
       attachments: draft.value.attachments.filter((item) => item !== attachment),
     });
+    attachmentError.value = null;
+    focusAttachmentInput();
   };
+
+  watch(attachmentValue, () => {
+    attachmentError.value = null;
+  });
 
   watch(
     projectId,
     () => {
       attachmentsOpen.value = draft.value.attachments.length > 0;
+      attachmentError.value = null;
     },
     { immediate: true },
   );
 
-  return { attachmentValue, attachmentsOpen, addAttachment, removeAttachment };
+  return {
+    attachmentInput,
+    attachmentValue,
+    attachmentError,
+    attachmentsOpen,
+    toggleAttachments,
+    addAttachment,
+    removeAttachment,
+  };
+}
+
+function useModelCatalog() {
+  const modelCatalogOpen = ref(false);
+  const modelQuery = ref("");
+  const selectedReadiness = computed(() =>
+    workspace.providerReadiness.find((item) => item.provider === draft.value.provider),
+  );
+  const advertised = computed(() => selectedReadiness.value?.models ?? []);
+  const recent = computed(() => {
+    const candidates = [
+      draft.value.model,
+      workspace.settings.providerDefaults[draft.value.provider].model,
+      ...workspace.shell.threads
+        .filter((thread) => thread.provider === draft.value.provider)
+        .map((thread) => thread.model),
+    ];
+    return [...new Set(candidates.filter((model): model is string => model !== null))].filter(
+      (model) => !advertised.value.includes(model),
+    );
+  });
+  const queryMatches = (model: string): boolean =>
+    model.toLocaleLowerCase().includes(modelQuery.value.trim().toLocaleLowerCase());
+  const advertisedModels = computed(() => advertised.value.filter(queryMatches));
+  const recentModels = computed(() => recent.value.filter(queryMatches));
+  const customModel = computed(() => {
+    const candidate = modelQuery.value.trim();
+    if (candidate.length === 0 || [...advertised.value, ...recent.value].includes(candidate)) {
+      return null;
+    }
+    return candidate;
+  });
+  const chooseModel = (model: string | null): void => {
+    updateModel(model ?? "");
+    modelCatalogOpen.value = false;
+  };
+  const refreshModelCatalog = (): void => {
+    void workspace.refreshProviderReadiness().catch(() => undefined);
+  };
+  watch(modelCatalogOpen, (open) => {
+    if (open) modelQuery.value = "";
+  });
+
+  return {
+    modelCatalogOpen,
+    modelQuery,
+    advertisedModels,
+    recentModels,
+    customModel,
+    refreshModelCatalog,
+    chooseModel,
+  };
 }
 
 function useSendDraft() {
@@ -361,6 +506,13 @@ function useDiscardDraft() {
           <FieldError v-if="sendError" id="draft-send-error" class="px-4 pb-2">
             {{ sendError }} {{ $t("draft.stillHere") }}
           </FieldError>
+          <p
+            v-if="sending"
+            class="m-0 border-t border-border-subtle px-4 py-2 text-sm text-text-muted"
+            role="status"
+          >
+            {{ $t("draft.starting") }}
+          </p>
           <div
             v-if="attachmentsOpen"
             class="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 border-t border-border-subtle px-3 py-2.5 max-narrow:grid-cols-1"
@@ -368,9 +520,12 @@ function useDiscardDraft() {
             <Field class="gap-1 text-2xs font-normal text-text-muted">
               <span>{{ $t("draft.attachLabel") }}</span>
               <Input
+                ref="attachmentInput"
                 v-model="attachmentValue"
                 size="sm"
+                autofocus
                 autocomplete="off"
+                :aria-describedby="attachmentError ? 'draft-attachment-error' : undefined"
                 placeholder="file:///srv/project/notes.md"
                 @keydown.enter.prevent="addAttachment"
               />
@@ -378,6 +533,9 @@ function useDiscardDraft() {
             <Button variant="secondary" type="button" @click="addAttachment">
               {{ $t("draft.attach") }}
             </Button>
+            <FieldError v-if="attachmentError" id="draft-attachment-error" class="col-span-full">
+              {{ attachmentError }}
+            </FieldError>
           </div>
           <p
             v-if="selectedProviderReadiness?.status === 'unavailable'"
@@ -386,7 +544,7 @@ function useDiscardDraft() {
           >
             {{
               $t("draft.unavailable", {
-                provider: selectedProviderReadiness.provider === "codex" ? "Codex" : "Claude",
+                provider: providerName(selectedProviderReadiness.provider),
                 reason: selectedProviderReadiness.reason,
               })
             }}
@@ -415,8 +573,7 @@ function useDiscardDraft() {
                   :value="providerState.provider"
                   :disabled="providerState.status !== 'ready'"
                 >
-                  {{ providerState.provider === "codex" ? "Codex" : "Claude"
-                  }}{{ providerState.status === "ready" ? "" : " — unavailable" }}
+                  {{ providerLabel(providerState) }}
                 </option>
               </NativeSelect>
             </Field>
@@ -432,6 +589,124 @@ function useDiscardDraft() {
                 @update:model-value="updateModel"
               />
             </Field>
+            <Dialog v-model:open="modelCatalogOpen">
+              <DialogTrigger as-child>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  type="button"
+                  :aria-label="$t('draft.browseModels')"
+                  @click="refreshModelCatalog"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 24 24" class="size-3.5" fill="none">
+                    <path
+                      d="M5 7h14M5 12h14M5 17h14"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </Button>
+              </DialogTrigger>
+              <DialogContent
+                class="max-h-[min(38rem,calc(100vh-2rem))] grid-rows-[auto_auto_minmax(0,1fr)]"
+              >
+                <DialogHeader>
+                  <div>
+                    <Eyebrow>{{ providerName(draft.provider) }}</Eyebrow>
+                    <DialogTitle>{{ $t("draft.chooseModel") }}</DialogTitle>
+                  </div>
+                </DialogHeader>
+                <DialogDescription>{{ $t("draft.modelCatalogDescription") }}</DialogDescription>
+                <div class="grid min-h-0 gap-3">
+                  <Input
+                    v-model="modelQuery"
+                    autofocus
+                    autocomplete="off"
+                    :aria-label="$t('draft.searchModels')"
+                    :placeholder="$t('draft.searchModels')"
+                  />
+                  <div class="min-h-0 overflow-y-auto pr-1">
+                    <div class="grid gap-1">
+                      <Button
+                        variant="ghost"
+                        type="button"
+                        class="justify-start"
+                        :aria-pressed="draft.model === null"
+                        @click="chooseModel(null)"
+                      >
+                        {{ $t("draft.providerDefault") }}
+                      </Button>
+                    </div>
+                    <section v-if="advertisedModels.length > 0" class="mt-4 grid gap-1">
+                      <h2
+                        class="m-0 px-2 text-2xs font-semibold uppercase tracking-wide text-text-muted"
+                      >
+                        {{ $t("draft.availableModels") }}
+                      </h2>
+                      <Button
+                        v-for="model in advertisedModels"
+                        :key="model"
+                        variant="ghost"
+                        type="button"
+                        class="justify-start"
+                        :aria-pressed="draft.model === model"
+                        @click="chooseModel(model)"
+                      >
+                        {{ model }}
+                      </Button>
+                    </section>
+                    <section v-if="recentModels.length > 0" class="mt-4 grid gap-1">
+                      <h2
+                        class="m-0 px-2 text-2xs font-semibold uppercase tracking-wide text-text-muted"
+                      >
+                        {{ $t("draft.recentModels") }}
+                      </h2>
+                      <Button
+                        v-for="model in recentModels"
+                        :key="model"
+                        variant="ghost"
+                        type="button"
+                        class="justify-start"
+                        :aria-pressed="draft.model === model"
+                        @click="chooseModel(model)"
+                      >
+                        {{ model }}
+                      </Button>
+                    </section>
+                    <p
+                      v-if="
+                        modelQuery.trim().length === 0 &&
+                        advertisedModels.length === 0 &&
+                        recentModels.length === 0
+                      "
+                      class="mx-2 my-4 text-sm leading-relaxed text-text-muted"
+                    >
+                      {{ $t("draft.noModelsDiscovered") }}
+                    </p>
+                    <p
+                      v-else-if="
+                        advertisedModels.length === 0 &&
+                        recentModels.length === 0 &&
+                        customModel === null
+                      "
+                      class="mx-2 my-4 text-sm text-text-muted"
+                    >
+                      {{ $t("draft.noModelMatches") }}
+                    </p>
+                    <Button
+                      v-if="customModel"
+                      variant="secondary"
+                      type="button"
+                      class="mt-4 w-full justify-start"
+                      @click="chooseModel(customModel)"
+                    >
+                      {{ $t("draft.useCustomModel", { model: customModel }) }}
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
             <span aria-hidden="true" class="mx-0.5 h-4 w-px shrink-0 bg-border-subtle" />
             <Field class="flex shrink-0 items-center text-2xs font-normal">
               <span class="sr-only">{{ $t("draft.effort") }}</span>
@@ -452,6 +727,7 @@ function useDiscardDraft() {
               <span class="sr-only">{{ $t("draft.permission") }}</span>
               <NativeSelect
                 :model-value="draft.permissionMode ?? ''"
+                aria-describedby="draft-permission-description"
                 size="sm"
                 class="min-h-8 w-auto border-0 bg-transparent px-1.5 py-1 font-semibold text-text-muted hover:bg-surface-raised hover:text-text"
                 @update:model-value="updatePermissionMode"
@@ -469,7 +745,7 @@ function useDiscardDraft() {
               class="ml-0.5"
               :aria-label="$t('draft.addAttachment')"
               :aria-expanded="attachmentsOpen"
-              @click="attachmentsOpen = !attachmentsOpen"
+              @click="toggleAttachments"
             >
               <svg aria-hidden="true" viewBox="0 0 24 24" class="size-3.5" fill="none">
                 <path
@@ -485,7 +761,7 @@ function useDiscardDraft() {
               size="icon"
               type="button"
               class="ml-auto size-9 shrink-0 rounded-full"
-              :aria-label="$t('thread.send')"
+              :aria-label="$t(sending ? 'thread.sending' : 'thread.send')"
               :disabled="sending || !sendReady"
               @click="send"
             >
@@ -500,6 +776,12 @@ function useDiscardDraft() {
               </svg>
             </Button>
           </div>
+          <p
+            id="draft-permission-description"
+            class="m-0 border-t border-border-subtle px-4 py-1.5 text-2xs text-text-muted"
+          >
+            {{ permissionDescription }}
+          </p>
         </div>
         <div class="flex items-center justify-between gap-3 px-5.5 pt-2 text-xs text-text-muted">
           <span class="flex min-w-0 items-center gap-1.5">

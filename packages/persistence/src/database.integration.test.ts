@@ -38,6 +38,42 @@ afterEach(async () => {
 });
 
 describe("SQLite event store", () => {
+  it("replaces and retains the ACP-advertised model catalog by provider", async () => {
+    const filename = await temporaryDatabase();
+    const firstRuntime = ManagedRuntime.make(databaseLayer(filename));
+    await firstRuntime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        yield* store.replaceProviderModels(
+          "codex",
+          ["gpt-5.6-codex", "gpt-5.6-codex", " gpt-5.5-codex "],
+          "2026-08-02T00:00:00.000Z",
+        );
+        yield* store.replaceProviderModels(
+          "claude",
+          ["claude-opus-4-6"],
+          "2026-08-02T00:00:01.000Z",
+        );
+      }),
+    );
+    await firstRuntime.dispose();
+
+    const secondRuntime = ManagedRuntime.make(databaseLayer(filename));
+    const retained = await secondRuntime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        yield* store.replaceProviderModels("codex", ["gpt-5.6-codex"], "2026-08-02T00:00:02.000Z");
+        return yield* store.listProviderModels;
+      }),
+    );
+    await secondRuntime.dispose();
+
+    expect(retained).toEqual([
+      { provider: "claude", model: "claude-opus-4-6" },
+      { provider: "codex", model: "gpt-5.6-codex" },
+    ]);
+  });
+
   it("returns the original aggregate when an accepted command is retried", async () => {
     const filename = await temporaryDatabase();
     const runtime = ManagedRuntime.make(databaseLayer(filename));
