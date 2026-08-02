@@ -21,7 +21,7 @@ export default tseslint.config(
   ...tseslint.configs.recommendedTypeChecked,
   ...vue.configs["flat/recommended"],
   {
-    files: ["**/*.{ts,cts,vue}"],
+    files: ["**/*.{ts,tsx,cts,vue}"],
     languageOptions: {
       parserOptions: {
         parser: tseslint.parser,
@@ -30,6 +30,7 @@ export default tseslint.config(
           "./apps/desktop/tsconfig.json",
           "./apps/server/tsconfig.json",
           "./apps/web/tsconfig.app.json",
+          "./examples/*/tsconfig.json",
           "./packages/*/tsconfig.json",
           "./tests/tsconfig.json",
         ],
