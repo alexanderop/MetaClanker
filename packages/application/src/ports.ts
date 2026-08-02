@@ -114,6 +114,7 @@ export interface UpsertToolCallRecord extends Omit<
 
 export interface StoreError {
   readonly _tag: "StoreError";
+  readonly code: "not-found" | "conflict" | "persistence";
   readonly operation: string;
   readonly message: string;
 }
@@ -187,6 +188,9 @@ export interface MetaClankerStore {
   readonly upsertInteraction: (
     input: Omit<PendingInteraction, "sequence">,
   ) => Effect.Effect<PersistedMutation<PendingInteraction>, StoreError>;
+  readonly findInteraction: (
+    id: PendingInteractionId,
+  ) => Effect.Effect<PendingInteraction | null, StoreError>;
   readonly resolveInteraction: (
     id: PendingInteractionId,
     status: "resolved" | "cancelled" | "stale",

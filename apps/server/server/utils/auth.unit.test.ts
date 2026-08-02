@@ -8,6 +8,7 @@ import {
   issueWebSocketTicket,
   pairingHint,
   revokeEnvironmentSession,
+  sessionCookieOptions,
   validateEnvironmentSession,
   verifyPairingCode,
 } from "./auth.js";
@@ -56,6 +57,17 @@ describe("environment authentication", () => {
     const ticket = issueWebSocketTicket();
     expect(consumeWebSocketTicket(ticket)).toBe(true);
     expect(consumeWebSocketTicket(ticket)).toBe(false);
+  });
+
+  it("uses one session lifetime and changes the Secure attribute only for HTTPS", () => {
+    expect(sessionCookieOptions(false)).toMatchObject({
+      httpOnly: true,
+      sameSite: "strict",
+      secure: false,
+      path: "/",
+      maxAge: 12 * 60 * 60,
+    });
+    expect(sessionCookieOptions(true)).toMatchObject({ secure: true });
   });
 
   it("accepts only the configured pairing secret", () => {

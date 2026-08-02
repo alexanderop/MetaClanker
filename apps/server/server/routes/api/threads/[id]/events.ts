@@ -8,8 +8,14 @@ import { subscribeToThread } from "../../../../utils/hub.js";
 import { createReplaySocketState } from "../../../../utils/replay-socket-state.js";
 import { runApplication } from "../../../../utils/runtime.js";
 
-const cleanups = new Map<string, () => void>();
 const noop = (): void => undefined;
+const cleanupContextKey = "metaclankerThreadEventsCleanup";
+const peerCleanup = (peer: {
+  readonly context: Record<string, unknown>;
+}): (() => void) | undefined => {
+  const cleanup = peer.context[cleanupContextKey];
+  return typeof cleanup === "function" ? (cleanup as () => void) : undefined;
+};
 const threadIdFromUrl = (url: string): ThreadId | null => {
   const parsed = new URL(url, "http://localhost");
   const match = /^\/api\/threads\/([^/]+)\/events$/u.exec(parsed.pathname);
@@ -36,7 +42,7 @@ export default defineWebSocketHandler({
       active = false;
       replayState.stop();
       unsubscribe();
-      cleanups.delete(peer.id);
+      delete peer.context[cleanupContextKey];
     };
     const requireSnapshot = (reason: "buffer-overflow" | "cursor-too-old" | "replay-failed") => {
       if (!active) return;
@@ -51,7 +57,7 @@ export default defineWebSocketHandler({
       overflow: () => requireSnapshot("buffer-overflow"),
     });
     unsubscribe = subscribeToThread(threadId, replayState.push);
-    cleanups.set(peer.id, cleanup);
+    peer.context[cleanupContextKey] = cleanup;
 
     void runApplication(
       readEventReplay(Sequence.make(requestedSequence), (event) =>
@@ -80,9 +86,9 @@ export default defineWebSocketHandler({
     if (message.text() === "ping") peer.send("pong");
   },
   close(peer) {
-    cleanups.get(peer.id)?.();
+    peerCleanup(peer)?.();
   },
   error(peer) {
-    cleanups.get(peer.id)?.();
+    peerCleanup(peer)?.();
   },
 });

@@ -1,5 +1,7 @@
 import { defineEventHandler } from "h3";
 
-import { listProviderReadiness } from "../../utils/orchestrator.js";
+import { runAgentCommand } from "../../utils/runtime.js";
 
-export default defineEventHandler(() => listProviderReadiness());
+export default defineEventHandler(
+  async () => await runAgentCommand((commands) => commands.providerReadiness()),
+);

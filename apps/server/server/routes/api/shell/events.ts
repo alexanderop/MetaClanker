@@ -9,8 +9,14 @@ import { subscribeToShell } from "../../../utils/hub.js";
 import { createReplaySocketState } from "../../../utils/replay-socket-state.js";
 import { runApplication } from "../../../utils/runtime.js";
 
-const cleanups = new Map<string, () => void>();
 const noop = (): void => undefined;
+const cleanupContextKey = "metaclankerShellEventsCleanup";
+const peerCleanup = (peer: {
+  readonly context: Record<string, unknown>;
+}): (() => void) | undefined => {
+  const cleanup = peer.context[cleanupContextKey];
+  return typeof cleanup === "function" ? (cleanup as () => void) : undefined;
+};
 
 export default defineWebSocketHandler({
   open(peer) {
@@ -31,7 +37,7 @@ export default defineWebSocketHandler({
       active = false;
       replayState.stop();
       unsubscribe();
-      cleanups.delete(peer.id);
+      delete peer.context[cleanupContextKey];
     };
     const requireSnapshot = (reason: "buffer-overflow" | "cursor-too-old" | "replay-failed") => {
       if (!active) return;
@@ -46,7 +52,7 @@ export default defineWebSocketHandler({
       overflow: () => requireSnapshot("buffer-overflow"),
     });
     unsubscribe = subscribeToShell(replayState.push);
-    cleanups.set(peer.id, cleanup);
+    peer.context[cleanupContextKey] = cleanup;
 
     void runApplication(readEventReplay(Sequence.make(requestedSequence), domainEventToShellEvent))
       .then((replay) => {
@@ -71,9 +77,9 @@ export default defineWebSocketHandler({
     if (message.text() === "ping") peer.send("pong");
   },
   close(peer) {
-    cleanups.get(peer.id)?.();
+    peerCleanup(peer)?.();
   },
   error(peer) {
-    cleanups.get(peer.id)?.();
+    peerCleanup(peer)?.();
   },
 });

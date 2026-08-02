@@ -14,7 +14,7 @@ export default defineEventHandler((event) => {
       origin: getHeader(event, "origin"),
     })
   ) {
-    throw createError({ statusCode: 403, statusMessage: "Pairing code is loopback-only" });
+    throw createError({ statusCode: 403, message: "Pairing code is loopback-only" });
   }
   return { code: pairingHint() };
 });

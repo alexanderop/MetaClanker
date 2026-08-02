@@ -11,6 +11,22 @@
     "./commands": {
       "types": "./dist/commands.d.ts",
       "default": "./dist/commands.js"
+    },
+    "./projects": {
+      "types": "./dist/projects.d.ts",
+      "default": "./dist/projects.js"
+    },
+    "./workspace": {
+      "types": "./dist/workspace.d.ts",
+      "default": "./dist/workspace.js"
+    },
+    "./review": {
+      "types": "./dist/review.d.ts",
+      "default": "./dist/review.js"
+    },
+    "./agent-commands": {
+      "types": "./dist/agent-commands.d.ts",
+      "default": "./dist/agent-commands.js"
     }
   },
   "scripts": {

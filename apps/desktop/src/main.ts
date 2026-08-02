@@ -78,6 +78,7 @@ const startServer = async (): Promise<string> => {
       HOST: "127.0.0.1",
       PORT: String(port),
       METACLANKER_DATA_DIR: app.getPath("userData"),
+      NITRO_METACLANKER_DATA_DIRECTORY: app.getPath("userData"),
       METACLANKER_READINESS_TOKEN: readinessToken,
     },
     shell: false,

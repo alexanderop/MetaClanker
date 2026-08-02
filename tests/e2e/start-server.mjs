@@ -12,9 +12,11 @@ const child = spawn(process.execPath, [resolve("apps/server/.output/server/index
   env: {
     ...process.env,
     HOST: "127.0.0.1",
+    NODE_ENV: "test",
     PORT: "4401",
     METACLANKER_DATA_DIR: dataDirectory,
-    METACLANKER_FAKE_ACP_ENTRY: resolve("packages/testing/dist/acp/fake-agent.js"),
+    NITRO_METACLANKER_DATA_DIRECTORY: dataDirectory,
+    METACLANKER_TEST_ACP_ENTRY: resolve("packages/testing/dist/acp/fake-agent.js"),
     METACLANKER_PROJECT_BROWSER_ROOTS: tmpdir(),
   },
   shell: false,

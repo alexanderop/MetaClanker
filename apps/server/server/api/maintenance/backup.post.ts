@@ -10,7 +10,7 @@ import { publicError } from "../../utils/http.js";
 import { applicationDataDirectory, runApplication } from "../../utils/runtime.js";
 
 export default defineEventHandler(async () => {
-  const backupDirectory = join(applicationDataDirectory, "backups");
+  const backupDirectory = join(await applicationDataDirectory(), "backups");
   await mkdir(backupDirectory, { recursive: true });
   const timestamp = new Date().toISOString().replaceAll(":", "-");
   const fileName = `metaclanker-${timestamp}.sqlite`;

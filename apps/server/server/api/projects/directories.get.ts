@@ -17,7 +17,7 @@ export default defineEventHandler(async (event) => {
     );
     const containingRoot = roots.find((root) => isWithinProjectBrowserRoot(target, root));
     if (containingRoot === undefined) {
-      throw createError({ statusCode: 403, statusMessage: "That directory is not available" });
+      throw createError({ statusCode: 403, message: "That directory is not available" });
     }
     const entries = await readdir(target, { withFileTypes: true });
     const directories = await Promise.all(
@@ -41,6 +41,6 @@ export default defineEventHandler(async (event) => {
     };
   } catch (cause) {
     if (typeof cause === "object" && cause !== null && "statusCode" in cause) throw cause;
-    throw createError({ statusCode: 422, statusMessage: "That server directory is not available" });
+    throw createError({ statusCode: 422, message: "That server directory is not available" });
   }
 });

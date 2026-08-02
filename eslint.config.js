@@ -42,7 +42,7 @@ export default tseslint.config(
       "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/consistent-type-imports": "error",
-      complexity: "off",
+      complexity: ["warn", 10],
       "no-undef": "off",
       "no-nested-ternary": "error",
       "vue/html-closing-bracket-newline": "off",

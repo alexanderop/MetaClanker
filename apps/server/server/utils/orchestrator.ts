@@ -1,17 +1,12 @@
-import { fileURLToPath } from "node:url";
-
 import { Effect } from "effect";
 
-import {
-  adapterEntry,
-  makeAcpSessions,
-  type AdapterCommand,
-} from "@metaclanker/acp-client/session";
-import { Store } from "@metaclanker/application/commands";
+import { makeAcpSessions } from "@metaclanker/acp-client/session";
+import { ApplicationError, mapStoreError, Store } from "@metaclanker/application/commands";
 import type {
   AcpSessionHandle,
   MetaClankerStore,
   NormalizedAgentEvent,
+  StoreError,
   TurnCompletionStatus,
   UpsertToolCallRecord,
 } from "@metaclanker/application/ports";
@@ -32,38 +27,16 @@ import { CheckpointsService } from "@metaclanker/git/checkpoints";
 import { publishShellEvent, publishThreadEvent } from "./hub.js";
 import { AgentWork } from "./agent-work.js";
 import { LocalDiagnostics } from "./local-diagnostics.js";
-import { runApplication } from "./runtime.js";
+import { applicationProviderAdapters, runApplication } from "./runtime.js";
 import { deriveThreadTitle } from "./thread-title.js";
-
-const unavailableProviders = new Set<Provider>();
-const unavailableAdapter = (provider: Provider): AdapterCommand => {
-  unavailableProviders.add(provider);
-  return { command: process.execPath, args: ["--eval", "process.exit(1)"] };
-};
-const installedAdapter = (provider: Provider): AdapterCommand => {
-  try {
-    return { command: process.execPath, args: [adapterEntry(provider)] };
-  } catch {
-    return unavailableAdapter(provider);
-  }
-};
-const adapterCommands = (): Readonly<Record<Provider, AdapterCommand>> => {
-  const fakeEntry = process.env["METACLANKER_FAKE_ACP_ENTRY"];
-  if (fakeEntry !== undefined) {
-    const entry = fakeEntry.startsWith("file:") ? fileURLToPath(fakeEntry) : fakeEntry;
-    const command = { command: process.execPath, args: [entry] };
-    return { codex: command, claude: command };
-  }
-  return { codex: installedAdapter("codex"), claude: installedAdapter("claude") };
-};
 
 const activeSessions = new Map<string, AcpSessionHandle>();
 const openingSessions = new Map<string, Promise<AcpSessionHandle>>();
 const activeTurns = new Set<string>();
 
 const submitAgentWork = (
-  correlation: Pick<TurnContext, "project" | "detail" | "turnId">,
-  work: () => Promise<void>,
+  correlation: TurnContext,
+  work: Effect.Effect<void, unknown>,
 ): Promise<void> =>
   runApplication(
     Effect.gen(function* () {
@@ -82,7 +55,7 @@ const submitAgentWork = (
             threadId: correlation.detail.thread.id,
             turnId: correlation.turnId,
           });
-          yield* Effect.promise(work);
+          yield* work;
           yield* diagnostics.record({
             operation: "agent.prompt",
             phase: "completed",
@@ -93,27 +66,44 @@ const submitAgentWork = (
             threadId: correlation.detail.thread.id,
             turnId: correlation.turnId,
           });
-        }),
+        }).pipe(
+          Effect.catchAll((cause) =>
+            Effect.tryPromise({
+              try: () => recordPromptFailure(correlation, cause),
+              catch: (error) => error,
+            }).pipe(
+              Effect.catchAll(() => Effect.void),
+              Effect.asVoid,
+            ),
+          ),
+        ),
       );
     }),
   );
 
-export const listProviderReadiness = (): ReadonlyArray<{
-  provider: Provider;
-  status: "ready" | "unavailable";
-  reason: string | null;
-}> =>
-  (["codex", "claude"] as const).map((provider) => ({
+export const listProviderReadiness = async (): Promise<
+  ReadonlyArray<{
+    provider: Provider;
+    status: "ready" | "unavailable";
+    reason: string | null;
+  }>
+> => {
+  const { readiness } = await applicationProviderAdapters();
+  return (["codex", "claude"] as const).map((provider) => ({
     provider,
-    status: unavailableProviders.has(provider) ? "unavailable" : "ready",
-    reason: unavailableProviders.has(provider) ? "The local ACP adapter is not installed" : null,
+    status: readiness[provider] ? "ready" : "unavailable",
+    reason: readiness[provider] ? null : "The local ACP adapter is not installed",
   }));
+};
 
-const withStore = <A>(use: (store: MetaClankerStore) => Effect.Effect<A, unknown>) =>
+const applicationError = (code: ApplicationError["code"], message: string): ApplicationError =>
+  new ApplicationError({ code, message });
+
+const withStore = <A>(use: (store: MetaClankerStore) => Effect.Effect<A, StoreError>) =>
   runApplication(
     Effect.gen(function* () {
       const store = yield* Store;
-      return yield* use(store);
+      return yield* mapStoreError(use(store));
     }),
   );
 
@@ -183,8 +173,9 @@ const openThreadSession = async (
   const opening = openingSessions.get(detail.thread.id);
   if (opening !== undefined) return opening;
   const created = (async (): Promise<AcpSessionHandle> => {
-    const handle = await Effect.runPromise(
-      makeAcpSessions(adapterCommands()).open({
+    const { commands } = await applicationProviderAdapters();
+    const handle = await runApplication(
+      makeAcpSessions(commands).open({
         provider: detail.thread.provider,
         cwd: project.path,
         projectId: project.id,
@@ -204,7 +195,7 @@ const openThreadSession = async (
       activeSessions.set(detail.thread.id, handle);
       return handle;
     } catch (cause) {
-      await Effect.runPromise(handle.close);
+      await runApplication(handle.close);
       throw cause;
     }
   })();
@@ -233,8 +224,12 @@ interface TurnContext {
 
 const eventWriter =
   (context: TurnContext) =>
-  (event: NormalizedAgentEvent): Effect.Effect<void> =>
-    Effect.tryPromise({
+  (event: NormalizedAgentEvent): Effect.Effect<void> => {
+    if (event.type === "runtime-failure") {
+      // Provider envelopes can contain prompts and absolute paths; never log or expose them.
+      return Effect.logWarning("Agent session reported a runtime failure");
+    }
+    return Effect.tryPromise({
       try: async () => {
         if (event.type === "agent-message-chunk") {
           await persistMessage({
@@ -306,91 +301,105 @@ const eventWriter =
           await persistNode(event.node);
           return;
         }
-        if (event.type === "runtime-failure") {
-          throw new Error(event.message);
-        }
       },
       catch: (cause) => cause,
-    }).pipe(Effect.catchAll((cause) => Effect.logError("Failed to persist ACP update", cause)));
+    }).pipe(Effect.catchAll(() => Effect.logError("Failed to persist an ACP update")));
+  };
 
-const executePromptWork = async (
+const executePromptWork = (
   context: TurnContext,
   text: string,
   attachments: ReadonlyArray<string>,
-): Promise<TurnCompletionStatus> => {
-  const preTurn = await runApplication(
-    Effect.gen(function* () {
-      const checkpoints = yield* CheckpointsService;
-      return yield* checkpoints.capture(context.project.path);
-    }),
-  );
-  await withStore((store) =>
-    store.saveCheckpoint({
-      checkpoint: preTurn,
-      threadId: context.detail.thread.id,
-      turnId: context.turnId,
-      kind: "pre-turn",
-    }),
-  );
-  const handle = await openThreadSession(context.detail, context.project, context);
-  const promptResult = await Effect.runPromise(
-    handle
-      .prompt({ turnId: context.turnId, text, attachments }, eventWriter(context))
-      .pipe(Effect.either),
-  );
-  if (promptResult._tag === "Left") {
-    throw Object.assign(new Error(promptResult.left.message), promptResult.left);
-  }
-  const outcome = promptResult.right;
-  await publishStatus(context.detail.thread.id, outcome.stopReason);
-  await persistNode({
-    id: context.rootNodeId,
-    threadId: context.detail.thread.id,
-    parentId: null,
-    name: context.detail.thread.title,
-    provider: context.detail.thread.provider,
-    model: context.detail.thread.model,
-    state: outcome.stopReason === "completed" ? "completed" : "interrupted",
-    activity: outcome.stopReason === "completed" ? "Turn completed" : "Turn interrupted",
-    childCount: 0,
-    pendingApproval: false,
-    changedFileCount: 0,
+): Effect.Effect<TurnCompletionStatus, unknown> =>
+  Effect.gen(function* () {
+    const preTurn = yield* Effect.tryPromise({
+      try: () =>
+        runApplication(
+          Effect.gen(function* () {
+            const checkpoints = yield* CheckpointsService;
+            return yield* checkpoints.capture(context.project.path);
+          }),
+        ),
+      catch: (cause) => cause,
+    });
+    yield* Effect.tryPromise({
+      try: () =>
+        withStore((store) =>
+          store.saveCheckpoint({
+            checkpoint: preTurn,
+            threadId: context.detail.thread.id,
+            turnId: context.turnId,
+            kind: "pre-turn",
+          }),
+        ),
+      catch: (cause) => cause,
+    });
+    const handle = yield* Effect.tryPromise({
+      try: () => openThreadSession(context.detail, context.project, context),
+      catch: (cause) => cause,
+    });
+    const outcome = yield* handle.prompt(
+      { turnId: context.turnId, text, attachments },
+      eventWriter(context),
+    );
+    yield* Effect.tryPromise({
+      try: () => publishStatus(context.detail.thread.id, outcome.stopReason),
+      catch: (cause) => cause,
+    });
+    const persistCompletedNode = (changedFileCount: number) =>
+      Effect.tryPromise({
+        try: () =>
+          persistNode({
+            id: context.rootNodeId,
+            threadId: context.detail.thread.id,
+            parentId: null,
+            name: context.detail.thread.title,
+            provider: context.detail.thread.provider,
+            model: context.detail.thread.model,
+            state: outcome.stopReason === "completed" ? "completed" : "interrupted",
+            activity: outcome.stopReason === "completed" ? "Turn completed" : "Turn interrupted",
+            childCount: 0,
+            pendingApproval: false,
+            changedFileCount,
+          }),
+        catch: (cause) => cause,
+      });
+    yield* persistCompletedNode(0);
+    const postTurn = yield* Effect.tryPromise({
+      try: () =>
+        runApplication(
+          Effect.gen(function* () {
+            const checkpoints = yield* CheckpointsService;
+            return yield* checkpoints.capture(context.project.path);
+          }),
+        ),
+      catch: (cause) => cause,
+    });
+    yield* Effect.tryPromise({
+      try: () =>
+        withStore((store) =>
+          store.saveCheckpoint({
+            checkpoint: postTurn,
+            threadId: context.detail.thread.id,
+            turnId: context.turnId,
+            kind: "post-turn",
+          }),
+        ),
+      catch: (cause) => cause,
+    });
+    const workspaceDiff = yield* Effect.tryPromise({
+      try: () =>
+        runApplication(
+          Effect.gen(function* () {
+            const checkpoints = yield* CheckpointsService;
+            return yield* checkpoints.diff(preTurn, postTurn);
+          }),
+        ),
+      catch: (cause) => cause,
+    });
+    yield* persistCompletedNode(workspaceDiff.files.length);
+    return outcome.stopReason;
   });
-  const postTurn = await runApplication(
-    Effect.gen(function* () {
-      const checkpoints = yield* CheckpointsService;
-      return yield* checkpoints.capture(context.project.path);
-    }),
-  );
-  await withStore((store) =>
-    store.saveCheckpoint({
-      checkpoint: postTurn,
-      threadId: context.detail.thread.id,
-      turnId: context.turnId,
-      kind: "post-turn",
-    }),
-  );
-  const workspaceDiff = await runApplication(
-    Effect.gen(function* () {
-      const checkpoints = yield* CheckpointsService;
-      return yield* checkpoints.diff(preTurn, postTurn);
-    }),
-  );
-  await persistNode({
-    id: context.rootNodeId,
-    threadId: context.detail.thread.id,
-    parentId: null,
-    name: context.detail.thread.title,
-    provider: context.detail.thread.provider,
-    model: context.detail.thread.model,
-    state: outcome.stopReason === "completed" ? "completed" : "interrupted",
-    activity: outcome.stopReason === "completed" ? "Turn completed" : "Turn interrupted",
-    childCount: 0,
-    pendingApproval: false,
-    changedFileCount: workspaceDiff.files.length,
-  });
-  return outcome.stopReason;
-};
 
 const isConnectionFailure = (cause: unknown): boolean =>
   Boolean(
@@ -409,42 +418,43 @@ const evictThreadSession = async (threadId: ThreadId): Promise<void> => {
   const handle = activeSessions.get(threadId);
   if (handle === undefined) return;
   activeSessions.delete(threadId);
-  await Effect.runPromise(handle.close);
+  await runApplication(handle.close);
+};
+
+const recordPromptFailure = async (context: TurnContext, cause: unknown): Promise<void> => {
+  const status = failureTurnStatus(cause);
+  if (isConnectionFailure(cause)) await evictThreadSession(context.detail.thread.id);
+  await publishStatus(context.detail.thread.id, status);
+  await withStore((store) => store.completeTurn(context.turnId, status, new Date().toISOString()));
+  await persistMessage({
+    id: MessageId.make(crypto.randomUUID()),
+    threadId: context.detail.thread.id,
+    turnId: context.turnId,
+    role: "system",
+    content: "The agent connection failed. This turn was preserved and was not sent again.",
+    createdAt: new Date().toISOString(),
+  });
+  activeTurns.delete(context.detail.thread.id);
 };
 
 const executePrompt = (
   context: TurnContext,
   text: string,
   attachments: ReadonlyArray<string>,
-  persistedIntent = false,
-): Promise<void> =>
-  executePromptWork(context, text, attachments)
-    .then(async (status) => {
-      if (persistedIntent) {
-        await withStore((store) =>
-          store.completeTurn(context.turnId, status, new Date().toISOString()),
-        );
-      }
-    })
-    .catch(async (cause: unknown) => {
-      const status = failureTurnStatus(cause);
-      if (isConnectionFailure(cause)) await evictThreadSession(context.detail.thread.id);
-      await publishStatus(context.detail.thread.id, status);
-      if (persistedIntent) {
-        await withStore((store) =>
-          store.completeTurn(context.turnId, status, new Date().toISOString()),
-        );
-      }
-      await persistMessage({
-        id: MessageId.make(crypto.randomUUID()),
-        threadId: context.detail.thread.id,
-        turnId: context.turnId,
-        role: "system",
-        content: "The agent connection failed. This turn was preserved and was not sent again.",
-        createdAt: new Date().toISOString(),
-      });
-    })
-    .finally(() => activeTurns.delete(context.detail.thread.id));
+): Effect.Effect<void, unknown> =>
+  executePromptWork(context, text, attachments).pipe(
+    Effect.tap((status) =>
+      Effect.tryPromise({
+        try: () =>
+          withStore((store) =>
+            store.completeTurn(context.turnId, status, new Date().toISOString()),
+          ),
+        catch: (cause) => cause,
+      }),
+    ),
+    Effect.ensuring(Effect.sync(() => activeTurns.delete(context.detail.thread.id))),
+    Effect.asVoid,
+  );
 
 export const dispatchPrompt = async (
   commandId: CommandId,
@@ -453,13 +463,19 @@ export const dispatchPrompt = async (
   attachments: ReadonlyArray<string>,
 ): Promise<TurnId> => {
   const detail = await threadDetail(threadId);
-  if (detail === null) throw new Error("Thread not found");
+  if (detail === null) throw applicationError("not-found", "Thread not found");
   const projects = await shellProjects();
-  if (unavailableProviders.has(detail.thread.provider)) {
-    throw new Error(`The ${detail.thread.provider} provider is unavailable`);
+  if (!(await applicationProviderAdapters()).readiness[detail.thread.provider]) {
+    throw applicationError(
+      "provider-unavailable",
+      `The ${detail.thread.provider} provider is unavailable`,
+    );
   }
   const project = projects.find((candidate) => candidate.id === detail.thread.projectId);
-  if (project === undefined) throw new Error("Owning project not found");
+  if (project === undefined) throw applicationError("not-found", "Owning project not found");
+  const providerDefaults = (await withStore((store) => store.getSettings)).providerDefaults[
+    detail.thread.provider
+  ];
 
   const turnId = TurnId.make(crypto.randomUUID());
   const startedAt = new Date().toISOString();
@@ -519,10 +535,10 @@ export const dispatchPrompt = async (
     planMessageId: MessageId.make(crypto.randomUUID()),
     rootNodeId,
     startedAt,
-    effort: null,
-    permissionMode: null,
+    effort: providerDefaults.effort,
+    permissionMode: providerDefaults.permissionMode,
   };
-  await submitAgentWork(context, () => executePrompt(context, text, attachments, true));
+  await submitAgentWork(context, executePrompt(context, text, attachments));
   return started.turnId;
 };
 
@@ -546,12 +562,12 @@ export interface StartThreadWithPromptResult {
 export const startThreadWithPrompt = async (
   input: StartThreadWithPromptInput,
 ): Promise<StartThreadWithPromptResult> => {
-  if (unavailableProviders.has(input.provider)) {
-    throw new Error(`The ${input.provider} provider is unavailable`);
+  if (!(await applicationProviderAdapters()).readiness[input.provider]) {
+    throw applicationError("provider-unavailable", `The ${input.provider} provider is unavailable`);
   }
   const projects = await shellProjects();
   const project = projects.find((candidate) => candidate.id === input.projectId);
-  if (project === undefined) throw new Error("Project not found");
+  if (project === undefined) throw applicationError("not-found", "Project not found");
 
   const threadId = ThreadId.make(crypto.randomUUID());
   const turnId = TurnId.make(crypto.randomUUID());
@@ -585,7 +601,9 @@ export const startThreadWithPrompt = async (
   }
 
   const detail = await threadDetail(started.thread.id);
-  if (detail === null) throw new Error("Accepted thread could not be loaded");
+  if (detail === null) {
+    throw applicationError("persistence", "Accepted thread could not be loaded");
+  }
   const rootNodeId = AgentNodeId.make(`root:${started.thread.id}`);
   activeTurns.add(started.thread.id);
   const context: TurnContext = {
@@ -600,37 +618,25 @@ export const startThreadWithPrompt = async (
     effort: input.effort,
     permissionMode: input.permissionMode,
   };
-  await submitAgentWork(context, () =>
-    persistNode({
-      id: rootNodeId,
-      threadId: started.thread.id,
-      parentId: null,
-      name: started.thread.title,
-      provider: started.thread.provider,
-      model: started.thread.model,
-      state: "running",
-      activity: "Starting turn",
-      childCount: 0,
-      pendingApproval: false,
-      changedFileCount: 0,
-    })
-      .then(() => executePrompt(context, input.prompt, input.attachments, true))
-      .catch(async (cause: unknown) => {
-        const status = failureTurnStatus(cause);
-        await publishStatus(started.thread.id, status);
-        await withStore((store) =>
-          store.completeTurn(started.turnId, status, new Date().toISOString()),
-        );
-        await persistMessage({
-          id: MessageId.make(crypto.randomUUID()),
+  await submitAgentWork(
+    context,
+    Effect.tryPromise({
+      try: () =>
+        persistNode({
+          id: rootNodeId,
           threadId: started.thread.id,
-          turnId: started.turnId,
-          role: "system",
-          content: "The agent connection failed. This turn was preserved and was not sent again.",
-          createdAt: new Date().toISOString(),
-        });
-      })
-      .finally(() => activeTurns.delete(started.thread.id)),
+          parentId: null,
+          name: started.thread.title,
+          provider: started.thread.provider,
+          model: started.thread.model,
+          state: "running",
+          activity: "Starting turn",
+          childCount: 0,
+          pendingApproval: false,
+          changedFileCount: 0,
+        }),
+      catch: (cause) => cause,
+    }).pipe(Effect.zipRight(executePrompt(context, input.prompt, input.attachments))),
   );
 
   return { accepted: true, thread: started.thread, turnId: started.turnId };
@@ -638,9 +644,11 @@ export const startThreadWithPrompt = async (
 
 export const cancelPrompt = async (threadId: ThreadId): Promise<void> => {
   const session = activeSessions.get(threadId);
-  if (session === undefined || !activeTurns.has(threadId)) throw new Error("No active turn");
+  if (session === undefined || !activeTurns.has(threadId)) {
+    throw applicationError("conflict", "No active turn");
+  }
   await publishStatus(threadId, "cancelling");
-  await Effect.runPromise(session.requestCancel());
+  await runApplication(session.requestCancel());
 };
 
 export const respondToInteraction = async (
@@ -649,17 +657,12 @@ export const respondToInteraction = async (
   optionId: string,
 ): Promise<PendingInteraction> => {
   const receipt = await withStore((store) => store.findReceipt(commandId));
-  const shell = await withStore((store) => store.shellSnapshot);
-  const details = await Promise.all(shell.threads.map((thread) => threadDetail(thread.id)));
-  const owner = details.find((detail) =>
-    detail?.interactions.some((candidate) => candidate.id === interactionId),
-  );
-  const interaction = owner?.interactions.find((candidate) => candidate.id === interactionId);
-  if (owner === null || owner === undefined || interaction === undefined) {
-    throw new Error("Interaction not found");
+  const interaction = await withStore((store) => store.findInteraction(interactionId));
+  if (interaction === null) {
+    throw applicationError("not-found", "Interaction not found");
   }
   if (receipt !== null) return interaction;
-  const session = activeSessions.get(owner.thread.id);
+  const session = activeSessions.get(interaction.threadId);
   if (session === undefined) {
     const persisted = await withStore((store) => store.resolveInteraction(interactionId, "stale"));
     const stale = persisted.record;
@@ -679,7 +682,7 @@ export const respondToInteraction = async (
     );
     return stale;
   }
-  await Effect.runPromise(session.respondInteraction(interactionId, optionId));
+  await runApplication(session.respondInteraction(interactionId, optionId));
   const persisted = await withStore((store) => store.resolveInteraction(interactionId, "resolved"));
   const resolved = persisted.record;
   publishThreadEvent(resolved.threadId, {
@@ -701,9 +704,7 @@ export const respondToInteraction = async (
 
 export const closeAgentSessions = async (): Promise<void> => {
   await Promise.allSettled(openingSessions.values());
-  await Promise.all(
-    [...activeSessions.values()].map((session) => Effect.runPromise(session.close)),
-  );
+  await Promise.all([...activeSessions.values()].map((session) => runApplication(session.close)));
   activeSessions.clear();
   openingSessions.clear();
   await drainAgentWork();
@@ -719,44 +720,14 @@ export const drainAgentWork = async (): Promise<void> => {
   );
 };
 
-export const reviewThread = async (threadId: ThreadId) => {
-  const records = await withStore((store) => store.listCheckpoints(threadId));
-  const post = records.toReversed().find((record) => record.kind === "post-turn");
-  const pre = records
-    .toReversed()
-    .find((record) => record.kind === "pre-turn" && record.turnId === post?.turnId);
-  if (pre === undefined || post === undefined) {
-    return { checkpoints: records, diff: { files: [] } };
-  }
-  const diff = await runApplication(
-    Effect.gen(function* () {
-      const checkpoints = yield* CheckpointsService;
-      return yield* checkpoints.diff(pre.checkpoint, post.checkpoint);
-    }),
-  );
-  return { checkpoints: records, diff };
-};
-
-export const previewFileRestore = async (threadId: ThreadId, checkpointId: string) => {
-  const records = await withStore((store) => store.listCheckpoints(threadId));
-  const record = records.find((candidate) => candidate.checkpoint.id === checkpointId);
-  if (record === undefined) throw new Error("Checkpoint not found");
-  return runApplication(
-    Effect.gen(function* () {
-      const checkpoints = yield* CheckpointsService;
-      return yield* checkpoints.previewRestore(record.checkpoint);
-    }),
-  );
-};
-
 export const restoreThreadFiles = async (threadId: ThreadId, checkpointId: string) => {
   const detail = await threadDetail(threadId);
-  if (detail === null) throw new Error("Thread not found");
+  if (detail === null) throw applicationError("not-found", "Thread not found");
   if (activeTurns.has(threadId))
-    throw new Error("Files can be restored only while the session is idle");
+    throw applicationError("conflict", "Files can be restored only while the session is idle");
   const records = await withStore((store) => store.listCheckpoints(threadId));
   const record = records.find((candidate) => candidate.checkpoint.id === checkpointId);
-  if (record === undefined) throw new Error("Checkpoint not found");
+  if (record === undefined) throw applicationError("not-found", "Checkpoint not found");
   const undo = await runApplication(
     Effect.gen(function* () {
       const checkpoints = yield* CheckpointsService;

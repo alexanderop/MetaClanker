@@ -45,10 +45,19 @@ const request = async <A, I>(
   });
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null);
-    const message =
-      typeof payload === "object" && payload !== null && "message" in payload
-        ? String(payload.message)
-        : response.statusText;
+    let message = response.statusText;
+    if (
+      typeof payload === "object" &&
+      payload !== null &&
+      "error" in payload &&
+      typeof payload.error === "object" &&
+      payload.error !== null &&
+      "message" in payload.error
+    ) {
+      message = String(payload.error.message);
+    } else if (typeof payload === "object" && payload !== null && "message" in payload) {
+      message = String(payload.message);
+    }
     throw new ApiError(response.status, message);
   }
   return decode(schema, await response.json());

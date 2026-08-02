@@ -8,7 +8,13 @@ const subscribers = new Map<string, Set<ThreadSubscriber>>();
 const shellSubscribers = new Set<ShellSubscriber>();
 
 export const publishShellEvent = (event: ServerEvent): void => {
-  for (const subscriber of shellSubscribers) subscriber(event);
+  for (const subscriber of shellSubscribers) {
+    try {
+      subscriber(event);
+    } catch {
+      shellSubscribers.delete(subscriber);
+    }
+  }
 };
 
 export const subscribeToShell = (subscriber: ShellSubscriber): (() => void) => {
@@ -18,7 +24,11 @@ export const subscribeToShell = (subscriber: ShellSubscriber): (() => void) => {
 
 export const publishThreadEvent = (threadId: ThreadId, event: ServerEvent): void => {
   for (const subscriber of subscribers.get(threadId) ?? []) {
-    subscriber(event);
+    try {
+      subscriber(event);
+    } catch {
+      subscribers.get(threadId)?.delete(subscriber);
+    }
   }
 };
 

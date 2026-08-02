@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1_000;
 const TICKET_TTL_MS = 30_000;
+const SESSION_MAX_AGE_SECONDS = SESSION_TTL_MS / 1_000;
 
 interface ExpiringToken {
   readonly expiresAt: number;
@@ -9,7 +10,14 @@ interface ExpiringToken {
 
 const sessions = new Map<string, ExpiringToken>();
 const tickets = new Map<string, ExpiringToken>();
-const pairingCode = process.env["METACLANKER_PAIRING_CODE"] ?? randomBytes(6).toString("base64url");
+let generatedPairingCode: string | undefined;
+
+const configuredPairingCode = (): string => {
+  const configured = process.env["METACLANKER_PAIRING_CODE"];
+  if (configured !== undefined) return configured;
+  generatedPairingCode ??= randomBytes(6).toString("base64url");
+  return generatedPairingCode;
+};
 
 const token = (): string => randomBytes(32).toString("base64url");
 
@@ -93,7 +101,7 @@ export const revokeEnvironmentSession = (value: string): void => {
   sessions.delete(value);
 };
 
-export const verifyPairingCode = (value: string): boolean => equal(value, pairingCode);
+export const verifyPairingCode = (value: string): boolean => equal(value, configuredPairingCode());
 
 export const issueWebSocketTicket = (): string => {
   prune(tickets);
@@ -110,4 +118,12 @@ export const consumeWebSocketTicket = (value: string | null): boolean => {
   return valid;
 };
 
-export const pairingHint = (): string => pairingCode;
+export const pairingHint = (): string => configuredPairingCode();
+
+export const sessionCookieOptions = (secure: boolean) => ({
+  httpOnly: true,
+  sameSite: "strict" as const,
+  secure,
+  path: "/",
+  maxAge: SESSION_MAX_AGE_SECONDS,
+});

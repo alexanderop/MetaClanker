@@ -1,6 +1,17 @@
-import { createError, defineEventHandler, getHeader, getRequestIP, setCookie } from "h3";
+import {
+  createError,
+  defineEventHandler,
+  getHeader,
+  getRequestIP,
+  getRequestProtocol,
+  setCookie,
+} from "h3";
 
-import { createEnvironmentSession, isTrustedLocalBootstrap } from "../../utils/auth.js";
+import {
+  createEnvironmentSession,
+  isTrustedLocalBootstrap,
+  sessionCookieOptions,
+} from "../../utils/auth.js";
 
 export default defineEventHandler((event) => {
   const address = getRequestIP(event, { xForwardedFor: false });
@@ -14,15 +25,14 @@ export default defineEventHandler((event) => {
       origin: getHeader(event, "origin"),
     })
   ) {
-    throw createError({ statusCode: 403, statusMessage: "Local bootstrap is loopback-only" });
+    throw createError({ statusCode: 403, message: "Local bootstrap is loopback-only" });
   }
   const session = createEnvironmentSession();
-  setCookie(event, "metaclanker_session", session, {
-    httpOnly: true,
-    sameSite: "strict",
-    secure: false,
-    path: "/",
-    maxAge: 12 * 60 * 60,
-  });
+  setCookie(
+    event,
+    "metaclanker_session",
+    session,
+    sessionCookieOptions(getRequestProtocol(event) === "https"),
+  );
   return { authenticated: true };
 });

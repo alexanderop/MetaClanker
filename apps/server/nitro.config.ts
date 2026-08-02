@@ -6,17 +6,26 @@ export default defineNitroConfig({
   preset: "node-server",
   srcDir: "server",
   compatibilityDate: "2026-08-01",
+  imports: false,
+  errorHandler: "~/error",
+  runtimeConfig: {
+    metaclanker: {
+      dataDirectory: process.env["METACLANKER_DATA_DIR"] ?? ".data",
+    },
+  },
   experimental: {
     websocket: true,
   },
   publicAssets: [
     {
-      dir: webDistribution,
+      baseURL: "/assets",
+      dir: `${webDistribution}/assets`,
       maxAge: 60 * 60 * 24 * 365,
     },
   ],
+  serverAssets: [{ baseName: "shell", dir: webDistribution, pattern: "index.html" }],
   routeRules: {
-    "/api/**": { cors: false },
+    "/api/**": { headers: { "cache-control": "no-store" } },
     "/**": {
       headers: {
         "content-security-policy":

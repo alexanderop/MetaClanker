@@ -64,7 +64,7 @@ For deterministic development without provider state, build the fake adapter and
 
 ```sh
 pnpm --filter @metaclanker/testing build
-METACLANKER_FAKE_ACP_ENTRY="$PWD/packages/testing/dist/acp/fake-agent.js" pnpm dev
+NODE_ENV=test METACLANKER_TEST_ACP_ENTRY="$PWD/packages/testing/dist/acp/fake-agent.js" pnpm dev
 ```
 
 ## Data, pairing, and privacy

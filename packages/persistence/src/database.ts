@@ -39,12 +39,18 @@ import { eventThreadId, UnsequencedDomainEventSchema } from "./eventCodec.js";
 import { runMigrations } from "./migrations.js";
 
 class DecodeStoreError extends Data.TaggedError("StoreError")<{
+  readonly code: "persistence";
   readonly operation: string;
   readonly message: string;
 }> {}
 
-const storeError = (operation: string, cause: unknown): StoreError => ({
+const storeError = (
+  operation: string,
+  cause: unknown,
+  code: StoreError["code"] = "persistence",
+): StoreError => ({
   _tag: "StoreError",
+  code,
   operation,
   message: cause instanceof Error ? cause.message : String(cause),
 });
@@ -52,7 +58,8 @@ const storeError = (operation: string, cause: unknown): StoreError => ({
 const decode = <A, I>(operation: string, schema: Schema.Schema<A, I, never>, value: unknown) =>
   Effect.try({
     try: () => Schema.decodeUnknownSync(schema)(value),
-    catch: (cause) => new DecodeStoreError({ operation, message: String(cause) }),
+    catch: (cause) =>
+      new DecodeStoreError({ code: "persistence", operation, message: String(cause) }),
   });
 
 const parseJson = (value: string): unknown => JSON.parse(value);
@@ -894,7 +901,7 @@ const makeStore = Effect.gen(function* () {
         const active = yield* decode("active turn", Schema.Array(TurnRow), activeRows);
         if (active.length > 0) {
           return yield* Effect.fail(
-            storeError("start turn", "This thread already has an active turn"),
+            storeError("start turn", "This thread already has an active turn", "conflict"),
           );
         }
 
@@ -1220,6 +1227,15 @@ const makeStore = Effect.gen(function* () {
         sql.withTransaction,
         Effect.mapError((cause) => storeError("upsert interaction", cause)),
       ),
+    findInteraction: (id) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<InteractionRow>`SELECT id, project_id, thread_id, turn_id, node_id,
+          kind, title, description, options_json, status, sequence, created_at FROM pending_requests
+          WHERE id = ${id}`;
+        const decoded = yield* decode("find interaction", Schema.Array(InteractionRow), rows);
+        const row = decoded[0];
+        return row === undefined ? null : yield* interactionFromRow(row);
+      }).pipe(Effect.mapError((cause) => storeError("find interaction", cause))),
     resolveInteraction: (id, status) =>
       Effect.gen(function* () {
         yield* sql`UPDATE pending_requests SET status = ${status} WHERE id = ${id}`;
