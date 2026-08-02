@@ -11,6 +11,15 @@ export default defineConfig({
     projects: [
       {
         test: {
+          // oxlint JS plugin rules. They shell out to the real binary, so they belong to
+          // the lint pass rather than to any application test tier.
+          name: "lint-rules",
+          environment: "node",
+          include: ["scripts/**/*.rule.test.mjs"],
+        },
+      },
+      {
+        test: {
           name: "node-unit",
           environment: "node",
           include: ["{apps,packages}/**/*.unit.test.ts"],

@@ -16,8 +16,22 @@
     "**/public/mockServiceWorker.js",
     "artifacts/**"
   ],
+  "jsPlugins": ["./scripts/oxlint-vue-cohesion.mjs"],
   "rules": {
     "no-await-in-loop": "off",
-    "no-underscore-dangle": "off"
-  }
+    "no-underscore-dangle": "off",
+    "vue-cohesion/script-setup-cohesion": ["error", { "max": 10 }],
+    "vue-cohesion/inline-composable-naming": "error"
+  },
+  "overrides": [
+    {
+      // An inline composable deliberately reuses its internal name at the call
+      // site (`const { paletteOpen } = useCommandPalette()`), which `no-shadow`
+      // reads as accidental. See docs/vue-components.md.
+      "files": ["apps/web/src/**/*.vue"],
+      "rules": {
+        "no-shadow": "off"
+      }
+    }
+  ]
 }
