@@ -3,9 +3,8 @@
 - Status: Implemented and verified (2026-08-01); all five slices landed
 - Owner: Frontend
 - Audience: Frontend, design, and test owners
-- Related contract: [MetaClanker product and architecture specification](../../SPEC.md)
-- Related contract: [MetaClanker testing strategy](../testing-strategy/SPEC.md)
-- Related contract: [Conversation creation UX redesign](../ux-redesign/SPEC.md)
+- Related contract: [MetaClanker product and architecture specification](architecture.md)
+- Related contract: [MetaClanker testing strategy](testing.md)
 
 ## 1. Executive summary
 
@@ -156,14 +155,14 @@ below a stock `text-sm`. Leaving the defaults in place means every surface silen
 competing scales. After the reset, an off-scale name generates no class at all — a visible failure
 rather than a quiet one.
 
-| Namespace | Steps |
-| --------- | ----- |
-| `--text-*` | `2xs` 0.58 · `xs` 0.65 · `sm` 0.7 · `base` 0.75 · `md` 0.82 · `lg` 0.88 · `xl` 1.05 · `2xl` 1.15 · `display` (fluid clamp) |
-| `--font-weight-*` | `normal` 400 · `medium` 560 · `semibold` 650 · `bold` 750 · `extrabold` 850 |
-| `--tracking-*` | `tight` · `tighter` · `tightest` · `wide` · `wider` |
-| `--leading-*` | `tight` 1.2 · `snug` 1.35 · `normal` 1.5 · `relaxed` 1.65 |
-| `--radius-*` | `xs` 0.4 · `sm` 0.5 · `md` 0.75 · `lg` 1 · `xl` 1.35 · `full` |
-| `--shadow-*` | `soft` · `raised` · `popover` · `inset` · `ring` · `ring-sm` · `selected` |
+| Namespace         | Steps                                                                                                                      |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `--text-*`        | `2xs` 0.58 · `xs` 0.65 · `sm` 0.7 · `base` 0.75 · `md` 0.82 · `lg` 0.88 · `xl` 1.05 · `2xl` 1.15 · `display` (fluid clamp) |
+| `--font-weight-*` | `normal` 400 · `medium` 560 · `semibold` 650 · `bold` 750 · `extrabold` 850                                                |
+| `--tracking-*`    | `tight` · `tighter` · `tightest` · `wide` · `wider`                                                                        |
+| `--leading-*`     | `tight` 1.2 · `snug` 1.35 · `normal` 1.5 · `relaxed` 1.65                                                                  |
+| `--radius-*`      | `xs` 0.4 · `sm` 0.5 · `md` 0.75 · `lg` 1 · `xl` 1.35 · `full`                                                              |
+| `--shadow-*`      | `soft` · `raised` · `popover` · `inset` · `ring` · `ring-sm` · `selected`                                                  |
 
 The weight ramp is heavier than Tailwind's because the type is small: at 0.6rem a stock 600 reads as
 regular weight. Every type step carries its own `--line-height`, so `text-sm` sets both and a surface
@@ -406,18 +405,18 @@ checks together are what distinguishes the cases.
 
 ## 12. Acceptance criteria
 
-| # | Criterion | Status |
-| - | --------- | ------ |
-| 1 | No component declares a colour, radius, or shadow value outside the token blocks | Met, and now enforced |
-| 1a | No component declares a font size, weight, tracking, or leading value either | Met, enforced by `check-design-tokens.mjs` |
-| 2 | Every primitive accepts and last-merges a `class` prop | Met |
-| 3 | Focus, portal, and roving-tabindex behavior is delegated to reka-ui | Met |
-| 4 | `ui` imports nothing from `shared`, `features`, or `views` | Met |
-| 5 | No native `<dialog>` remains in `apps/web` | Met |
-| 6 | `.button`, `.icon-button`, `.modal`, `.send-button`, `.composer-control` are absent | Met |
-| 7 | `shared/styles.css` contains only tokens, resets, shell layout, and third-party overrides | Met, with one documented addition |
-| 8 | Every slice landed without modifying a test to accommodate markup | Met — no test file was changed |
-| 9 | `pnpm check`, `pnpm knip`, and `pnpm test:e2e:web` pass at every slice boundary | Met |
+| #   | Criterion                                                                                 | Status                                     |
+| --- | ----------------------------------------------------------------------------------------- | ------------------------------------------ |
+| 1   | No component declares a colour, radius, or shadow value outside the token blocks          | Met, and now enforced                      |
+| 1a  | No component declares a font size, weight, tracking, or leading value either              | Met, enforced by `check-design-tokens.mjs` |
+| 2   | Every primitive accepts and last-merges a `class` prop                                    | Met                                        |
+| 3   | Focus, portal, and roving-tabindex behavior is delegated to reka-ui                       | Met                                        |
+| 4   | `ui` imports nothing from `shared`, `features`, or `views`                                | Met                                        |
+| 5   | No native `<dialog>` remains in `apps/web`                                                | Met                                        |
+| 6   | `.button`, `.icon-button`, `.modal`, `.send-button`, `.composer-control` are absent       | Met                                        |
+| 7   | `shared/styles.css` contains only tokens, resets, shell layout, and third-party overrides | Met, with one documented addition          |
+| 8   | Every slice landed without modifying a test to accommodate markup                         | Met — no test file was changed             |
+| 9   | `pnpm check`, `pnpm knip`, and `pnpm test:e2e:web` pass at every slice boundary           | Met                                        |
 
 ### 12.1 Amendment to criterion 7
 

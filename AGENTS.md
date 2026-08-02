@@ -4,7 +4,9 @@
 
 MetaClanker is a private, local-first control surface for Codex and Claude coding agents. It ships the same conversation-first workspace through a Vue web app and a packaged Electron app. The Nitro server owns authentication, ACP subprocesses, durable SQLite state, Git checkpoints, recovery, and event delivery.
 
-Read the relevant part of [SPEC.md](SPEC.md) before changing product behavior or architecture. Read [docs/testing-strategy/SPEC.md](docs/testing-strategy/SPEC.md) before changing tests, test infrastructure, asynchronous orchestration, or CI behavior. Read [docs/ui-components/SPEC.md](docs/ui-components/SPEC.md) before adding a UI component, changing `apps/web/src/ui`, or editing `apps/web/src/shared/styles.css`. Use [README.md](README.md) for current setup, provider, privacy, backup, and operational details. Do not silently resolve a conflict between a specification and the implementation: preserve the stated contract or call out the discrepancy. The root specification is authoritative when specifications conflict.
+Read the relevant part of [docs/architecture.md](docs/architecture.md) before changing product behavior or architecture. Read [docs/testing.md](docs/testing.md) before changing tests, test infrastructure, asynchronous orchestration, or CI behavior. Read [docs/ui-components.md](docs/ui-components.md) before adding a UI component, changing `apps/web/src/ui`, or editing `apps/web/src/shared/styles.css`. Read [docs/vue-components.md](docs/vue-components.md) before writing or reorganizing a `<script setup>` block in `apps/web`. Use [README.md](README.md) for current setup, provider, privacy, backup, and operational details. Do not silently resolve a conflict between a specification and the implementation: preserve the stated contract or call out the discrepancy. `docs/architecture.md` is authoritative when specifications conflict.
+
+`docs/` holds only durable contracts—material that stays true across initiatives and orients a new contributor. A specification written for one in-flight initiative belongs in `.spec/`, which is gitignored and periodically deleted; see `.spec/README.md`. Never cite a `.spec/` path from a committed file, and promote a rule into `docs/` before the initiative that produced it is pruned.
 
 ## Repository map
 
@@ -20,6 +22,8 @@ Read the relevant part of [SPEC.md](SPEC.md) before changing product behavior or
 - `packages/git`: scoped checkpoint, diff, preview, and restore operations.
 - `packages/testing`: deterministic ACP fake, fixtures, builders, and test support.
 - `tests/e2e`: production Vue/Nitro/fake-ACP journeys. `tests/package-smoke.mjs` owns packaged desktop topology.
+- `docs`: committed durable contracts—architecture, testing, UI components, Vue authoring.
+- `.spec`: gitignored working specifications for in-flight initiatives; disposable, never referenced from committed files.
 
 Work in source directories. Never edit generated `dist`, `.output`, `.nitro`, `.packaging`, `artifacts`, reports, or test-result files.
 
@@ -30,6 +34,7 @@ Work in source directories. Never edit generated `dist`, `.output`, `.nitro`, `.
 - Decode external input at its boundary with Effect Schema. Keep public wire schemas separate from internal persisted-event schemas.
 - Backend resources and failure-producing workflows use Effect scopes, layers, streams/queues, interruption, and typed errors. Vue components do not execute Effect programs.
 - In `apps/web`, views compose features; features do not import other features; shared code imports neither features nor views; `ui` imports none of them. Components render state and emit intent; domain decisions remain in pure modules.
+- A `<script setup>` block groups related state, effects, and handlers into named `use*()` inline composables so its opening lines name the component's responsibilities. Extract a composable to its own file only once a second component needs it. See [docs/vue-components.md](docs/vue-components.md).
 - UI primitives own appearance only. Focus, portal, dismissal, and roving-tabindex behavior is delegated to reka-ui. Every primitive last-merges a `class` prop; `data-slot` is a styling hook and never a test selector.
 - Every mutation carries a stable `commandId`. Accepted/rejected receipts, durable events, and projections remain transactionally consistent. Never blindly retry an uncertain prompt dispatch or destructive filesystem action.
 - Crash recovery is explicit: interrupted active threads become recovery-required, live interactions become stale, and provider continuation follows advertised resume/load capabilities.

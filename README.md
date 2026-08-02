@@ -2,7 +2,7 @@
 
 MetaClanker is a private, local-first control surface for Codex and Claude coding agents. It combines a conversation-first workspace, ACP subprocess supervision, durable transcripts, Git checkpoints and review, and an on-demand Vue Flow agent map in one shared web and Electron application.
 
-The implementation follows [SPEC.md](SPEC.md). Provider-specific packages are confined to the ACP client package; Vue talks only to the authenticated Nitro contract.
+The implementation follows [docs/architecture.md](docs/architecture.md). Provider-specific packages are confined to the ACP client package; Vue talks only to the authenticated Nitro contract.
 
 ## Requirements
 

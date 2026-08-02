@@ -1,3 +1,8 @@
+# Working specs for in-flight initiatives. Disposable by design; see .spec/README.md.
+# The README is tracked so the convention survives a clone; no specification ever is.
+.spec/*
+!.spec/README.md
+
 node_modules/
 dist/
 .output/

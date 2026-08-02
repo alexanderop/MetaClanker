@@ -1,4 +1,4 @@
-SPEC.md
+docs/architecture.md
 apps/server/.nitro/
 apps/server/.output/
 apps/server/.data/

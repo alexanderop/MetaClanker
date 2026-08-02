@@ -3,7 +3,7 @@
 - Status: Proposed
 - Owner: Engineering and quality
 - Audience: Contributors, coding agents, reviewers, and release owners
-- Related contract: [MetaClanker product and architecture specification](../../SPEC.md)
+- Related contract: [MetaClanker product and architecture specification](architecture.md)
 
 ## 1. Executive summary
 
@@ -87,16 +87,16 @@ contract.
 
 The repository has the complete lane topology and exercises the principal cross-layer contracts:
 
-| Lane                | Current implementation                                           | Main gap                                                                       |
-| ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Static and types    | Strict TypeScript, `vue-tsc`, import-boundary lint, branded IDs, focused-test guard | Continue expanding public union and preload bridge contracts                   |
-| Node unit/property  | Domain graph/thread/events, live reducers, auth, title, and lifecycle workers | More generated recovery and permission-policy sequences                        |
-| ACP contract        | Real production supervisor over deterministic stdio scenarios    | Add new provider capability variants whenever adapters expand                  |
-| Backend integration | SQLite journal/projection replay, orchestration, recovery, Git checkpoints | Add Nitro/WebSocket edge cases only where lower lanes cannot own them           |
-| Browser integration | Project/draft navigation, conversation live status, keyboard and accessibility | Add reconnect and long-transcript behavior as visible regressions are found    |
-| Production web E2E  | Two critical fake-provider journeys                              | Keep narrow; strengthen assertions rather than adding breadth                  |
-| Packaged Electron   | Startup, native SQLite, renderer, readiness, and shutdown smoke  | Minimal prompt path and explicit preload surface verification                  |
-| Mutation            | Scheduled graph/thread baseline                                  | Expand only as new critical pure policy modules appear                         |
+| Lane                | Current implementation                                                              | Main gap                                                                    |
+| ------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Static and types    | Strict TypeScript, `vue-tsc`, import-boundary lint, branded IDs, focused-test guard | Continue expanding public union and preload bridge contracts                |
+| Node unit/property  | Domain graph/thread/events, live reducers, auth, title, and lifecycle workers       | More generated recovery and permission-policy sequences                     |
+| ACP contract        | Real production supervisor over deterministic stdio scenarios                       | Add new provider capability variants whenever adapters expand               |
+| Backend integration | SQLite journal/projection replay, orchestration, recovery, Git checkpoints          | Add Nitro/WebSocket edge cases only where lower lanes cannot own them       |
+| Browser integration | Project/draft navigation, conversation live status, keyboard and accessibility      | Add reconnect and long-transcript behavior as visible regressions are found |
+| Production web E2E  | Two critical fake-provider journeys                                                 | Keep narrow; strengthen assertions rather than adding breadth               |
+| Packaged Electron   | Startup, native SQLite, renderer, readiness, and shutdown smoke                     | Minimal prompt path and explicit preload surface verification               |
+| Mutation            | Scheduled graph/thread baseline                                                     | Expand only as new critical pure policy modules appear                      |
 
 The target is not a prescribed number of tests. Coverage grows when product behavior grows or a
 failure reveals an unowned contract.
