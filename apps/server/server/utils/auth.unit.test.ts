@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vitest";
 
 import {
@@ -72,6 +73,31 @@ describe("environment authentication", () => {
           const hint = yield* pairingHint;
           expect(yield* verifyPairingCode(hint)).toBe(true);
           expect(yield* verifyPairingCode(`${hint}-invalid`)).toBe(false);
+        }),
+      );
+
+      layerIt.effect("expires a WebSocket ticket that is not consumed in time", () =>
+        Effect.gen(function* () {
+          const ticket = yield* issueWebSocketTicket;
+
+          yield* TestClock.adjust("29 seconds");
+          const fresh = yield* issueWebSocketTicket;
+          yield* TestClock.adjust("2 seconds");
+
+          expect(yield* consumeWebSocketTicket(ticket)).toBe(false);
+          expect(yield* consumeWebSocketTicket(fresh)).toBe(true);
+        }),
+      );
+
+      layerIt.effect("expires an environment session after its full lifetime", () =>
+        Effect.gen(function* () {
+          const session = yield* createEnvironmentSession;
+
+          yield* TestClock.adjust("11 hours");
+          expect(yield* validateEnvironmentSession(session)).toBe(true);
+
+          yield* TestClock.adjust("1 hour");
+          expect(yield* validateEnvironmentSession(session)).toBe(false);
         }),
       );
     },

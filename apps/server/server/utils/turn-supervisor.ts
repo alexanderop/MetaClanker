@@ -5,11 +5,21 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import type { AcpSessionHandle, NormalizedAgentEvent } from "@metaclanker/application/ports";
+import { AcpRuntimeError } from "@metaclanker/application/ports";
+import type { ApplicationError } from "@metaclanker/application/commands";
 import type { ThreadId } from "@metaclanker/contracts/ids";
+
+/**
+ * Everything a runtime-owned session worker can fail with. Declaring it means
+ * `orchestrator.ts` decides `recovery-required` by a checked tag rather than by
+ * re-deriving the error's identity from `unknown` with string comparisons.
+ */
+export type SessionFailure = AcpRuntimeError | ApplicationError;
 
 export interface TurnSupervisorService {
   /** Acquires a session resource in the supervisor layer's lifetime. */
@@ -19,7 +29,7 @@ export interface TurnSupervisorService {
   readonly attachSession: (threadId: ThreadId, session: AcpSessionHandle) => Effect.Effect<void>;
   readonly setEventHandler: (
     threadId: ThreadId,
-    handler: ((event: NormalizedAgentEvent) => Effect.Effect<void, unknown>) | null,
+    handler: ((event: NormalizedAgentEvent) => Effect.Effect<void, SessionFailure>) | null,
   ) => void;
   /** Starts one runtime-owned worker for an admitted root-thread operation. */
   readonly submit: (threadId: ThreadId, task: Effect.Effect<void, never>) => Effect.Effect<void>;
@@ -34,11 +44,11 @@ export interface TurnSupervisorService {
   readonly drainSessionEvents: (
     threadId: ThreadId,
     session: AcpSessionHandle,
-  ) => Effect.Effect<void, unknown>;
+  ) => Effect.Effect<void, SessionFailure>;
   readonly retireSession: (
     threadId: ThreadId,
     session: AcpSessionHandle,
-  ) => Effect.Effect<void, unknown>;
+  ) => Effect.Effect<void, SessionFailure>;
   readonly evictSession: (threadId: ThreadId) => Effect.Effect<void>;
   readonly startTurn: (threadId: ThreadId) => void;
   readonly finishTurn: (threadId: ThreadId) => void;
@@ -62,9 +72,9 @@ export const turnSupervisorLayer = Layer.effect(
     const scope = yield* Effect.scope;
     const eventHandlers = new Map<
       ThreadId,
-      (event: NormalizedAgentEvent) => Effect.Effect<void, unknown>
+      (event: NormalizedAgentEvent) => Effect.Effect<void, SessionFailure>
     >();
-    const eventCompletions = new Map<ThreadId, Deferred.Deferred<void, unknown>>();
+    const eventCompletions = new Map<ThreadId, Deferred.Deferred<void, SessionFailure>>();
     let closed = false;
 
     const closeAll = Effect.suspend(() => {
@@ -94,7 +104,7 @@ export const turnSupervisorLayer = Layer.effect(
       acquire: (effect) => Scope.provide(scope)(effect),
       attachSession: (threadId, session) =>
         Effect.gen(function* () {
-          const completion = yield* Deferred.make<void, unknown>();
+          const completion = yield* Deferred.make<void, SessionFailure>();
           eventCompletions.set(threadId, completion);
           yield* Scope.provide(scope)(
             session.events.pipe(
@@ -105,7 +115,13 @@ export const turnSupervisorLayer = Layer.effect(
               Effect.flatMap((exit) =>
                 Effect.gen(function* () {
                   if (Exit.isFailure(exit)) {
-                    const failure = Cause.squash(exit.cause);
+                    const found = Cause.findErrorOption(exit.cause);
+                    const failure = Option.isSome(found)
+                      ? found.value
+                      : new AcpRuntimeError({
+                          code: "disconnected",
+                          message: "The ACP session event stream ended unexpectedly",
+                        });
                     if (sessions.get(threadId) === session) {
                       sessions.delete(threadId);
                       eventHandlers.delete(threadId);
@@ -159,7 +175,12 @@ export const turnSupervisorLayer = Layer.effect(
       drainSessionEvents: (threadId, session) => {
         const completion = eventCompletions.get(threadId);
         if (completion === undefined || sessions.get(threadId) !== session) {
-          return Effect.fail(new Error("ACP session is no longer active"));
+          return Effect.fail(
+            new AcpRuntimeError({
+              code: "disconnected",
+              message: "ACP session is no longer active",
+            }),
+          );
         }
         return Effect.raceFirst(session.drainAcceptedEvents, Deferred.await(completion));
       },

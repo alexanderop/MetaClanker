@@ -208,6 +208,56 @@ test("reuses one command identity when an uncertain restore is explicitly retrie
   expect(screen.emitted("close")).toHaveLength(1);
 });
 
+test("refuses to switch checkpoints while a destructive restore is in flight", async () => {
+  let restoreStarted!: () => void;
+  let releaseRestore!: () => void;
+  const started = new Promise<void>((resolve) => {
+    restoreStarted = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    releaseRestore = resolve;
+  });
+  const secondCheckpoint = {
+    ...checkpoint,
+    checkpoint: {
+      ...checkpoint.checkpoint,
+      id: CheckpointId.make("checkpoint:earlier-turn"),
+      createdAt: "2026-08-02T07:00:00.000Z",
+    },
+  };
+  worker.use(
+    http.get("/api/threads/:id/review", () =>
+      HttpResponse.json({ ...review, checkpoints: [secondCheckpoint, checkpoint] }),
+    ),
+    http.post("/api/threads/:id/restore", async ({ request }) => {
+      restoreInputs.push(await request.json());
+      restoreStarted();
+      await released;
+      return HttpResponse.json(undoCheckpoint);
+    }),
+  );
+  const screen = await renderReview();
+  await expect.element(screen.getByText("src/main.ts")).toBeVisible();
+
+  const checkpointButtons = screen.getByRole("button", { name: /Before turn/ });
+  await checkpointButtons.first().click();
+  await expect.element(screen.getByRole("heading", { name: "Destructive preview" })).toBeVisible();
+  await screen
+    .getByLabelText("I understand this overwrites current files and creates an undo checkpoint.")
+    .click();
+  await screen.getByRole("button", { name: "Restore files" }).click();
+  await started;
+
+  // Selecting another checkpoint would mint a new CommandId, dispose the restore atom,
+  // and interrupt a request the server may already have accepted.
+  await expect.element(checkpointButtons.nth(1)).toBeDisabled();
+
+  releaseRestore();
+  await expect.element(screen.getByRole("button", { name: "Restore files" })).toBeEnabled();
+  expect(restoreInputs).toHaveLength(1);
+  expect(screen.emitted("restored")).toHaveLength(1);
+});
+
 test("closing the panel interrupts its pending review request without disposing the app model", async () => {
   let requestStarted!: () => void;
   let requestAborted!: () => void;

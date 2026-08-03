@@ -59,7 +59,12 @@ const request = <A>(
       );
     }
     const payload: unknown = yield* Effect.tryPromise({
-      try: async (): Promise<unknown> => await response.json(),
+      // Non-zero arity: an arity-0 callback silently opts out of cancellation, so an
+      // interrupt could not stop a body read already in progress.
+      try: async (signal): Promise<unknown> => {
+        signal.throwIfAborted();
+        return await response.json();
+      },
       catch: () => new ClientError({ operation, kind: "invalid-json", status: response.status }),
     });
     return yield* Schema.decodeUnknownEffect(schema)(payload).pipe(

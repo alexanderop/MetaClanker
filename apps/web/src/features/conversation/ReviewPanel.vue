@@ -129,8 +129,9 @@ const handleOpenChange = (open: boolean): void => {
               v-for="record in preTurnCheckpoints"
               :key="record.checkpoint.id"
               type="button"
-              class="grid cursor-pointer grid-cols-[1fr_auto] gap-x-2 gap-y-0.5 rounded-sm border border-border bg-surface-raised p-2.5 text-left text-text aria-pressed:border-accent-strong aria-pressed:shadow-ring-sm"
+              class="grid cursor-pointer grid-cols-[1fr_auto] gap-x-2 gap-y-0.5 rounded-sm border border-border bg-surface-raised p-2.5 text-left text-text aria-pressed:border-accent-strong aria-pressed:shadow-ring-sm disabled:cursor-not-allowed disabled:opacity-40"
               :aria-pressed="selectedCheckpointId === record.checkpoint.id"
+              :disabled="restoring"
               @click="selectCheckpoint(record.checkpoint.id)"
             >
               <span class="text-sm font-bold">{{ $t("review.beforeTurn") }}</span>

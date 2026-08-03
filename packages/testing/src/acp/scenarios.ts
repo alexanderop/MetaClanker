@@ -1,45 +1,69 @@
-export type FakePromptMode =
-  | "complete"
-  | "permission"
-  | "crash"
-  | "malformed-frame"
-  | "event-overflow";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
-export type FakeCrashPoint = "initialize" | "initialize-hang" | "session-new" | "prompt";
+const FakePromptMode = Schema.Literals([
+  "complete",
+  "permission",
+  "crash",
+  "malformed-frame",
+  "event-overflow",
+]);
+export type FakePromptMode = typeof FakePromptMode.Type;
+
+const FakeCrashPoint = Schema.Literals(["initialize", "initialize-hang", "session-new", "prompt"]);
+export type FakeCrashPoint = typeof FakeCrashPoint.Type;
 
 /**
- * Configuration for the deterministic ACP executable. It is deliberately a
- * data-only contract so production ACP tests exercise a real child process.
+ * Configuration for the deterministic ACP executable. It is deliberately a data-only
+ * contract so production ACP tests exercise a real child process. One schema declares
+ * the shape, decodes it on the far side of the process boundary, and derives the type;
+ * the literal sets used to live twice, so a new mode parsed as a silent default.
  */
-export interface AcpScenario {
-  readonly protocolVersion: number;
-  readonly sessionCapabilities: {
-    readonly close: boolean;
-    readonly resume: boolean;
-    readonly load: boolean;
-    readonly delete: boolean;
-  };
-  readonly prompt: {
-    readonly mode: FakePromptMode;
-    readonly message: string;
-  };
-  readonly models: ReadonlyArray<string>;
-  readonly modes: ReadonlyArray<string>;
-  readonly requiredMode: string | null;
-  readonly crashAt: FakeCrashPoint | null;
-  readonly metadataMode: "none" | "invalid-codex";
-}
+export const AcpScenario = Schema.Struct({
+  protocolVersion: Schema.Number,
+  sessionCapabilities: Schema.Struct({
+    close: Schema.Boolean,
+    resume: Schema.Boolean,
+    load: Schema.Boolean,
+    delete: Schema.Boolean,
+  }),
+  prompt: Schema.Struct({ mode: FakePromptMode, message: Schema.String }),
+  models: Schema.Array(Schema.String),
+  modes: Schema.Array(Schema.String),
+  requiredMode: Schema.NullOr(Schema.String),
+  crashAt: Schema.NullOr(FakeCrashPoint),
+  metadataMode: Schema.Literals(["none", "invalid-codex"]),
+});
+export type AcpScenario = typeof AcpScenario.Type;
 
-export type AcpScenarioOverrides = {
-  readonly protocolVersion?: number;
-  readonly sessionCapabilities?: Partial<AcpScenario["sessionCapabilities"]>;
-  readonly prompt?: Partial<AcpScenario["prompt"]>;
-  readonly models?: ReadonlyArray<string>;
-  readonly modes?: ReadonlyArray<string>;
-  readonly requiredMode?: string | null;
-  readonly crashAt?: FakeCrashPoint | null;
-  readonly metadataMode?: AcpScenario["metadataMode"];
-};
+/**
+ * A caller may describe only the parts of a scenario it cares about, but a part it does
+ * describe has to be valid: the old field-by-field salvage dropped a bad field and kept
+ * the rest, silently running a scenario nobody asked for.
+ */
+const AcpScenarioOverrides = Schema.Struct({
+  protocolVersion: Schema.optionalKey(Schema.Number),
+  sessionCapabilities: Schema.optionalKey(
+    Schema.Struct({
+      close: Schema.optionalKey(Schema.Boolean),
+      resume: Schema.optionalKey(Schema.Boolean),
+      load: Schema.optionalKey(Schema.Boolean),
+      delete: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+  prompt: Schema.optionalKey(
+    Schema.Struct({
+      mode: Schema.optionalKey(FakePromptMode),
+      message: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  models: Schema.optionalKey(Schema.Array(Schema.String)),
+  modes: Schema.optionalKey(Schema.Array(Schema.String)),
+  requiredMode: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  crashAt: Schema.optionalKey(Schema.NullOr(FakeCrashPoint)),
+  metadataMode: Schema.optionalKey(Schema.Literals(["none", "invalid-codex"])),
+});
+export type AcpScenarioOverrides = typeof AcpScenarioOverrides.Type;
 
 const defaults: AcpScenario = {
   protocolVersion: 1,
@@ -72,75 +96,11 @@ export const acpScenario = (overrides: AcpScenarioOverrides = {}): AcpScenario =
   metadataMode: overrides.metadataMode ?? defaults.metadataMode,
 });
 
-const isPromptMode = (value: unknown): value is FakePromptMode =>
-  value === "complete" ||
-  value === "permission" ||
-  value === "crash" ||
-  value === "malformed-frame" ||
-  value === "event-overflow";
+const decodeOverrides = Schema.decodeUnknownOption(Schema.fromJsonString(AcpScenarioOverrides));
 
-const isCrashPoint = (value: unknown): value is FakeCrashPoint =>
-  value === "initialize" ||
-  value === "initialize-hang" ||
-  value === "session-new" ||
-  value === "prompt";
-
-/** Invalid external configuration falls back to the safe, deterministic default. */
+/** Invalid external configuration falls back to the deterministic default as a whole. */
 export const scenarioFromEnvironment = (value: string | undefined): AcpScenario => {
   if (value === undefined) return defaults;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return defaults;
-    const input = parsed as Record<string, unknown>;
-    const capabilities = input["sessionCapabilities"];
-    const prompt = input["prompt"];
-    const capabilityOverrides =
-      typeof capabilities === "object" && capabilities !== null && !Array.isArray(capabilities)
-        ? Object.fromEntries(
-            Object.entries(capabilities).filter(
-              ([key, item]) =>
-                (key === "close" || key === "resume" || key === "load" || key === "delete") &&
-                typeof item === "boolean",
-            ),
-          )
-        : {};
-    const promptRecord =
-      typeof prompt === "object" && prompt !== null && !Array.isArray(prompt)
-        ? (prompt as Record<string, unknown>)
-        : null;
-    const promptOverrides =
-      promptRecord !== null
-        ? {
-            ...(isPromptMode(promptRecord["mode"]) ? { mode: promptRecord["mode"] } : {}),
-            ...(typeof promptRecord["message"] === "string"
-              ? { message: promptRecord["message"] }
-              : {}),
-          }
-        : {};
-    return acpScenario({
-      ...(typeof input["protocolVersion"] === "number"
-        ? { protocolVersion: input["protocolVersion"] }
-        : {}),
-      sessionCapabilities: capabilityOverrides,
-      prompt: promptOverrides,
-      ...(Array.isArray(input["models"]) &&
-      input["models"].every((model) => typeof model === "string")
-        ? { models: input["models"] }
-        : {}),
-      ...(Array.isArray(input["modes"]) && input["modes"].every((mode) => typeof mode === "string")
-        ? { modes: input["modes"] }
-        : {}),
-      ...(input["requiredMode"] === null || typeof input["requiredMode"] === "string"
-        ? { requiredMode: input["requiredMode"] }
-        : {}),
-      ...(input["crashAt"] === null || isCrashPoint(input["crashAt"])
-        ? { crashAt: input["crashAt"] }
-        : {}),
-      ...(input["metadataMode"] === "none" || input["metadataMode"] === "invalid-codex"
-        ? { metadataMode: input["metadataMode"] }
-        : {}),
-    });
-  } catch {
-    return defaults;
-  }
+  const decoded = decodeOverrides(value);
+  return Option.isSome(decoded) ? acpScenario(decoded.value) : defaults;
 };

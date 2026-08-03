@@ -154,61 +154,68 @@ export type AgentNode = typeof AgentNode.Type;
 
 export const ServerEvent = Schema.Union([
   Schema.Struct({
-    type: Schema.Literal("snapshot-required"),
+    type: Schema.tag("snapshot-required"),
     reason: Schema.String,
   }),
   Schema.Struct({
-    type: Schema.Literal("project-upserted"),
+    type: Schema.tag("project-upserted"),
     sequence: Sequence,
     project: Project,
   }),
   Schema.Struct({
-    type: Schema.Literal("project-removed"),
+    type: Schema.tag("project-removed"),
     sequence: Sequence,
     projectId: ProjectId,
   }),
   Schema.Struct({
-    type: Schema.Literal("thread-status"),
+    type: Schema.tag("thread-status"),
     sequence: Sequence,
     threadId: ThreadId,
     status: ThreadStatus,
   }),
   Schema.Struct({
-    type: Schema.Literal("thread-upserted"),
+    type: Schema.tag("thread-upserted"),
     sequence: Sequence,
     thread: Thread,
   }),
   Schema.Struct({
-    type: Schema.Literal("thread-removed"),
+    type: Schema.tag("thread-removed"),
     sequence: Sequence,
     threadId: ThreadId,
   }),
   Schema.Struct({
-    type: Schema.Literal("message-upserted"),
+    type: Schema.tag("message-upserted"),
     sequence: Sequence,
     message: Message,
   }),
   Schema.Struct({
-    type: Schema.Literal("tool-upserted"),
+    type: Schema.tag("tool-upserted"),
     sequence: Sequence,
     toolCall: ToolCall,
   }),
   Schema.Struct({
-    type: Schema.Literal("interaction-upserted"),
+    type: Schema.tag("interaction-upserted"),
     sequence: Sequence,
     interaction: PendingInteraction,
   }),
   Schema.Struct({
-    type: Schema.Literal("agent-node-upserted"),
+    type: Schema.tag("agent-node-upserted"),
     sequence: Sequence,
     node: AgentNode,
   }),
   Schema.Struct({
-    type: Schema.Literal("synchronized"),
+    type: Schema.tag("synchronized"),
     sequence: Sequence,
   }),
-]);
+]).pipe(Schema.toTaggedUnion("type"));
 export type ServerEvent = typeof ServerEvent.Type;
+
+/**
+ * Every frame that advances the journal cursor. `snapshot-required` is the one frame
+ * without a sequence, and naming the distinction here keeps consumers from re-deriving
+ * it with their own `Exclude` surgery.
+ */
+export type SequencedServerEvent = Exclude<ServerEvent, { readonly type: "snapshot-required" }>;
 
 export const CreateProjectRequest = Schema.Struct({
   commandId: CommandId,

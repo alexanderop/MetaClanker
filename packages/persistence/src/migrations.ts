@@ -25,6 +25,16 @@ const baseSchema = [
 
 export const runMigrations = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* migrate.pipe(
+    // Every DDL step and its version row commit together. Autocommitting them
+    // separately let a mid-run failure record versions whose statements never ran, so
+    // the guarded steps were then skipped on the next boot.
+    sql.withTransaction,
+  );
+}).pipe(Effect.withSpan("persistence.migrations"));
+
+const migrate = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
   yield* sql.unsafe(
     `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`,
   );
@@ -86,4 +96,4 @@ export const runMigrations = Effect.gen(function* () {
     (thread_id, continuation_safety)
     SELECT id, 'unsafe' FROM threads WHERE provider_session_id IS NOT NULL`;
   yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (9, datetime('now'))`;
-}).pipe(Effect.withSpan("persistence.migrations"));
+});

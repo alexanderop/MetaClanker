@@ -113,12 +113,18 @@ export interface LayoutPoint {
   readonly y: number;
 }
 
+/**
+ * Every node receives exactly one position, and no two share one. A node whose parent
+ * was filtered out of `nodes` is a root of what remains: treating only `parentId === null`
+ * as a root left orphans — and every member of a parent cycle — unplaced and stacked.
+ */
 export const createDeterministicLayout = (
   nodes: ReadonlyArray<AgentNode>,
 ): ReadonlyArray<LayoutPoint> => {
+  const present = new Set(nodes.map((node) => node.id));
   const byParent = new Map<string | null, AgentNode[]>();
   for (const node of nodes) {
-    const key = node.parentId;
+    const key = node.parentId !== null && present.has(node.parentId) ? node.parentId : null;
     const siblings = byParent.get(key) ?? [];
     siblings.push(node);
     byParent.set(key, siblings);
@@ -132,21 +138,30 @@ export const createDeterministicLayout = (
   }
 
   const points: LayoutPoint[] = [];
+  const placed = new Set<string>();
   const visit = (node: AgentNode, depth: number, lane: number): number => {
+    if (placed.has(node.id)) return lane;
+    placed.add(node.id);
     const children = byParent.get(node.id) ?? [];
     let nextLane = lane;
     for (const child of children) {
       nextLane = visit(child, depth + 1, nextLane);
     }
 
-    const ownLane = children.length === 0 ? nextLane : lane + (nextLane - lane - 1) / 2;
+    const ownLane = nextLane === lane ? nextLane : lane + (nextLane - lane - 1) / 2;
     points.push({ id: node.id, x: depth * 320, y: ownLane * 180 });
-    return children.length === 0 ? nextLane + 1 : nextLane;
+    return nextLane === lane ? nextLane + 1 : nextLane;
   };
 
+  // The lane cursor carries across roots; recounting placed roots let a second tree
+  // start inside the lanes the first one had already spent on its descendants.
+  let lane = 0;
   for (const root of byParent.get(null) ?? []) {
-    const lane = points.filter((point) => point.x === 0).length;
-    visit(root, 0, lane);
+    lane = visit(root, 0, lane);
+  }
+  // Anything still unplaced belongs to a parent cycle among the remaining nodes.
+  for (const node of nodes) {
+    lane = visit(node, 0, lane);
   }
 
   return points.toSorted((left, right) => left.id.localeCompare(right.id));

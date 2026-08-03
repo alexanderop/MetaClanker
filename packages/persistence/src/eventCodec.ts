@@ -167,25 +167,25 @@ const PersistedUserSettings = Schema.Struct({
 
 const EventData = Schema.Union([
   Schema.Struct({ ...EventBase, type: Schema.tag("project.upserted"), project: PersistedProject }),
-  Schema.Struct({ ...EventBase, type: Schema.Literal("project.removed"), projectId: ProjectId }),
-  Schema.Struct({ ...EventBase, type: Schema.Literal("thread.upserted"), thread: PersistedThread }),
+  Schema.Struct({ ...EventBase, type: Schema.tag("project.removed"), projectId: ProjectId }),
+  Schema.Struct({ ...EventBase, type: Schema.tag("thread.upserted"), thread: PersistedThread }),
   Schema.Struct({
     ...EventBase,
-    type: Schema.Literal("thread.status-changed"),
+    type: Schema.tag("thread.status-changed"),
     threadId: ThreadId,
     status: ThreadStatus,
     updatedAt: Schema.String,
   }),
-  Schema.Struct({ ...EventBase, type: Schema.Literal("thread.removed"), threadId: ThreadId }),
+  Schema.Struct({ ...EventBase, type: Schema.tag("thread.removed"), threadId: ThreadId }),
   Schema.Struct({
     ...EventBase,
-    type: Schema.Literal("turn.started"),
+    type: Schema.tag("turn.started"),
     threadId: ThreadId,
     turnId: TurnId,
   }),
   Schema.Struct({
     ...EventBase,
-    type: Schema.Literal("turn.completed"),
+    type: Schema.tag("turn.completed"),
     threadId: ThreadId,
     turnId: TurnId,
     outcome: Schema.Literals([
@@ -198,46 +198,52 @@ const EventData = Schema.Union([
   }),
   Schema.Struct({
     ...EventBase,
-    type: Schema.Literal("message.upserted"),
+    type: Schema.tag("message.upserted"),
     message: MessageWithoutSequence,
   }),
   Schema.Struct({
     ...EventBase,
-    type: Schema.Literal("tool.upserted"),
+    type: Schema.tag("tool.upserted"),
     toolCall: ToolCallWithoutSequence,
   }),
   Schema.Struct({
     ...EventBase,
-    type: Schema.Literal("interaction.upserted"),
+    type: Schema.tag("interaction.upserted"),
     interaction: InteractionWithoutSequence,
   }),
   Schema.Struct({
     ...EventBase,
-    type: Schema.Literal("agent-node.upserted"),
+    type: Schema.tag("agent-node.upserted"),
     node: PersistedAgentNode,
   }),
   Schema.Struct({
     ...EventBase,
-    type: Schema.Literal("checkpoint.saved"),
+    type: Schema.tag("checkpoint.saved"),
     record: PersistedCheckpointRecord,
   }),
   Schema.Struct({
     ...EventBase,
-    type: Schema.Literal("settings.saved"),
+    type: Schema.tag("settings.saved"),
     settings: PersistedUserSettings,
   }),
 ]).pipe(Schema.toTaggedUnion("type"));
 
 export const UnsequencedDomainEventSchema = EventData;
 
-export const eventThreadId = (event: UnsequencedDomainEvent): ThreadId | null => {
-  if (event.type === "project.upserted" || event.type === "project.removed") return null;
-  if (event.type === "settings.saved") return null;
-  if (event.type === "thread.upserted") return event.thread.id;
-  if (event.type === "message.upserted") return event.message.threadId;
-  if (event.type === "tool.upserted") return event.toolCall.threadId;
-  if (event.type === "interaction.upserted") return event.interaction.threadId;
-  if (event.type === "agent-node.upserted") return event.node.threadId;
-  if (event.type === "checkpoint.saved") return event.record.threadId;
-  return event.threadId;
-};
+/** Exhaustive by construction: a new union member fails to compile until it is handled. */
+export const eventThreadId = (event: UnsequencedDomainEvent): ThreadId | null =>
+  UnsequencedDomainEventSchema.match(event, {
+    "project.upserted": () => null,
+    "project.removed": () => null,
+    "settings.saved": () => null,
+    "thread.upserted": (value) => value.thread.id,
+    "thread.status-changed": (value) => value.threadId,
+    "thread.removed": (value) => value.threadId,
+    "turn.started": (value) => value.threadId,
+    "turn.completed": (value) => value.threadId,
+    "message.upserted": (value) => value.message.threadId,
+    "tool.upserted": (value) => value.toolCall.threadId,
+    "interaction.upserted": (value) => value.interaction.threadId,
+    "agent-node.upserted": (value) => value.node.threadId,
+    "checkpoint.saved": (value) => value.record.threadId,
+  });

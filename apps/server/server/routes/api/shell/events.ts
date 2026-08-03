@@ -3,6 +3,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { Sequence } from "@metaclanker/contracts/ids";
+import type { ServerEvent } from "@metaclanker/contracts/wire";
 import { EventCursorQuery, TicketResponse } from "@metaclanker/contracts/wire";
 import { domainEventToShellEvent } from "@metaclanker/domain/events";
 
@@ -10,6 +11,7 @@ import { consumeWebSocketTicket } from "../../../utils/auth.js";
 import { readEventReplay } from "../../../utils/event-replay.js";
 import { subscribeToShell } from "../../../utils/hub.js";
 import { createReplaySocketState } from "../../../utils/replay-socket-state.js";
+import { encodeServerEvent } from "../../../utils/socket-frame.js";
 import { runApplication } from "../../../utils/runtime.js";
 
 const noop = (): void => undefined;
@@ -52,16 +54,24 @@ export default defineWebSocketHandler({
       unsubscribe();
       delete peer.context[cleanupContextKey];
     };
+    const send = (event: typeof ServerEvent.Type): void => {
+      if (!active) return;
+      const frame = encodeServerEvent(event);
+      if (frame === null) {
+        cleanup();
+        peer.close(4500, "Server event could not be encoded");
+        return;
+      }
+      peer.send(frame);
+    };
     const requireSnapshot = (reason: "buffer-overflow" | "cursor-too-old" | "replay-failed") => {
       if (!active) return;
-      peer.send(JSON.stringify({ type: "snapshot-required", reason }));
+      send({ type: "snapshot-required", reason });
       cleanup();
       peer.close(4409, "Fresh snapshot required");
     };
     const replayState = createReplaySocketState({
-      send: (event) => {
-        if (active) peer.send(JSON.stringify(event));
-      },
+      send,
       overflow: () => requireSnapshot("buffer-overflow"),
     });
     unsubscribe = await subscribeToShell(replayState.push);
@@ -72,14 +82,14 @@ export default defineWebSocketHandler({
         const replayed = new Set<number>();
         for (const event of replay.events) {
           replayed.add(event.sequence);
-          if (active) peer.send(JSON.stringify(event));
+          send(event);
         }
         if (!replay.complete) {
           requireSnapshot("cursor-too-old");
           return;
         }
-        if (replayState.synchronize(replay.cursor, replayed) && active) {
-          peer.send(JSON.stringify({ type: "synchronized", sequence: replay.cursor }));
+        if (replayState.synchronize(replay.cursor, replayed)) {
+          send({ type: "synchronized", sequence: replay.cursor });
         }
       })
       .catch(() => {

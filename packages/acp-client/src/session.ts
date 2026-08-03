@@ -66,6 +66,9 @@ export const realAdapterCommands = (): Readonly<Record<Provider, AdapterCommand>
   claude: { command: process.execPath, args: [adapterEntry("claude")] },
 });
 
+/** A turn may legitimately run for hours; session setup may not. */
+const ACP_SETUP_TIMEOUT = "60 seconds";
+
 const runtimeFailure = (code: AcpRuntimeError["code"], cause: unknown): AcpRuntimeError =>
   new AcpRuntimeError({ code, message: cause instanceof Error ? cause.message : String(cause) });
 
@@ -128,11 +131,20 @@ type SessionEventItem =
 
 const writableToChild = (child: ReturnType<typeof spawn>): WritableStream<Uint8Array> => {
   const stdin = child.stdin;
+  let streamError: Error | null = null;
   // Node emits stream errors even when the write callback receives the same error.
-  stdin?.on("error", () => undefined);
+  // Remember the first rather than discarding every one of them: an error that arrives
+  // between writes would otherwise leave the next write reporting success.
+  stdin?.on("error", (error: Error) => {
+    streamError ??= error;
+  });
   return new WritableStream({
     write(chunk) {
       return new Promise((resolve, reject) => {
+        if (streamError !== null) {
+          reject(streamError);
+          return;
+        }
         if (stdin === null || stdin.destroyed || stdin.writableEnded) {
           reject(new Error("ACP adapter stdin is unavailable"));
           return;
@@ -147,31 +159,53 @@ const writableToChild = (child: ReturnType<typeof spawn>): WritableStream<Uint8A
 };
 
 const readableFromChild = (child: ReturnType<typeof spawn>): ReadableStream<Uint8Array> => {
+  const stdout = child.stdout;
   let finished = false;
-  return new ReadableStream({
+  let onData: ((chunk: Buffer) => void) | undefined;
+  let onEnd: (() => void) | undefined;
+  let onError: ((error: Error) => void) | undefined;
+  const detach = (): void => {
+    if (stdout === null) return;
+    if (onData !== undefined) stdout.off("data", onData);
+    if (onEnd !== undefined) stdout.off("end", onEnd);
+    if (onError !== undefined) stdout.off("error", onError);
+  };
+  return new ReadableStream<Uint8Array>({
     start(controller) {
-      const stdout = child.stdout;
       if (stdout === null) {
         finished = true;
         controller.error(new Error("ACP adapter stdout is unavailable"));
         return;
       }
-      stdout.on("data", (chunk: Buffer) => {
-        if (!finished) controller.enqueue(chunk);
-      });
-      stdout.on("end", () => {
+      onData = (chunk: Buffer) => {
+        if (finished) return;
+        controller.enqueue(chunk);
+        // Honour the consumer's queue instead of buffering the adapter's whole output.
+        if ((controller.desiredSize ?? 1) <= 0) stdout.pause();
+      };
+      onEnd = () => {
         if (finished) return;
         finished = true;
+        detach();
         controller.close();
-      });
-      stdout.on("error", (error) => {
+      };
+      onError = (error: Error) => {
         if (finished) return;
         finished = true;
+        detach();
         controller.error(error);
-      });
+      };
+      stdout.on("data", onData);
+      stdout.on("end", onEnd);
+      stdout.on("error", onError);
+    },
+    pull() {
+      if (!finished) stdout?.resume();
     },
     cancel() {
       finished = true;
+      detach();
+      stdout?.destroy();
     },
   });
 };
@@ -244,6 +278,11 @@ const openSessionInScope = (
       terminateChildEffect,
     );
     const diagnostics: string[] = [];
+    /** Already redacted on ingest; bounded so a failure message stays readable. */
+    const diagnosticsTail = (): string => {
+      const tail = diagnostics.join("").trimEnd().slice(-500);
+      return tail.length === 0 ? "" : `: ${tail}`;
+    };
     if (child.pid !== undefined) adapter.onSpawn?.(child.pid);
     let diagnosticBytes = 0;
     child.stderr.setEncoding("utf8");
@@ -278,6 +317,16 @@ const openSessionInScope = (
       modes: [],
     };
 
+    /**
+     * SDK callbacks run outside the runtime and cannot await anything. They request
+     * termination here so the work belongs to a fiber the session scope owns, rather
+     * than to a floating promise nothing can cancel or observe.
+     */
+    const terminationRequested = yield* Deferred.make<void>();
+    yield* Effect.forkScoped(
+      Deferred.await(terminationRequested).pipe(Effect.andThen(terminateChildEffect(child))),
+    );
+
     const overflow = (): AcpRuntimeError =>
       runtimeFailure("event-overflow", "ACP event ingestion exceeded its bounded capacity");
 
@@ -287,7 +336,7 @@ const openSessionInScope = (
       if (terminalFailure !== null) return false;
       terminalFailure = overflow();
       Queue.failCauseUnsafe(eventQueue, Cause.fail(terminalFailure));
-      void terminateChild(child);
+      Deferred.doneUnsafe(terminationRequested, Effect.void);
       return false;
     };
 
@@ -476,38 +525,76 @@ const openSessionInScope = (
       Effect.withSpan("AcpSessionHandle.close"),
     );
 
-    const releaseSessionResources = (cause?: unknown): void => {
-      activeTurnId = null;
-      expirePermissions();
-      if (closed) return;
-      const failure = runtimeFailure("disconnected", cause ?? "ACP connection closed");
-      terminalFailure ??= failure;
-      Queue.failCauseUnsafe(eventQueue, Cause.fail(failure));
-      void terminateChild(child);
-    };
-    connection.closed.then(
-      () => releaseSessionResources(),
-      (cause) => releaseSessionResources(cause),
+    const releaseSessionResources = (cause: unknown): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        activeTurnId = null;
+        expirePermissions();
+        if (closed) return;
+        // The connection dies as soon as stdout ends, which is before Node reports the
+        // child's exit status. Settling the child first is what makes an adapter crash
+        // reportable as a process exit rather than a generic disconnect.
+        yield* terminateChildEffect(child);
+        const exited = child.exitCode !== null || child.signalCode !== null;
+        terminalFailure ??= exited
+          ? runtimeFailure(
+              "process-exit",
+              `The ${input.provider} adapter exited (${child.signalCode ?? String(child.exitCode)})${diagnosticsTail()}`,
+            )
+          : runtimeFailure("disconnected", cause ?? "ACP connection closed");
+        Queue.failCauseUnsafe(eventQueue, Cause.fail(terminalFailure));
+      });
+
+    yield* Effect.forkScoped(
+      Effect.tryPromise({
+        try: () => connection.closed,
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.matchEffect({
+          onFailure: releaseSessionResources,
+          onSuccess: () => releaseSessionResources(undefined),
+        }),
+      ),
     );
 
+    /**
+     * The signal reaches the SDK as `cancellationSignal`, which emits `$/cancel_request`.
+     * Without it an interrupted fiber detaches and the adapter keeps working on a turn
+     * nobody is waiting for.
+     */
     const request = <A>(
       operationName: string,
-      operation: () => Promise<A>,
+      operation: (signal: AbortSignal) => Promise<A>,
     ): Effect.Effect<A, AcpRuntimeError> =>
       Effect.tryPromise({
         try: operation,
         catch: (cause) => runtimeFailure("disconnected", cause),
       }).pipe(Effect.withSpan(`acp.request.${operationName}`));
 
+    /** Session setup must not hang forever on an adapter that never answers. */
+    const setupRequest = <A>(
+      operationName: string,
+      operation: (signal: AbortSignal) => Promise<A>,
+    ): Effect.Effect<A, AcpRuntimeError> =>
+      request(operationName, operation).pipe(
+        Effect.timeout(ACP_SETUP_TIMEOUT),
+        Effect.catchTag("TimeoutError", () =>
+          Effect.fail(runtimeFailure("disconnected", `ACP ${operationName} timed out`)),
+        ),
+      );
+
     const initialize = Effect.gen(function* () {
-      const initialized = yield* request("initialize", () =>
-        connection.agent.request(acp.methods.agent.initialize, {
-          protocolVersion: acp.PROTOCOL_VERSION,
-          clientCapabilities: {
-            _meta: input.provider === "claude" ? { "subagent-transcript": true } : {},
+      const initialized = yield* setupRequest("initialize", (cancellationSignal) =>
+        connection.agent.request(
+          acp.methods.agent.initialize,
+          {
+            protocolVersion: acp.PROTOCOL_VERSION,
+            clientCapabilities: {
+              _meta: input.provider === "claude" ? { "subagent-transcript": true } : {},
+            },
+            clientInfo: { name: "MetaClanker", version: "0.1.0" },
           },
-          clientInfo: { name: "MetaClanker", version: "0.1.0" },
-        }),
+          { cancellationSignal },
+        ),
       );
       if (initialized.protocolVersion !== 1) {
         return yield* Effect.fail(
@@ -524,34 +611,35 @@ const openSessionInScope = (
       let setupConfigOptions: ReadonlyArray<acp.SessionConfigOption> | null | undefined;
       const existingSessionId = providerSessionId;
       if (existingSessionId === null) {
-        const created = yield* request("session.new", () =>
-          connection.agent.request(acp.methods.agent.session.new, {
-            cwd: input.cwd,
-            mcpServers: [],
-          }),
+        const created = yield* setupRequest("session.new", (cancellationSignal) =>
+          connection.agent.request(
+            acp.methods.agent.session.new,
+            { cwd: input.cwd, mcpServers: [] },
+            { cancellationSignal },
+          ),
         );
         providerSessionId = created.sessionId;
         setupModes = created.modes;
         setupConfigOptions = created.configOptions;
         ignoreReplay = false;
       } else if (advertised.resume) {
-        const resumed = yield* request("session.resume", () =>
-          connection.agent.request(acp.methods.agent.session.resume, {
-            sessionId: existingSessionId,
-            cwd: input.cwd,
-            mcpServers: [],
-          }),
+        const resumed = yield* setupRequest("session.resume", (cancellationSignal) =>
+          connection.agent.request(
+            acp.methods.agent.session.resume,
+            { sessionId: existingSessionId, cwd: input.cwd, mcpServers: [] },
+            { cancellationSignal },
+          ),
         );
         setupModes = resumed.modes;
         setupConfigOptions = resumed.configOptions;
         ignoreReplay = false;
       } else if (advertised.load) {
-        const loaded = yield* request("session.load", () =>
-          connection.agent.request(acp.methods.agent.session.load, {
-            sessionId: existingSessionId,
-            cwd: input.cwd,
-            mcpServers: [],
-          }),
+        const loaded = yield* setupRequest("session.load", (cancellationSignal) =>
+          connection.agent.request(
+            acp.methods.agent.session.load,
+            { sessionId: existingSessionId, cwd: input.cwd, mcpServers: [] },
+            { cancellationSignal },
+          ),
         );
         setupModes = loaded.modes;
         setupConfigOptions = loaded.configOptions;
@@ -588,12 +676,12 @@ const openSessionInScope = (
               requested.categories.includes(candidate.id)),
         );
         if (option === undefined) continue;
-        yield* request("session.setConfigOption", () =>
-          connection.agent.request(acp.methods.agent.session.setConfigOption, {
-            sessionId,
-            configId: option.id,
-            value,
-          }),
+        yield* setupRequest("session.setConfigOption", (cancellationSignal) =>
+          connection.agent.request(
+            acp.methods.agent.session.setConfigOption,
+            { sessionId, configId: option.id, value },
+            { cancellationSignal },
+          ),
         );
       }
       if (
@@ -601,11 +689,12 @@ const openSessionInScope = (
         setupModes?.availableModes.some((mode) => mode.id === permissionMode) === true &&
         setupModes.currentModeId !== permissionMode
       ) {
-        yield* request("session.setMode", () =>
-          connection.agent.request(acp.methods.agent.session.setMode, {
-            sessionId,
-            modeId: permissionMode,
-          }),
+        yield* setupRequest("session.setMode", (cancellationSignal) =>
+          connection.agent.request(
+            acp.methods.agent.session.setMode,
+            { sessionId, modeId: permissionMode },
+            { cancellationSignal },
+          ),
         );
       }
       const availableConfigValues = (category: string): ReadonlyArray<string> =>
@@ -666,7 +755,9 @@ const openSessionInScope = (
           promptActive = true;
           promptUsed = true;
           activeTurnId = promptInput.turnId;
-          return request("session.prompt", async () => {
+          // Deliberately no deadline: a turn may legitimately run for hours. The
+          // cancellation signal is what makes interrupting one reach the adapter.
+          return request("session.prompt", async (cancellationSignal) => {
             const blocks: acp.ContentBlock[] = [
               { type: "text", text: promptInput.text },
               ...promptInput.attachments.map(
@@ -676,6 +767,7 @@ const openSessionInScope = (
             const response = await connection.agent.request<acp.PromptResponse, acp.PromptRequest>(
               acp.methods.agent.session.prompt,
               { sessionId, prompt: blocks },
+              { cancellationSignal },
             );
             return { stopReason: outcome(response.stopReason) };
           }).pipe(Effect.ensuring(Effect.sync(() => (promptActive = false))));

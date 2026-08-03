@@ -113,7 +113,7 @@ const app = acp
     sessions.set(params.sessionId, params.modeId);
     return {};
   })
-  .onRequest(acp.methods.agent.session.prompt, async ({ client, params }) => {
+  .onRequest(acp.methods.agent.session.prompt, async ({ client, params, signal }) => {
     if (!sessions.has(params.sessionId)) {
       throw new Error("Unknown fake session");
     }
@@ -187,6 +187,11 @@ const app = acp
     });
     const cancellation = createCancellation();
     cancellations.set(params.sessionId, cancellation.resolve);
+    // `$/cancel_request` aborts the incoming request signal. Reporting it as an update
+    // makes protocol-level cancellation observable to the client under test.
+    const protocolCancellation = new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    });
     const permission = client.request(acp.methods.client.session.requestPermission, {
       sessionId: params.sessionId,
       toolCall: {
@@ -203,8 +208,19 @@ const app = acp
     const outcome = await Promise.race([
       permission.then((value) => ({ type: "permission", value }) as const),
       cancellation.promise.then(() => ({ type: "cancelled" }) as const),
+      protocolCancellation.then(() => ({ type: "protocol-cancelled" }) as const),
     ]);
     cancellations.delete(params.sessionId);
+    if (outcome.type === "protocol-cancelled") {
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "protocol cancellation received" },
+        },
+      });
+      return { stopReason: "cancelled" };
+    }
     if (
       outcome.type === "cancelled" ||
       outcome.value.outcome.outcome === "cancelled" ||

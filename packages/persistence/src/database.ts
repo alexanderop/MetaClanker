@@ -1,6 +1,6 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import type * as SqlError from "effect/unstable/sql/SqlError";
 import * as SqliteClient from "@effect/sql-sqlite-node/SqliteClient";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -54,10 +54,57 @@ const storeError = (
     message: cause instanceof Error ? cause.message : String(cause),
   });
 
+/**
+ * Widens infrastructure failures once, by tag. A `StoreError` raised deliberately —
+ * `"conflict"`, `"not-found"` — passes through with its code intact; a blanket
+ * `mapError` used to rewrite all eight conflict sites to `"persistence"`.
+ */
+const asStoreError =
+  (operation: string) =>
+  <A, R>(
+    effect: Effect.Effect<A, StoreError | SqlError.SqlError | Schema.SchemaError, R>,
+  ): Effect.Effect<A, StoreError, R> =>
+    Effect.catchTags(effect, {
+      SqlError: (cause) => Effect.fail(storeError(operation, cause)),
+      SchemaError: (cause) => Effect.fail(storeError(operation, cause)),
+    });
+
+interface SchemaIssueNode {
+  readonly _tag?: unknown;
+  readonly path?: unknown;
+  readonly issue?: unknown;
+  readonly issues?: unknown;
+  readonly ast?: { readonly _tag?: unknown };
+}
+
+/**
+ * Renders where a decode failed and what was expected, never what arrived: a
+ * `SchemaError`'s own message embeds the rejected value, which for this store means
+ * prompt text, tool output, and absolute paths landing in logs.
+ */
+const describeSchemaIssue = (issue: unknown, path: ReadonlyArray<string> = []): string => {
+  if (typeof issue !== "object" || issue === null) return "invalid value";
+  const node = issue as SchemaIssueNode;
+  const at = Array.isArray(node.path)
+    ? [...path, ...node.path.map((segment) => String(segment))]
+    : path;
+  if (Array.isArray(node.issues) && node.issues.length > 0) {
+    return node.issues.map((child) => describeSchemaIssue(child, at)).join("; ");
+  }
+  if (node.issue !== undefined) return describeSchemaIssue(node.issue, at);
+  const expected = typeof node.ast?._tag === "string" ? node.ast._tag : String(node._tag);
+  return at.length === 0 ? `expected ${expected}` : `expected ${expected} at ${at.join(".")}`;
+};
+
 const decode = <A>(operation: string, schema: Schema.ConstraintDecoder<A, never>, value: unknown) =>
   Schema.decodeUnknownEffect(schema)(value).pipe(
     Effect.mapError(
-      (cause) => new StoreError({ code: "persistence", operation, message: String(cause) }),
+      (cause) =>
+        new StoreError({
+          code: "persistence",
+          operation,
+          message: describeSchemaIssue(cause.issue),
+        }),
     ),
   );
 
@@ -68,7 +115,7 @@ const decodeJson = <A>(
 ) =>
   Effect.try({
     try: () => JSON.parse(value) as unknown,
-    catch: (cause) => new StoreError({ code: "persistence", operation, message: String(cause) }),
+    catch: () => new StoreError({ code: "persistence", operation, message: "invalid stored JSON" }),
   }).pipe(Effect.flatMap((parsed) => decode(operation, schema, parsed)));
 
 const ProjectRow = Schema.Struct({
@@ -329,7 +376,7 @@ const makeStore = Effect.gen(function* () {
   const findReceipt: MetaClankerStore["findReceipt"] = (commandId) =>
     sql<ReceiptRow>`SELECT command_id, status, aggregate_id, reason, created_at
       FROM command_receipts WHERE command_id = ${commandId}`.pipe(
-      Effect.mapError((cause) => storeError("find command receipt", cause)),
+      asStoreError("find command receipt"),
       Effect.flatMap((rows) => decode("find command receipt", Schema.Array(ReceiptRow), rows)),
       Effect.map((rows) => (rows[0] === undefined ? null : receiptFromRow(rows[0]))),
     );
@@ -339,7 +386,7 @@ const makeStore = Effect.gen(function* () {
       (command_id, status, aggregate_id, reason, created_at)
       VALUES (${receipt.commandId}, ${receipt.status}, ${receipt.aggregateId}, ${receipt.reason}, ${receipt.createdAt})`.pipe(
       Effect.asVoid,
-      Effect.mapError((cause) => storeError("save command receipt", cause)),
+      asStoreError("save command receipt"),
     );
 
   const findInteractionById = (id: PendingInteractionId) =>
@@ -350,7 +397,7 @@ const makeStore = Effect.gen(function* () {
       const decoded = yield* decode("find interaction", Schema.Array(InteractionRow), rows);
       const row = decoded[0];
       return row === undefined ? null : yield* interactionFromRow(row);
-    }).pipe(Effect.mapError((cause) => storeError("find interaction", cause)));
+    }).pipe(asStoreError("find interaction"));
 
   const createProject: MetaClankerStore["createProject"] = (input) =>
     Effect.gen(function* () {
@@ -413,20 +460,17 @@ const makeStore = Effect.gen(function* () {
         return yield* Effect.fail(storeError("create project", "Project was not persisted"));
       }
       return { record: projectFromRow(row), eventSequence };
-    }).pipe(
-      sql.withTransaction,
-      Effect.mapError((cause) => storeError("create project", cause)),
-    );
+    }).pipe(sql.withTransaction, asStoreError("create project"));
 
   const getProject = (id: ProjectId) =>
     sql<ProjectRow>`SELECT id, name, path, git_branch, git_status, hidden, sort_order,
       created_at FROM projects WHERE id = ${id}`.pipe(
-      Effect.mapError((cause) => storeError("get project", cause)),
+      asStoreError("get project"),
       Effect.flatMap((rows) => decode("get project", Schema.Array(ProjectRow), rows)),
       Effect.flatMap((rows) => {
         const row = rows[0];
         return row === undefined
-          ? Effect.fail(storeError("get project", "Project not found"))
+          ? Effect.fail(storeError("get project", "Project not found", "not-found"))
           : Effect.succeed(projectFromRow(row));
       }),
     );
@@ -434,12 +478,12 @@ const makeStore = Effect.gen(function* () {
   const getThreadRow = (id: ThreadId) =>
     sql<ThreadRow>`SELECT id, project_id, provider, title, status, model, provider_session_id, archived,
       created_at, updated_at FROM threads WHERE id = ${id}`.pipe(
-      Effect.mapError((cause) => storeError("get thread", cause)),
+      asStoreError("get thread"),
       Effect.flatMap((rows) => decode("get thread", Schema.Array(ThreadRow), rows)),
       Effect.flatMap((rows) => {
         const row = rows[0];
         return row === undefined
-          ? Effect.fail(storeError("get thread", "Thread not found"))
+          ? Effect.fail(storeError("get thread", "Thread not found", "not-found"))
           : Effect.succeed(threadFromRow(row));
       }),
     );
@@ -448,24 +492,27 @@ const makeStore = Effect.gen(function* () {
     Effect.gen(function* () {
       const eventId = crypto.randomUUID();
       const receivedAt = new Date().toISOString();
+      // Encoded through the same schema the read path decodes with. Writing raw JSON let
+      // a value the schema rejects — a negative `Schema.Natural`, say — reach the journal
+      // and become permanently undecodable at crash recovery.
+      const payload = yield* Schema.encodeEffect(UnsequencedDomainEventSchema)(event).pipe(
+        Effect.mapError((cause) => storeError("append event", describeSchemaIssue(cause.issue))),
+      );
       yield* sql`INSERT INTO events
         (schema_version, event_id, thread_id, type, payload_json, received_at)
-        VALUES (1, ${eventId}, ${eventThreadId(event)}, ${event.type}, ${JSON.stringify(event)},
+        VALUES (1, ${eventId}, ${eventThreadId(event)}, ${event.type}, ${JSON.stringify(payload)},
           ${receivedAt})`;
       const rows = yield* sql<{
         readonly sequence: number;
       }>`SELECT last_insert_rowid() AS sequence`;
       return yield* decode("append event", Sequence, rows[0]?.sequence);
-    }).pipe(
-      Effect.mapError((cause) => storeError("append event", cause)),
-      Effect.withSpan("persistence.appendEvent"),
-    );
+    }).pipe(asStoreError("append event"), Effect.withSpan("persistence.appendEvent"));
 
   const readEvents: MetaClankerStore["readEvents"] = (afterSequence, limit) =>
     sql<EventRow>`SELECT sequence, schema_version, event_id, payload_json, received_at
       FROM events WHERE schema_version = 1 AND sequence > ${afterSequence}
       ORDER BY sequence LIMIT ${limit}`.pipe(
-      Effect.mapError((cause) => storeError("read events", cause)),
+      asStoreError("read events"),
       Effect.flatMap((rows) => decode("event rows", Schema.Array(EventRow), rows)),
       Effect.flatMap((rows) =>
         Effect.forEach(rows, (row) =>
@@ -488,7 +535,7 @@ const makeStore = Effect.gen(function* () {
           ),
         ),
       ),
-      Effect.mapError((cause) => storeError("read events", cause)),
+      asStoreError("read events"),
     );
 
   yield* Effect.gen(function* () {
@@ -753,7 +800,11 @@ const makeStore = Effect.gen(function* () {
   }).pipe(sql.withTransaction);
 
   const service: MetaClankerStore = {
+    // Transactional, and the sequence is read first: a snapshot stamped with a sequence
+    // that already covers a row it did not observe is never replayed by the sync
+    // protocol, which only delivers events `> afterSequence`.
     shellSnapshot: Effect.gen(function* () {
+      const sequence = yield* latestSequence;
       const projectRows = yield* sql<ProjectRow>`SELECT id, name, path, git_branch, git_status,
         hidden, sort_order, created_at FROM projects ORDER BY sort_order, created_at`;
       const threadRows =
@@ -761,13 +812,12 @@ const makeStore = Effect.gen(function* () {
         provider_session_id, archived, created_at, updated_at FROM threads ORDER BY updated_at DESC`;
       const projects = yield* decode("shell projects", Schema.Array(ProjectRow), projectRows);
       const threads = yield* decode("shell threads", Schema.Array(ThreadRow), threadRows);
-      const sequence = yield* latestSequence;
       return {
         projects: projects.map(projectFromRow),
         threads: threads.map(threadFromRow),
         latestSequence: sequence,
       };
-    }).pipe(Effect.mapError((cause) => storeError("shell snapshot", cause))),
+    }).pipe(sql.withTransaction, asStoreError("shell snapshot")),
     listProviderModels: Effect.gen(function* () {
       const rows = yield* sql<{
         readonly provider: string;
@@ -775,7 +825,7 @@ const makeStore = Effect.gen(function* () {
       }>`SELECT provider, model FROM provider_models
         ORDER BY provider, model`;
       return yield* decode("provider models", Schema.Array(ProviderModelRow), rows);
-    }).pipe(Effect.mapError((cause) => storeError("list provider models", cause))),
+    }).pipe(asStoreError("list provider models")),
     replaceProviderModels: (provider, models, discoveredAt) =>
       Effect.gen(function* () {
         yield* sql`DELETE FROM provider_models WHERE provider = ${provider}`;
@@ -783,11 +833,7 @@ const makeStore = Effect.gen(function* () {
           yield* sql`INSERT INTO provider_models (provider, model, discovered_at)
             VALUES (${provider}, ${model}, ${discoveredAt})`;
         }
-      }).pipe(
-        sql.withTransaction,
-        Effect.asVoid,
-        Effect.mapError((cause) => storeError("replace provider models", cause)),
-      ),
+      }).pipe(sql.withTransaction, Effect.asVoid, asStoreError("replace provider models")),
     createProject,
     renameProject: (id, name) =>
       Effect.gen(function* () {
@@ -799,10 +845,7 @@ const makeStore = Effect.gen(function* () {
         });
         yield* sql`UPDATE projects SET name = ${name} WHERE id = ${id}`;
         return { record: project, eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("rename project", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("rename project")),
     updateProject: (id, input) =>
       Effect.gen(function* () {
         const current = yield* getProject(id);
@@ -820,10 +863,7 @@ const makeStore = Effect.gen(function* () {
         yield* sql`UPDATE projects SET name = ${project.name}, hidden = ${project.hidden ? 1 : 0},
           sort_order = ${project.order} WHERE id = ${id}`;
         return { record: project, eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("update project", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("update project")),
     removeProject: (id) =>
       Effect.gen(function* () {
         yield* getProject(id);
@@ -834,10 +874,7 @@ const makeStore = Effect.gen(function* () {
         });
         yield* sql`DELETE FROM projects WHERE id = ${id}`;
         return { record: id, eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("remove project", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("remove project")),
     createThread: (input) =>
       Effect.gen(function* () {
         const receipt = yield* findReceipt(input.commandId);
@@ -877,10 +914,7 @@ const makeStore = Effect.gen(function* () {
           });
         }
         return { record: yield* getThreadRow(threadId), eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("create thread", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("create thread")),
     startThread: (input) =>
       Effect.gen(function* () {
         const receipt = yield* findReceipt(input.commandId);
@@ -968,10 +1002,7 @@ const makeStore = Effect.gen(function* () {
           acceptedNow: true,
           threadEventSequence,
         };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("start thread", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("start thread")),
     startTurn: (input) =>
       Effect.gen(function* () {
         const receipt = yield* findReceipt(input.commandId);
@@ -1089,10 +1120,7 @@ const makeStore = Effect.gen(function* () {
           messageEventSequence,
           nodeEventSequence,
         };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("start turn", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("start turn")),
     admitCancel: (input) =>
       Effect.gen(function* () {
         const receipt = yield* findReceipt(input.commandId);
@@ -1135,10 +1163,7 @@ const makeStore = Effect.gen(function* () {
           eventSequence,
           leaseId: input.leaseId,
         } as const;
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("admit cancellation", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("admit cancellation")),
     markCancelAwaiting: (turnId, leaseId, updatedAt) =>
       sql`UPDATE side_effect_intents
         SET phase = 'awaiting-provider', updated_at = ${updatedAt}
@@ -1146,7 +1171,7 @@ const makeStore = Effect.gen(function* () {
           AND lease_id = ${leaseId}
         RETURNING id`.pipe(
         Effect.map((result) => result.length === 1),
-        Effect.mapError((cause) => storeError("mark cancellation awaiting", cause)),
+        asStoreError("mark cancellation awaiting"),
       ),
     markCancelUncertain: (turnId, leaseId, updatedAt) =>
       sql`UPDATE side_effect_intents
@@ -1156,7 +1181,7 @@ const makeStore = Effect.gen(function* () {
           AND lease_id = ${leaseId}
         RETURNING id`.pipe(
         Effect.map((result) => result.length === 1),
-        Effect.mapError((cause) => storeError("mark cancellation uncertain", cause)),
+        asStoreError("mark cancellation uncertain"),
       ),
     admitRestore: (input) =>
       Effect.gen(function* () {
@@ -1215,10 +1240,7 @@ const makeStore = Effect.gen(function* () {
           undoCheckpointId: input.undoCheckpointId,
           leaseId: input.leaseId,
         } as const;
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("admit restore", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("admit restore")),
     completeRestore: (commandId, leaseId, record) =>
       Effect.gen(function* () {
         const completed = yield* sql<{ readonly id: string }>`UPDATE side_effect_intents
@@ -1235,10 +1257,7 @@ const makeStore = Effect.gen(function* () {
             ${JSON.stringify(record.checkpoint)})
           ON CONFLICT(id) DO UPDATE SET checkpoint_json = excluded.checkpoint_json`;
         return record;
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("complete restore", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("complete restore")),
     markRestoreUncertain: (commandId, leaseId, threadId, updatedAt) =>
       Effect.gen(function* () {
         const uncertain = yield* sql<{ readonly id: string }>`UPDATE side_effect_intents
@@ -1258,10 +1277,7 @@ const makeStore = Effect.gen(function* () {
         yield* sql`UPDATE threads SET status = 'recovery-required', updated_at = ${updatedAt}
           WHERE id = ${threadId}`;
         return eventSequence;
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("mark restore uncertain", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("mark restore uncertain")),
     completeTurn: (turnId, status, completedAt) =>
       Effect.gen(function* () {
         let intentState = "succeeded";
@@ -1274,7 +1290,7 @@ const makeStore = Effect.gen(function* () {
         const turns = yield* decode("complete turn", Schema.Array(TurnRow), rows);
         const turn = turns[0];
         if (turn === undefined) {
-          return yield* Effect.fail(storeError("complete turn", "Turn not found"));
+          return yield* Effect.fail(storeError("complete turn", "Turn not found", "not-found"));
         }
         yield* sql`UPDATE turns SET status = ${status}, completed_at = ${completedAt}
           WHERE id = ${turnId}`;
@@ -1293,11 +1309,7 @@ const makeStore = Effect.gen(function* () {
           turnId,
           outcome: status,
         });
-      }).pipe(
-        sql.withTransaction,
-        Effect.asVoid,
-        Effect.mapError((cause) => storeError("complete turn", cause)),
-      ),
+      }).pipe(sql.withTransaction, Effect.asVoid, asStoreError("complete turn")),
     claimPromptIntent: (turnId, leaseId, leaseExpiresAt) =>
       Effect.gen(function* () {
         const rows = yield* sql<PromptIntentRow>`UPDATE side_effect_intents
@@ -1322,7 +1334,7 @@ const makeStore = Effect.gen(function* () {
           attempt: row.attempt,
           phase: row.phase,
         } satisfies PromptIntentLease;
-      }).pipe(Effect.mapError((cause) => storeError("claim prompt intent", cause))),
+      }).pipe(asStoreError("claim prompt intent")),
     transitionPromptIntent: (turnId, leaseId, phase, updatedAt, failureReason) =>
       Effect.gen(function* () {
         const state = phase === "completed" ? "succeeded" : "running";
@@ -1334,9 +1346,11 @@ const makeStore = Effect.gen(function* () {
           WHERE id = ${turnId} AND kind = 'acp.prompt' AND state = 'running' AND lease_id = ${leaseId}
           RETURNING id`;
         return rows.length === 1;
-      }).pipe(Effect.mapError((cause) => storeError("transition prompt intent", cause))),
+      }).pipe(asStoreError("transition prompt intent")),
+    // Transactional, and the sequence is read first, for the same reason as `shellSnapshot`.
     getThread: (id) =>
       Effect.gen(function* () {
+        const sequence = yield* latestSequence;
         const threadRows = yield* sql<ThreadRow>`SELECT id, project_id, provider, title, status,
           model, provider_session_id, archived, created_at, updated_at FROM threads WHERE id = ${id}`;
         const decodedThreads = yield* decode("thread detail", Schema.Array(ThreadRow), threadRows);
@@ -1365,7 +1379,6 @@ const makeStore = Effect.gen(function* () {
         );
         const nodes = yield* decode("thread nodes", Schema.Array(AgentNodeRow), nodeRows);
         const decodedInteractions = yield* Effect.all(interactions.map(interactionFromRow));
-        const sequence = yield* latestSequence;
         return {
           thread: threadFromRow(thread),
           messages: messages.map(messageFromRow),
@@ -1374,7 +1387,7 @@ const makeStore = Effect.gen(function* () {
           agentNodes: nodes.map(agentNodeFromRow),
           latestSequence: sequence,
         } satisfies ThreadDetail;
-      }).pipe(Effect.mapError((cause) => storeError("thread detail", cause))),
+      }).pipe(sql.withTransaction, asStoreError("thread detail")),
     renameThread: (id, title) =>
       Effect.gen(function* () {
         const current = yield* getThreadRow(id);
@@ -1387,10 +1400,7 @@ const makeStore = Effect.gen(function* () {
         yield* sql`UPDATE threads SET title = ${thread.title}, updated_at = ${thread.updatedAt}
           WHERE id = ${id}`;
         return { record: thread, eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("rename thread", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("rename thread")),
     setThreadArchived: (id, archived) =>
       Effect.gen(function* () {
         const current = yield* getThreadRow(id);
@@ -1403,10 +1413,7 @@ const makeStore = Effect.gen(function* () {
         yield* sql`UPDATE threads SET archived = ${archived ? 1 : 0},
           updated_at = ${thread.updatedAt} WHERE id = ${id}`;
         return { record: thread, eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("archive thread", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("archive thread")),
     deleteThread: (id) =>
       Effect.gen(function* () {
         yield* getThreadRow(id);
@@ -1417,10 +1424,7 @@ const makeStore = Effect.gen(function* () {
         });
         yield* sql`DELETE FROM threads WHERE id = ${id}`;
         return { record: id, eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("delete thread", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("delete thread")),
     setThreadStatus: (id, status) =>
       Effect.gen(function* () {
         const updatedAt = new Date().toISOString();
@@ -1434,10 +1438,7 @@ const makeStore = Effect.gen(function* () {
         yield* sql`UPDATE threads SET status = ${status}, updated_at = ${updatedAt}
           WHERE id = ${id}`;
         return sequence;
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("set thread status", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("set thread status")),
     setProviderSession: (id, providerSessionId, continuationSafety) =>
       Effect.gen(function* () {
         const current = yield* getThreadRow(id);
@@ -1457,14 +1458,11 @@ const makeStore = Effect.gen(function* () {
           VALUES (${id}, ${continuationSafety})
           ON CONFLICT(thread_id) DO UPDATE SET continuation_safety = excluded.continuation_safety`;
         return { record: thread, eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("set provider session", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("set provider session")),
     getProviderContinuationSafety: (id) =>
       sql<ProviderSessionCapabilityRow>`SELECT continuation_safety
         FROM provider_session_capabilities WHERE thread_id = ${id}`.pipe(
-        Effect.mapError((cause) => storeError("get provider continuation safety", cause)),
+        asStoreError("get provider continuation safety"),
         Effect.flatMap((rows) =>
           decode("provider continuation safety", Schema.Array(ProviderSessionCapabilityRow), rows),
         ),
@@ -1493,10 +1491,7 @@ const makeStore = Effect.gen(function* () {
           return yield* Effect.fail(storeError("append message", "Message projection missing"));
         }
         return { record: messageFromRow(row), eventSequence: sequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("append message", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("append message")),
     upsertToolCall: (input: UpsertToolCallRecord) =>
       Effect.gen(function* () {
         const sequence = yield* appendEvent({
@@ -1518,10 +1513,7 @@ const makeStore = Effect.gen(function* () {
           return yield* Effect.fail(storeError("upsert tool", "Tool projection missing"));
         }
         return { record: toolCallFromRow(row), eventSequence: sequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("upsert tool", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("upsert tool")),
     upsertInteraction: (input) =>
       Effect.gen(function* () {
         const sequence = yield* appendEvent({
@@ -1550,10 +1542,7 @@ const makeStore = Effect.gen(function* () {
           record: yield* interactionFromRow(row),
           eventSequence: sequence,
         };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("upsert interaction", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("upsert interaction")),
     findInteraction: findInteractionById,
     resolveInteraction: (id, status) =>
       Effect.gen(function* () {
@@ -1564,7 +1553,9 @@ const makeStore = Effect.gen(function* () {
         const decoded = yield* decode("resolve interaction", Schema.Array(InteractionRow), rows);
         const row = decoded[0];
         if (row === undefined) {
-          return yield* Effect.fail(storeError("resolve interaction", "Interaction not found"));
+          return yield* Effect.fail(
+            storeError("resolve interaction", "Interaction not found", "not-found"),
+          );
         }
         const interaction = yield* interactionFromRow(row);
         const eventSequence = yield* appendEvent({
@@ -1585,10 +1576,7 @@ const makeStore = Effect.gen(function* () {
           },
         });
         return { record: interaction, eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("resolve interaction", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("resolve interaction")),
     admitInteractionResponse: (input) =>
       Effect.gen(function* () {
         const receipt = yield* findReceipt(input.commandId);
@@ -1609,7 +1597,7 @@ const makeStore = Effect.gen(function* () {
         const interaction = yield* findInteractionById(input.interactionId);
         if (interaction === null) {
           return yield* Effect.fail(
-            storeError("admit interaction response", "Interaction not found"),
+            storeError("admit interaction response", "Interaction not found", "not-found"),
           );
         }
         if (interaction.status !== "pending") {
@@ -1677,10 +1665,7 @@ const makeStore = Effect.gen(function* () {
           eventSequence,
           leaseId: input.leaseId,
         } as const;
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("admit interaction response", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("admit interaction response")),
     settleInteractionResponse: (
       interactionId,
       leaseId,
@@ -1693,7 +1678,7 @@ const makeStore = Effect.gen(function* () {
         const interaction = yield* findInteractionById(interactionId);
         if (interaction === null) {
           return yield* Effect.fail(
-            storeError("settle interaction response", "Interaction not found"),
+            storeError("settle interaction response", "Interaction not found", "not-found"),
           );
         }
         if (interaction.status !== "dispatching") {
@@ -1741,10 +1726,7 @@ const makeStore = Effect.gen(function* () {
         yield* sql`UPDATE pending_requests SET status = ${status}, sequence = ${eventSequence}
           WHERE id = ${interactionId} AND status = 'dispatching'`;
         return { record: { ...settled, sequence: eventSequence }, eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("settle interaction response", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("settle interaction response")),
     upsertAgentNode: (input) =>
       Effect.gen(function* () {
         const eventSequence = yield* appendEvent({
@@ -1769,22 +1751,16 @@ const makeStore = Effect.gen(function* () {
           ) WHERE id = ${input.parentId}`;
         }
         return { record: input, eventSequence };
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("upsert agent node", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("upsert agent node")),
     readEvents,
     findReceipt,
     saveReceipt,
     backup: (destination) =>
-      sqlite.backup(destination).pipe(
-        Effect.asVoid,
-        Effect.mapError((cause) => storeError("database backup", cause)),
-      ),
+      sqlite.backup(destination).pipe(Effect.asVoid, asStoreError("database backup")),
     getSettings: sql<{ readonly value_json: string }>`
       SELECT value_json FROM settings WHERE key = 'user'
     `.pipe(
-      Effect.mapError((cause) => storeError("get settings", cause)),
+      asStoreError("get settings"),
       Effect.flatMap((rows) => {
         const value = rows[0]?.value_json;
         if (value === undefined) return Effect.succeed(defaultUserSettings);
@@ -1799,10 +1775,7 @@ const makeStore = Effect.gen(function* () {
           ON CONFLICT(key) DO UPDATE SET schema_version = excluded.schema_version,
             value_json = excluded.value_json, updated_at = excluded.updated_at`;
         return settings;
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("save settings", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("save settings")),
     saveCheckpoint: (record) =>
       Effect.gen(function* () {
         yield* appendEvent({ origin: "git", type: "checkpoint.saved", record });
@@ -1812,14 +1785,11 @@ const makeStore = Effect.gen(function* () {
             ${JSON.stringify(record.checkpoint)})
           ON CONFLICT(id) DO UPDATE SET checkpoint_json = excluded.checkpoint_json`;
         return record;
-      }).pipe(
-        sql.withTransaction,
-        Effect.mapError((cause) => storeError("save checkpoint", cause)),
-      ),
+      }).pipe(sql.withTransaction, asStoreError("save checkpoint")),
     listCheckpoints: (threadId) =>
       sql<CheckpointRow>`SELECT checkpoint_json, thread_id, turn_id, kind FROM checkpoints
         WHERE thread_id = ${threadId} ORDER BY created_at`.pipe(
-        Effect.mapError((cause) => storeError("list checkpoints", cause)),
+        asStoreError("list checkpoints"),
         Effect.flatMap((rows) => decode("checkpoint rows", Schema.Array(CheckpointRow), rows)),
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) =>
@@ -1841,9 +1811,7 @@ const makeStore = Effect.gen(function* () {
   return service;
 });
 
-export const databaseLayer = (filename: string): Layer.Layer<Store, unknown> =>
-  Layer.effect(Store, makeStore).pipe(Layer.provide(SqliteClient.layer({ filename })));
-
-export class DatabaseRuntime extends Context.Service<DatabaseRuntime, MetaClankerStore>()(
-  "@metaclanker/persistence/DatabaseRuntime",
-) {}
+export const databaseLayer = (filename: string): Layer.Layer<Store, StoreError> =>
+  Layer.effect(Store, makeStore.pipe(asStoreError("open database"))).pipe(
+    Layer.provide(SqliteClient.layer({ filename })),
+  );

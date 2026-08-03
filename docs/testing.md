@@ -172,6 +172,13 @@ Effect programs and `it.live` only when a test genuinely needs the live clock, f
 Git, lock, or SQLite. Each test builds fresh scoped mutable infrastructure. Use `Effect.exit` to assert
 typed failures. `it.flakyTest`, Vitest retries, and elapsed-time success conditions remain prohibited.
 
+`ManagedRuntime` never appears in a test body. A runtime built there is untied to the test scope, so
+the first failing assertion leaks its database handle, subprocess, or listener for the rest of the
+run. Provide layers with `Effect.provide` inside the test's own effect instead, and acquire temporary
+directories and databases with `Effect.acquireRelease` so teardown is part of that scope. A test that
+drives a real subprocess uses `it.live`: `it.effect` installs `TestClock`, and the first `Effect.sleep`,
+`Effect.timeout`, or `Schedule` added to the code under test would otherwise hang the suite.
+
 The TypeScript baseline keeps `strict` enabled and must remain at least as strict as the Effect
 package requirement. ESLint warns on new named imports from the `effect` barrel; use namespace
 submodule imports such as `import * as Effect from "effect/Effect"` in new backend code. The warning

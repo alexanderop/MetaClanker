@@ -1,8 +1,6 @@
-import type { ServerEvent } from "@metaclanker/contracts/wire";
+import type { SequencedServerEvent, ServerEvent } from "@metaclanker/contracts/wire";
 
 export const replaySocketBufferLimit = 512;
-
-type SequencedServerEvent = Exclude<ServerEvent, { readonly type: "snapshot-required" }>;
 
 interface ReplaySocketStateOptions {
   readonly send: (event: SequencedServerEvent) => void;

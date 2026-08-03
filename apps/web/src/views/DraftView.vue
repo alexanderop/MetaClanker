@@ -16,6 +16,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "../ui/dialog/index.js";
+import { apiErrorMessage } from "../shared/apiError.js";
 import { Button } from "../ui/button/index.js";
 import { Eyebrow } from "../ui/eyebrow/index.js";
 import { Field, FieldError } from "../ui/field/index.js";
@@ -340,6 +341,7 @@ function useModelCatalog() {
 }
 
 function useSendDraft() {
+  const { t } = useI18n();
   const sending = ref(false);
   const sendError = ref<string | null>(null);
 
@@ -367,7 +369,7 @@ function useSendDraft() {
         document.querySelector<HTMLTextAreaElement>("#main-content textarea")?.focus(),
       );
     } catch (cause) {
-      sendError.value = cause instanceof Error ? cause.message : String(cause);
+      sendError.value = apiErrorMessage(cause, t("common.requestFailed"));
       await focusPrompt();
     } finally {
       sending.value = false;

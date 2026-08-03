@@ -27,6 +27,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../../ui/co
 import { Input } from "../../ui/input/index.js";
 import { NativeSelect } from "../../ui/native-select/index.js";
 import { api } from "../../shared/apiClient.js";
+import { apiErrorMessage } from "../../shared/apiError.js";
 import { useWorkspaceStore } from "../../shared/workspaceStore.js";
 
 defineProps<{ open: boolean; collapsed: boolean }>();
@@ -223,7 +224,7 @@ function useDirectoryBrowser() {
       directoryList.value?.querySelector("button")?.focus();
       return directoryBrowser.value.currentPath;
     } catch (cause) {
-      browseError.value = cause instanceof Error ? cause.message : String(cause);
+      browseError.value = apiErrorMessage(cause, t("common.requestFailed"));
       return null;
     } finally {
       browsing.value = false;
@@ -269,7 +270,7 @@ function useAddProject() {
       projectOpen.value = false;
       return project;
     } catch (cause) {
-      addError.value = cause instanceof Error ? cause.message : String(cause);
+      addError.value = apiErrorMessage(cause, t("common.requestFailed"));
       return null;
     } finally {
       saving.value = false;
@@ -353,7 +354,7 @@ function useSettingsDialog() {
       });
       settingsOpen.value = false;
     } catch (cause) {
-      settingsError.value = cause instanceof Error ? cause.message : t("settings.saveFailed");
+      settingsError.value = apiErrorMessage(cause, t("settings.saveFailed"));
     } finally {
       settingsSaving.value = false;
     }

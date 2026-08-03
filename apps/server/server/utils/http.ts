@@ -11,7 +11,6 @@ import {
 } from "h3";
 
 import { ApplicationError } from "@metaclanker/application/commands";
-import { ProjectPathError } from "@metaclanker/application/ports";
 
 export const decodeBody = async <A>(
   event: H3Event,
@@ -76,19 +75,6 @@ const applicationPublicError = (cause: unknown) => {
   return undefined;
 };
 
-const projectPathPublicError = (cause: unknown) => {
-  const decoded = Schema.decodeUnknownOption(ProjectPathError)(cause);
-  if (Option.isSome(decoded)) {
-    const reason = decoded.value.reason;
-    let message = "That server directory is not readable";
-    if (reason === "not-absolute") message = "Enter an absolute server path";
-    if (reason === "not-found") message = "That server path does not exist";
-    if (reason === "not-directory") message = "That server path is not a directory";
-    return createError({ statusCode: 422, message, data: { code: "invalid-project" } });
-  }
-  return undefined;
-};
-
 const isHttpError = (cause: unknown): cause is H3Error =>
   typeof cause === "object" &&
   cause !== null &&
@@ -99,8 +85,6 @@ export const publicError = (cause: unknown) => {
   if (isHttpError(cause)) return cause;
   const application = applicationPublicError(cause);
   if (application !== undefined) return application;
-  const projectPath = projectPathPublicError(cause);
-  if (projectPath !== undefined) return projectPath;
   return createError({ statusCode: 500, message: "Operation failed", data: { code: "internal" } });
 };
 

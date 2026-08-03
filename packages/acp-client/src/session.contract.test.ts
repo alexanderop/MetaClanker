@@ -58,7 +58,7 @@ const collectEventsUntilClose = (handle: AcpSessionHandle) =>
 
 describe("ACP process supervision", () => {
   for (const crashAt of ["initialize", "session-new"] as const) {
-    it.effect(`terminates the adapter when ${crashAt} acquisition fails`, () =>
+    it.live(`terminates the adapter when ${crashAt} acquisition fails`, () =>
       Effect.scoped(
         Effect.gen(function* () {
           let childPid: number | undefined;
@@ -100,7 +100,7 @@ describe("ACP process supervision", () => {
     );
   }
 
-  it.effect("interrupts a stalled initialization and terminates its adapter", () =>
+  it.live("interrupts a stalled initialization and terminates its adapter", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const spawned = yield* Deferred.make<number>();
@@ -132,7 +132,7 @@ describe("ACP process supervision", () => {
     ),
   );
 
-  it.effect("negotiates v1, streams updates, and resolves one live permission", () =>
+  it.live("negotiates v1, streams updates, and resolves one live permission", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const sessions = fakeSessions();
@@ -188,7 +188,43 @@ describe("ACP process supervision", () => {
     ),
   );
 
-  it.effect("keeps a session update that arrives after the prompt response", () =>
+  it.live("cancels the adapter's turn when the prompt fiber is interrupted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* openFakeSession(acpScenario(), "protocol-cancel");
+        const permissionRaised = yield* Deferred.make<void>();
+        const chunks: string[] = [];
+        const consumer = yield* handle.events.pipe(
+          Stream.runForEach((event) => {
+            if (event.type === "agent-message-chunk") chunks.push(event.chunk);
+            return event.type === "permission"
+              ? Deferred.succeed(permissionRaised, undefined)
+              : Effect.void;
+          }),
+          Effect.forkScoped,
+        );
+        const turn = yield* Effect.forkChild(
+          handle.prompt({
+            turnId: TurnId.make("turn:protocol-cancel"),
+            text: "Build it",
+            attachments: [],
+          }),
+        );
+
+        // The adapter is now blocked on a permission it will never receive.
+        yield* Deferred.await(permissionRaised);
+        yield* Fiber.interrupt(turn);
+
+        yield* handle.close;
+        yield* Fiber.join(consumer);
+        // Without `cancellationSignal` the interrupted fiber simply detaches and the
+        // adapter keeps working on a turn nobody is waiting for.
+        expect(chunks).toContain("protocol cancellation received");
+      }),
+    ),
+  );
+
+  it.live("keeps a session update that arrives after the prompt response", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const handle = yield* openFakeSession(acpScenario(), "trailing");
@@ -214,7 +250,7 @@ describe("ACP process supervision", () => {
     ),
   );
 
-  it.effect("honors omitted session capabilities without inventing support", () =>
+  it.live("honors omitted session capabilities without inventing support", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const handle = yield* openFakeSession(
@@ -236,36 +272,34 @@ describe("ACP process supervision", () => {
     ),
   );
 
-  it.effect(
-    "keeps chat running but degrades graph capability for malformed provider metadata",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const handle = yield* openFakeSession(
-            acpScenario({
-              prompt: { mode: "complete", message: "metadata drift" },
-              metadataMode: "invalid-codex",
-            }),
-            "metadata-drift",
-          );
-          const collected = collectEventsUntilClose(handle);
-          const consumer = yield* collected.start;
-          const result = yield* handle.prompt({
-            turnId: TurnId.make("turn:metadata-drift"),
-            text: "Keep chat available",
-            attachments: [],
-          });
-          yield* handle.drainAcceptedEvents;
-          expect(result).toEqual({ stopReason: "completed" });
-          expect(handle.capabilities.graph).toBe("degraded");
-          yield* handle.close;
-          yield* Fiber.join(consumer);
-          expect(collected.events).toContainEqual({
-            type: "capability-degraded",
-            capability: "graph",
-          });
-        }),
-      ),
+  it.live("keeps chat running but degrades graph capability for malformed provider metadata", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* openFakeSession(
+          acpScenario({
+            prompt: { mode: "complete", message: "metadata drift" },
+            metadataMode: "invalid-codex",
+          }),
+          "metadata-drift",
+        );
+        const collected = collectEventsUntilClose(handle);
+        const consumer = yield* collected.start;
+        const result = yield* handle.prompt({
+          turnId: TurnId.make("turn:metadata-drift"),
+          text: "Keep chat available",
+          attachments: [],
+        });
+        yield* handle.drainAcceptedEvents;
+        expect(result).toEqual({ stopReason: "completed" });
+        expect(handle.capabilities.graph).toBe("degraded");
+        yield* handle.close;
+        yield* Fiber.join(consumer);
+        expect(collected.events).toContainEqual({
+          type: "capability-degraded",
+          capability: "graph",
+        });
+      }),
+    ),
   );
 
   for (const [permissionMode, claudeMode] of [
@@ -273,7 +307,7 @@ describe("ACP process supervision", () => {
     ["workspace-write", "acceptEdits"],
     ["full-access", "bypassPermissions"],
   ] as const) {
-    it.effect(
+    it.live(
       `maps the generic ${permissionMode} permission choice to Claude's ${claudeMode} session mode`,
       () =>
         Effect.scoped(
@@ -314,7 +348,7 @@ describe("ACP process supervision", () => {
     );
   }
 
-  it.effect("rejects an adapter that negotiates an unsupported protocol version", () =>
+  it.live("rejects an adapter that negotiates an unsupported protocol version", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const failure = yield* openFakeSession(
@@ -326,7 +360,7 @@ describe("ACP process supervision", () => {
     ),
   );
 
-  it.effect("keeps concurrent provider processes isolated", () =>
+  it.live("keeps concurrent provider processes isolated", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const scenario = acpScenario({ prompt: { mode: "complete", message: "isolated" } });
@@ -376,7 +410,7 @@ describe("ACP process supervision", () => {
     ),
   );
 
-  it.effect("reports a provider exit during prompt dispatch as a disconnected session", () =>
+  it.live("reports a provider exit during prompt dispatch as a process exit", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const handle = yield* openFakeSession(acpScenario({ crashAt: "prompt" }), "prompt-crash");
@@ -388,11 +422,16 @@ describe("ACP process supervision", () => {
           })
           .pipe(Effect.flip);
         expect(failure.message).toContain("ACP connection closed");
+
+        // The connection closes as soon as stdout ends, before Node reports the exit
+        // status, so this used to surface as an indistinguishable "disconnected".
+        const streamFailure = yield* handle.events.pipe(Stream.runDrain, Effect.flip);
+        expect(streamFailure.code).toBe("process-exit");
       }),
     ),
   );
 
-  it.effect("fails a saturated callback ingress instead of creating detached producer work", () =>
+  it.live("fails a saturated callback ingress instead of creating detached producer work", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const handle = yield* openFakeSession(

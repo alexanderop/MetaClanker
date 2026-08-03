@@ -77,7 +77,7 @@ export const withOrchestrationHarness = async <A>(
       runApplication: (effect) => runtime.runApplication(effect),
       dispose: () => runtime.dispose(),
     };
-    const runStore = <B>(effect: Effect.Effect<B, unknown, Store>): Promise<B> =>
+    const runStore = <B, E>(effect: Effect.Effect<B, E, Store>): Promise<B> =>
       loadedRuntime.runApplication(effect);
     const harness: OrchestrationHarness = {
       projectDirectory,

@@ -534,6 +534,21 @@ Effect owns resource safety and concurrency in backend packages:
 Vue components do not execute Effect programs directly. Application services expose a client-facing
 contract and Vue consumes already-decoded state.
 
+Two rules make those typed errors and schemas load-bearing rather than aspirational:
+
+- **No exported Effect declares `unknown` in its error channel.** A signature that says `unknown`
+  forces the caller to re-derive the error's identity by structural inspection, and that inspection
+  is a string comparison the compiler cannot check. Widening happens once, at a package boundary,
+  through `Effect.catchTags` over the declared union, so a new port error becomes a compile error at
+  the boundary rather than a silent fallthrough to a generic message. `pnpm lint` enforces this over
+  `packages/` and `apps/server` via `scripts/check-typed-errors.mjs`.
+- **A wire or persisted shape has one schema, used to encode and decode.** Two hand-maintained
+  copies of the same union drift, and the drift surfaces as an undecodable durable log at crash
+  recovery — the worst possible time. Derive the type from the schema; where a package must stay
+  Effect-free, prove the two definitions equivalent with a `*.test-d.ts` rather than maintaining
+  them by hand. Public transport schemas and internal persisted-event schemas remain separate
+  surfaces, but each is still defined once.
+
 ### 8.8 Persistence model
 
 Initial tables:

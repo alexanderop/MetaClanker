@@ -6,6 +6,8 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1_000;
 const TICKET_TTL_MS = 30_000;
@@ -95,10 +97,16 @@ export const authenticationLayer = (options: AuthenticationLayerOptions = {}) =>
   Layer.effect(
     Authentication,
     Effect.gen(function* () {
+      // A credential: `Config.redacted` keeps it out of logs and `toString`.
       const configuredCode =
         options.pairingCode ??
         Option.getOrElse(
-          yield* Config.option(Config.nonEmptyString("METACLANKER_PAIRING_CODE")),
+          Option.map(
+            yield* Config.option(
+              Config.schema(Schema.Redacted(Schema.NonEmptyString), "METACLANKER_PAIRING_CODE"),
+            ),
+            Redacted.value,
+          ),
           () => randomBytes(6).toString("base64url"),
         );
       const sessions = new Map<string, ExpiringToken>();

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, useTemplateRef, watch } from "vue";
+import { useI18n } from "vue-i18n";
 
 import type { Thread, ThreadStatus } from "@metaclanker/contracts/wire";
 
+import { apiErrorMessage } from "../../shared/apiError.js";
 import { Button } from "../../ui/button/index.js";
 import { FieldError } from "../../ui/field/index.js";
 import { Textarea } from "../../ui/textarea/index.js";
@@ -35,6 +37,7 @@ function useComposerFocus() {
 }
 
 function useFollowUpDraft() {
+  const { t } = useI18n();
   const draft = ref(workspace.draftFor(props.thread.id));
   const sending = ref(false);
   const sendError = ref<string | null>(null);
@@ -59,7 +62,7 @@ function useFollowUpDraft() {
       await workspace.sendPrompt(text);
       draft.value = "";
     } catch (cause) {
-      sendError.value = cause instanceof Error ? cause.message : String(cause);
+      sendError.value = apiErrorMessage(cause, t("common.requestFailed"));
     } finally {
       sending.value = false;
       await focusComposer();
@@ -80,6 +83,7 @@ function useFollowUpDraft() {
 }
 
 function useTurnCancellation() {
+  const { t } = useI18n();
   const cancelling = ref(false);
   const cancelError = ref<string | null>(null);
   const cancelPending = computed(() => cancelling.value || props.thread.status === "cancelling");
@@ -109,7 +113,7 @@ function useTurnCancellation() {
     try {
       await workspace.cancelPrompt();
     } catch (cause) {
-      cancelError.value = cause instanceof Error ? cause.message : String(cause);
+      cancelError.value = apiErrorMessage(cause, t("common.requestFailed"));
       cancelling.value = false;
     }
   };

@@ -3,34 +3,34 @@ import * as Effect from "effect/Effect";
 import type { ThreadId } from "@metaclanker/contracts/ids";
 import type { UserSettings } from "@metaclanker/contracts/wire";
 
-import { Store } from "./commands.js";
+import { Store, applicationErrorFromStore } from "./commands.js";
+import type { StoreError } from "./ports.js";
 
-export const shellSnapshot = () =>
-  Effect.gen(function* () {
-    const store = yield* Store;
-    return yield* store.shellSnapshot;
-  });
+const widenWorkspaceError = Effect.catchTags({
+  StoreError: (cause: StoreError) => Effect.fail(applicationErrorFromStore(cause)),
+});
 
-export const getSettings = () =>
-  Effect.gen(function* () {
-    const store = yield* Store;
-    return yield* store.getSettings;
-  });
+export const shellSnapshot = Effect.fn("Workspace.shellSnapshot")(function* () {
+  const store = yield* Store;
+  return yield* store.shellSnapshot;
+}, widenWorkspaceError);
 
-export const saveSettings = (settings: UserSettings) =>
-  Effect.gen(function* () {
-    const store = yield* Store;
-    return yield* store.saveSettings(settings);
-  });
+export const getSettings = Effect.fn("Workspace.getSettings")(function* () {
+  const store = yield* Store;
+  return yield* store.getSettings;
+}, widenWorkspaceError);
 
-export const getThread = (id: ThreadId) =>
-  Effect.gen(function* () {
-    const store = yield* Store;
-    return yield* store.getThread(id);
-  });
+export const saveSettings = Effect.fn("Workspace.saveSettings")(function* (settings: UserSettings) {
+  const store = yield* Store;
+  return yield* store.saveSettings(settings);
+}, widenWorkspaceError);
 
-export const deleteThread = (id: ThreadId) =>
-  Effect.gen(function* () {
-    const store = yield* Store;
-    return yield* store.deleteThread(id);
-  });
+export const getThread = Effect.fn("Workspace.getThread")(function* (id: ThreadId) {
+  const store = yield* Store;
+  return yield* store.getThread(id);
+}, widenWorkspaceError);
+
+export const deleteThread = Effect.fn("Workspace.deleteThread")(function* (id: ThreadId) {
+  const store = yield* Store;
+  return yield* store.deleteThread(id);
+}, widenWorkspaceError);

@@ -40,7 +40,8 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "catalog:",
-    "@metaclanker/contracts": "workspace:*"
+    "@metaclanker/contracts": "workspace:*",
+    "effect": "catalog:"
   },
   "devDependencies": {
     "typescript": "catalog:",

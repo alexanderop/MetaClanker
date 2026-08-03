@@ -1,39 +1,39 @@
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import type { CheckpointId, ThreadId } from "@metaclanker/contracts/ids";
 import type { PersistedCheckpointWire } from "@metaclanker/contracts/wire";
 
-import type { PersistedCheckpoint } from "./ports.js";
+import type { CheckpointError, PersistedCheckpoint, StoreError } from "./ports.js";
 
-import { ApplicationError, CheckpointService, Store } from "./commands.js";
+import {
+  ApplicationError,
+  CheckpointService,
+  Store,
+  applicationErrorFromStore,
+} from "./commands.js";
 
-const storeError = (cause: unknown): ApplicationError | undefined => {
-  if (typeof cause !== "object" || cause === null || !("code" in cause) || !("message" in cause)) {
-    return undefined;
-  }
-  const { code, message } = cause;
-  if (
-    (code !== "not-found" && code !== "conflict" && code !== "persistence") ||
-    typeof message !== "string"
-  ) {
-    return undefined;
-  }
-  return new ApplicationError({ code, message });
-};
+class CheckpointNotFound extends Schema.TaggedErrorClass<CheckpointNotFound>()(
+  "CheckpointNotFound",
+  {},
+) {}
 
-const mapReviewError = (cause: unknown): ApplicationError => {
-  const store = storeError(cause);
-  if (store !== undefined) return store;
-  if (
-    typeof cause === "object" &&
-    cause !== null &&
-    "_tag" in cause &&
-    cause._tag === "CheckpointNotFound"
-  ) {
-    return new ApplicationError({ code: "not-found", message: "Checkpoint not found" });
-  }
-  return new ApplicationError({ code: "persistence", message: "Checkpoint operation failed" });
-};
+/**
+ * The one widening site for this module. A new port error becomes a compile error here
+ * rather than a generic message at runtime, and the checkpoint operation survives.
+ */
+const widenReviewError = Effect.catchTags({
+  StoreError: (cause: StoreError) => Effect.fail(applicationErrorFromStore(cause)),
+  CheckpointError: (cause: CheckpointError) =>
+    Effect.fail(
+      new ApplicationError({
+        code: "persistence",
+        message: `Checkpoint ${cause.operation} failed: ${cause.message}`,
+      }),
+    ),
+  CheckpointNotFound: () =>
+    Effect.fail(new ApplicationError({ code: "not-found", message: "Checkpoint not found" })),
+});
 
 /** Removes filesystem-only checkpoint implementation details at the transport boundary. */
 export const toPersistedCheckpointWire = (
@@ -49,30 +49,32 @@ export const toPersistedCheckpointWire = (
   kind: record.kind,
 });
 
-export const reviewThread = (threadId: ThreadId) =>
-  Effect.gen(function* () {
-    const store = yield* Store;
-    const checkpoints = yield* CheckpointService;
-    const records = yield* store.listCheckpoints(threadId);
-    const post = records.toReversed().find((record) => record.kind === "post-turn");
-    const pre = records
-      .toReversed()
-      .find((record) => record.kind === "pre-turn" && record.turnId === post?.turnId);
-    const publicRecords = records.map(toPersistedCheckpointWire);
-    if (pre === undefined || post === undefined)
-      return { checkpoints: publicRecords, diff: { files: [] } };
-    return {
-      checkpoints: publicRecords,
-      diff: yield* checkpoints.diff(pre.checkpoint, post.checkpoint),
-    };
-  }).pipe(Effect.mapError(mapReviewError));
+export const reviewThread = Effect.fn("Review.reviewThread")(function* (threadId: ThreadId) {
+  const store = yield* Store;
+  const checkpoints = yield* CheckpointService;
+  const records = yield* store.listCheckpoints(threadId);
+  const post = records.toReversed().find((record) => record.kind === "post-turn");
+  const pre = records
+    .toReversed()
+    .find((record) => record.kind === "pre-turn" && record.turnId === post?.turnId);
+  const publicRecords = records.map(toPersistedCheckpointWire);
+  if (pre === undefined || post === undefined) {
+    return { checkpoints: publicRecords, diff: { files: [] } };
+  }
+  return {
+    checkpoints: publicRecords,
+    diff: yield* checkpoints.diff(pre.checkpoint, post.checkpoint),
+  };
+}, widenReviewError);
 
-export const previewFileRestore = (threadId: ThreadId, checkpointId: CheckpointId) =>
-  Effect.gen(function* () {
-    const store = yield* Store;
-    const checkpoints = yield* CheckpointService;
-    const records = yield* store.listCheckpoints(threadId);
-    const record = records.find((candidate) => candidate.checkpoint.id === checkpointId);
-    if (record === undefined) return yield* Effect.fail({ _tag: "CheckpointNotFound" as const });
-    return yield* checkpoints.previewRestore(record.checkpoint);
-  }).pipe(Effect.mapError(mapReviewError));
+export const previewFileRestore = Effect.fn("Review.previewFileRestore")(function* (
+  threadId: ThreadId,
+  checkpointId: CheckpointId,
+) {
+  const store = yield* Store;
+  const checkpoints = yield* CheckpointService;
+  const records = yield* store.listCheckpoints(threadId);
+  const record = records.find((candidate) => candidate.checkpoint.id === checkpointId);
+  if (record === undefined) return yield* Effect.fail(new CheckpointNotFound());
+  return yield* checkpoints.previewRestore(record.checkpoint);
+}, widenReviewError);

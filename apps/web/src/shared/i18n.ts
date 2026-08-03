@@ -37,6 +37,7 @@ const messages = {
       cancel: "Cancel",
       close: "Close",
       save: "Save",
+      requestFailed: "The request could not be completed.",
     },
     time: {
       now: "now",

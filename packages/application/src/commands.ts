@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import type { Checkpoints, MetaClankerStore, ProjectFiles } from "./ports.js";
+import type { ProjectPathError, StoreError } from "./ports.js";
 
 export class Store extends Context.Service<Store, MetaClankerStore>()(
   "@metaclanker/application/Store",
@@ -31,12 +32,26 @@ export class ApplicationError extends Schema.TaggedErrorClass<ApplicationError>(
   },
 ) {}
 
-export const mapStoreError = <A>(
-  effect: Effect.Effect<
-    A,
-    { readonly code: "not-found" | "conflict" | "persistence"; readonly message: string }
-  >,
-) =>
-  effect.pipe(
-    Effect.mapError((error) => new ApplicationError({ code: error.code, message: error.message })),
-  );
+/**
+ * The operation only rides along on `"persistence"`, whose message the HTTP edge
+ * replaces anyway. `"not-found"` and `"conflict"` reach the user verbatim.
+ */
+export const applicationErrorFromStore = (cause: StoreError): ApplicationError =>
+  new ApplicationError({
+    code: cause.code,
+    message: cause.code === "persistence" ? `${cause.operation}: ${cause.message}` : cause.message,
+  });
+
+const projectPathMessage = (reason: ProjectPathError["reason"]): string => {
+  if (reason === "not-absolute") return "Enter an absolute server path";
+  if (reason === "not-found") return "That server path does not exist";
+  if (reason === "not-directory") return "That server path is not a directory";
+  return "That server directory is not readable";
+};
+
+export const applicationErrorFromProjectPath = (cause: ProjectPathError): ApplicationError =>
+  new ApplicationError({ code: "invalid-project", message: projectPathMessage(cause.reason) });
+
+export const mapStoreError = <A, R>(
+  effect: Effect.Effect<A, StoreError, R>,
+): Effect.Effect<A, ApplicationError, R> => Effect.mapError(effect, applicationErrorFromStore);

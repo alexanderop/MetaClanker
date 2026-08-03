@@ -17,6 +17,7 @@ import { AgentCommands } from "@metaclanker/application/agent-commands";
 import type { AgentCommandsService } from "@metaclanker/application/agent-commands";
 import type { ApplicationError } from "@metaclanker/application/commands";
 import type { CheckpointService, Files, Store } from "@metaclanker/application/commands";
+import type { StoreError } from "@metaclanker/application/ports";
 import { CheckpointService as ApplicationCheckpointService } from "@metaclanker/application/commands";
 import {
   CheckpointsService,
@@ -45,6 +46,9 @@ type ApplicationRequirements =
   | TurnSupervisor
   | EventFanout
   | Authentication;
+
+/** Everything the composition root's layers can fail with while being built. */
+type ApplicationLayerError = StoreError | Config.ConfigError;
 
 export interface ProviderAdapters {
   readonly commands: Readonly<Record<Provider, AdapterCommand>>;
@@ -113,13 +117,17 @@ export interface ApplicationRuntime {
 const testRuntimeScope = new AsyncLocalStorage<ApplicationRuntime>();
 
 const run = async <A, E>(
-  runtime: ManagedRuntime.ManagedRuntime<ApplicationRequirements, unknown>,
+  runtime: ManagedRuntime.ManagedRuntime<ApplicationRequirements, ApplicationLayerError>,
   effect: Effect.Effect<A, E, ApplicationRequirements>,
 ): Promise<A> => {
   const exit = await runtime.runPromiseExit(effect);
   if (Exit.isSuccess(exit)) return exit.value;
   const failure = Cause.findErrorOption(exit.cause);
-  if (Option.isSome(failure)) throw failure.value;
+  // Typed application failures are `Error` subclasses and reach `publicError` intact.
+  // A layer-build failure such as `ConfigError` is not, and has no public mapping.
+  if (Option.isSome(failure)) {
+    throw failure.value instanceof Error ? failure.value : new Error(String(failure.value));
+  }
   throw Cause.squash(exit.cause);
 };
 

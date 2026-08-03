@@ -156,7 +156,14 @@ export const useReviewModel = (options: UseReviewModelOptions) => {
 
   const refresh = (): void => model.refreshReview(options.threadId());
 
+  /**
+   * Minting a new `CommandId` swaps the restore atom, disposes the old node, and
+   * interrupts its fiber. The server may already have accepted the destructive
+   * restore, so dropping the fiber does not cancel the command — it only hides the
+   * outcome. Refuse the selection instead.
+   */
   const selectCheckpoint = (checkpointId: CheckpointId): void => {
+    if (restoreResult.value.waiting) return;
     confirmed.value = false;
     selectedCheckpointId.value = checkpointId;
     commandId.value = CommandId.make(crypto.randomUUID());

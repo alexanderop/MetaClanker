@@ -6,8 +6,8 @@ import { join, resolve } from "node:path";
 
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 
-const MAX_RESTARTS = 3;
-const RESTART_WINDOW_MS = 30_000;
+import { createServerSupervisor } from "./server-supervisor.js";
+
 const SHUTDOWN_GRACE_MS = 3_000;
 const MAX_CONVERSATION_DRAFT_BYTES = 2 * 1024 * 1024;
 
@@ -15,7 +15,6 @@ let server: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
 let serverOrigin: string | null = null;
 let quitting = false;
-const restartTimes: number[] = [];
 let conversationDraftWrite = Promise.resolve();
 const smokeLog = (message: string): void => {
   if (process.env["METACLANKER_PACKAGE_SMOKE"] === "1") {
@@ -160,23 +159,29 @@ const startServer = async (): Promise<string> => {
   child.once("exit", () => {
     if (server === child) server = null;
     if (quitting) return;
-    const now = Date.now();
-    restartTimes.push(now);
-    while ((restartTimes[0] ?? now) < now - RESTART_WINDOW_MS) restartTimes.shift();
-    if (restartTimes.length > MAX_RESTARTS) {
-      void dialog.showErrorBox(
-        "MetaClanker server stopped",
-        "The local server exited repeatedly. Restart MetaClanker after checking the diagnostics.",
-      );
-      return;
-    }
-    void restartServerAndReload();
+    void supervisor.restart();
   });
   await waitForReadiness(origin, readinessToken);
   smokeLog("server-ready");
   serverOrigin = origin;
   return origin;
 };
+
+const supervisor = createServerSupervisor({
+  startServer,
+  reload: async (origin) => {
+    await mainWindow?.loadURL(origin);
+  },
+  reportRepeatedFailure: () => {
+    dialog.showErrorBox(
+      "MetaClanker server stopped",
+      "The local server exited repeatedly. Restart MetaClanker after checking the diagnostics.",
+    );
+  },
+  now: () => Date.now(),
+  quitting: () => quitting,
+  log: smokeLog,
+});
 
 const stopServer = async (): Promise<void> => {
   const child = server;
@@ -407,11 +412,6 @@ const createWindow = async (origin: string): Promise<BrowserWindow> => {
     }
   }
   return window;
-};
-
-const restartServerAndReload = async (): Promise<void> => {
-  const origin = await startServer();
-  await mainWindow?.loadURL(origin);
 };
 
 const hasLock = app.requestSingleInstanceLock();

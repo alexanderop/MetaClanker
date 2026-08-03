@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 
 import type { PendingInteraction } from "@metaclanker/contracts/wire";
 
+import { apiErrorMessage } from "../../shared/apiError.js";
 import { Button } from "../../ui/button/index.js";
 import { Card } from "../../ui/card/index.js";
 import { Eyebrow } from "../../ui/eyebrow/index.js";
@@ -24,7 +25,7 @@ const respond = async (optionId: string): Promise<void> => {
   try {
     await workspace.respond(props.interaction, optionId);
   } catch (cause) {
-    const message = cause instanceof Error ? cause.message : t("thread.permissionResponseFailed");
+    const message = apiErrorMessage(cause, t("thread.permissionResponseFailed"));
     responseError.value = `${message} ${t("thread.permissionResponseStillHere")}`;
   } finally {
     responding.value = false;

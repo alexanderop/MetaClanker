@@ -7,7 +7,11 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { ServerEvent } from "@metaclanker/contracts/wire";
 
 const run = promisify(execFile);
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
@@ -253,7 +257,17 @@ describe("the built Nitro application", () => {
     const observer = await observeSocket(
       `${origin.replace("http", "ws")}/api/shell/events?ticket=${encodeURIComponent(ticket)}&afterSequence=0`,
     );
-    await expect(observer.nextMessage()).resolves.toEqual({ type: "synchronized", sequence: 0 });
+    // Every frame is the same contract the client decodes strictly, including the
+    // control frames the send path used to hand-stringify.
+    const decodable = async (): Promise<unknown> => {
+      const message = await observer.nextMessage();
+      expect(
+        Option.isSome(Schema.decodeUnknownOption(ServerEvent)(message)),
+        JSON.stringify(message),
+      ).toBe(true);
+      return message;
+    };
+    await expect(decodable()).resolves.toEqual({ type: "synchronized", sequence: 0 });
 
     const createProject = await fetch(`${origin}/api/projects`, {
       method: "POST",
@@ -266,7 +280,7 @@ describe("the built Nitro application", () => {
     });
     expect(createProject.status).toBe(200);
     const project: unknown = await createProject.json();
-    await expect(observer.nextMessage()).resolves.toMatchObject({
+    await expect(decodable()).resolves.toMatchObject({
       type: "project-upserted",
       sequence: 1,
       project,
@@ -295,5 +309,16 @@ describe("the built Nitro application", () => {
       `${origin.replace("http", "ws")}/api/shell/events?ticket=${encodeURIComponent(invalidCursorTicket)}&afterSequence=-1`,
     );
     await expect(invalidCursor.closeCode).resolves.toBe(4400);
+  });
+
+  it("closes a thread event socket whose thread id is not decodable", async () => {
+    const ticket = await issueWebSocketTicket(origin, sessionCookie);
+    // A lone `%` is a valid URL path segment and an invalid percent-escape, so the
+    // handler must reject it rather than let the decode throw out of `open`.
+    const malformed = await observeSocket(
+      `${origin.replace("http", "ws")}/api/threads/%/events?ticket=${encodeURIComponent(ticket)}`,
+    );
+
+    await expect(malformed.closeCode).resolves.toBe(4401);
   });
 });

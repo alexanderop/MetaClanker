@@ -13,6 +13,27 @@ describe("deterministic ACP scenarios", () => {
   });
 
   it("rejects malformed environment configuration rather than changing the fake behavior", () => {
+    // Each of these used to be salvaged field by field, producing a scenario the caller
+    // never described instead of the deterministic default.
     expect(scenarioFromEnvironment('{"prompt":{"mode":"unknown"}}')).toEqual(acpScenario());
+    expect(scenarioFromEnvironment("not json at all")).toEqual(acpScenario());
+    expect(scenarioFromEnvironment(JSON.stringify({ crashAt: "midway" }))).toEqual(acpScenario());
+    expect(
+      scenarioFromEnvironment(
+        JSON.stringify({ ...acpScenario(), models: ["only-real"], metadataMode: "unsupported" }),
+      ),
+    ).toEqual(acpScenario());
+  });
+
+  it("round-trips a complete scenario across the process boundary", () => {
+    const scenario = acpScenario({
+      prompt: { mode: "event-overflow", message: "overflow" },
+      crashAt: "initialize-hang",
+      models: ["fake-fast"],
+      requiredMode: "plan",
+      metadataMode: "invalid-codex",
+    });
+
+    expect(scenarioFromEnvironment(JSON.stringify(scenario))).toEqual(scenario);
   });
 });

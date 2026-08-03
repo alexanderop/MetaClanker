@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import { makeAcpSessions, type AdapterCommand } from "@metaclanker/acp-client/session";
 import { ApplicationError, mapStoreError, Store } from "@metaclanker/application/commands";
 import type {
+  CheckpointError,
   MetaClankerStore,
   NormalizedAgentEvent,
   SessionCapabilities,
@@ -34,7 +35,7 @@ import { toPersistedCheckpointWire } from "@metaclanker/application/review";
 import { LocalDiagnostics } from "./local-diagnostics.js";
 import { applicationProviderAdapters, runApplication } from "./runtime.js";
 import { deriveThreadTitle } from "./thread-title.js";
-import { TurnSupervisor } from "./turn-supervisor.js";
+import { TurnSupervisor, type SessionFailure } from "./turn-supervisor.js";
 import { EventFanout, type EventFanoutService } from "./event-fanout.js";
 
 const applicationError = (code: ApplicationError["code"], message: string): ApplicationError =>
@@ -429,20 +430,21 @@ const executePromptWork = (
     return outcome.stopReason;
   }).pipe(Effect.withSpan("agent.prompt.execute"));
 
-const isConnectionFailure = (cause: unknown): boolean =>
-  Boolean(
-    typeof cause === "object" &&
-    cause !== null &&
-    "_tag" in cause &&
-    cause._tag === "AcpRuntimeError" &&
-    "code" in cause &&
-    (cause.code === "disconnected" || cause.code === "process-exit"),
-  );
+/**
+ * Every turn failure now carries its own identity, so the choice between
+ * `recovery-required` and `failed` is a checked tag rather than a string comparison a
+ * new port error could silently fall through.
+ */
+export type TurnFailure = SessionFailure | CheckpointError;
 
-const failureTurnStatus = (cause: unknown): TurnCompletionStatus =>
+const isConnectionFailure = (cause: TurnFailure): boolean =>
+  cause._tag === "AcpRuntimeError" &&
+  (cause.code === "disconnected" || cause.code === "process-exit");
+
+const failureTurnStatus = (cause: TurnFailure): TurnCompletionStatus =>
   isConnectionFailure(cause) ? "recovery-required" : "failed";
 
-const recordPromptFailureEffect = (context: TurnContext, cause: unknown) =>
+const recordPromptFailureEffect = (context: TurnContext, cause: TurnFailure) =>
   Effect.gen(function* () {
     const store = yield* Store;
     const fanout = yield* EventFanout;
@@ -467,7 +469,7 @@ const executePrompt = (
   text: string,
   attachments: ReadonlyArray<string>,
   commands: Readonly<Record<Provider, AdapterCommand>>,
-): Effect.Effect<void, unknown, Store | CheckpointsService | TurnSupervisor | EventFanout> =>
+): Effect.Effect<void, TurnFailure, Store | CheckpointsService | TurnSupervisor | EventFanout> =>
   executePromptWork(context, text, attachments, commands).pipe(
     Effect.tap((status) =>
       Effect.gen(function* () {
@@ -481,7 +483,7 @@ const executePrompt = (
 
 const submitAgentWorkEffect = (
   correlation: TurnContext,
-  work: Effect.Effect<void, unknown, Store | CheckpointsService | TurnSupervisor | EventFanout>,
+  work: Effect.Effect<void, TurnFailure, Store | CheckpointsService | TurnSupervisor | EventFanout>,
 ) =>
   Effect.gen(function* () {
     const supervisor = yield* TurnSupervisor;

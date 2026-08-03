@@ -5,7 +5,7 @@ import {
   cp,
   lstat,
   mkdir,
-  readFile,
+  open,
   readlink,
   readdir,
   realpath,
@@ -18,7 +18,9 @@ import { promisify } from "node:util";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import type {
   Checkpoint,
@@ -39,15 +41,6 @@ const workspaceStatus = (dirty: boolean | null): "clean" | "dirty" | "unavailabl
   return dirty ? "dirty" : "clean";
 };
 
-class ProjectValidationFailure extends Error {
-  readonly reason: "not-absolute" | "not-directory";
-
-  constructor(reason: "not-absolute" | "not-directory") {
-    super(reason);
-    this.reason = reason;
-  }
-}
-
 const failure = (operation: CheckpointError["operation"], cause: unknown): CheckpointError =>
   new CheckpointError({
     operation,
@@ -59,35 +52,99 @@ const isWithin = (root: string, candidate: string): boolean => {
   return child === "" || (!child.startsWith(`..${sep}`) && child !== ".." && !isAbsolute(child));
 };
 
-const validateRoot = (path: string) =>
-  Effect.tryPromise({
-    try: async () => {
-      if (!isAbsolute(path)) {
-        throw new Error("Project paths must be absolute");
-      }
-      const resolved = await realpath(path);
-      const metadata = await stat(resolved);
-      if (!metadata.isDirectory()) {
-        throw new Error("Project path is not a directory");
-      }
-      await access(resolved, constants.R_OK | constants.W_OK);
-      return resolved;
-    },
-    catch: (cause) => failure("capture", cause),
+/** `"not-readable"` was unreachable, so an `EACCES` project reported as not-found. */
+const projectPathReason = (cause: unknown): ProjectPathError["reason"] => {
+  const code =
+    typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : "";
+  if (code === "EACCES" || code === "EPERM") return "not-readable";
+  if (code === "ENOTDIR") return "not-directory";
+  return "not-found";
+};
+
+const validateProjectRoot = (path: string): Effect.Effect<string, ProjectPathError> =>
+  Effect.gen(function* () {
+    if (!isAbsolute(path)) {
+      return yield* Effect.fail(new ProjectPathError({ path, reason: "not-absolute" }));
+    }
+    const resolved = yield* Effect.tryPromise({
+      try: () => realpath(path),
+      catch: (cause) => new ProjectPathError({ path, reason: projectPathReason(cause) }),
+    });
+    const metadata = yield* Effect.tryPromise({
+      try: () => stat(resolved),
+      catch: (cause) => new ProjectPathError({ path, reason: projectPathReason(cause) }),
+    });
+    if (!metadata.isDirectory()) {
+      return yield* Effect.fail(new ProjectPathError({ path, reason: "not-directory" }));
+    }
+    yield* Effect.tryPromise({
+      try: () => access(resolved, constants.R_OK | constants.W_OK),
+      catch: (cause) => new ProjectPathError({ path, reason: projectPathReason(cause) }),
+    });
+    return resolved;
   });
+
+/** Carries the caller's operation instead of relabelling every failure as a capture. */
+const validateRoot = (path: string, operation: CheckpointError["operation"]) =>
+  validateProjectRoot(path).pipe(
+    Effect.mapError(
+      (cause) => new CheckpointError({ operation, message: `Project path is ${cause.reason}` }),
+    ),
+  );
+
+/**
+ * `git` refusing to answer because the directory is not a repository is a truthful
+ * empty result. Every other failure means the answer is unknown and must not be
+ * fabricated — see `gitFileKinds`.
+ */
+class NotAGitRepository extends Schema.TaggedErrorClass<NotAGitRepository>()(
+  "NotAGitRepository",
+  {},
+) {}
+
+class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()("GitCommandError", {
+  message: Schema.String,
+}) {}
+
+const GIT_TIMEOUT = "10 seconds";
+
+const notARepository = /not a git repository/i;
+
+const isNotARepositoryFailure = (cause: unknown): boolean =>
+  typeof cause === "object" &&
+  cause !== null &&
+  "stderr" in cause &&
+  typeof cause.stderr === "string" &&
+  notARepository.test(cause.stderr);
+
+/** Deliberately excludes stderr and stdout: both carry absolute paths and file contents. */
+const gitFailureMessage = (args: ReadonlyArray<string>, cause: unknown): string => {
+  const subcommand = args[0] ?? "";
+  if (typeof cause === "object" && cause !== null && "code" in cause) {
+    return `git ${subcommand} failed with ${String(cause.code)}`;
+  }
+  return `git ${subcommand} failed`;
+};
 
 const git = (cwd: string, args: ReadonlyArray<string>) =>
   Effect.tryPromise({
-    try: async () => {
-      const result = await execFilePromise("git", args, {
+    try: (signal) =>
+      execFilePromise("git", args, {
         cwd,
         encoding: "utf8",
         maxBuffer: 8 * 1024 * 1024,
-      });
-      return result.stdout.trim();
-    },
-    catch: (cause) => cause,
-  });
+        signal,
+      }).then((result) => result.stdout.trim()),
+    catch: (cause): NotAGitRepository | GitCommandError =>
+      isNotARepositoryFailure(cause)
+        ? new NotAGitRepository()
+        : new GitCommandError({ message: gitFailureMessage(args, cause) }),
+  }).pipe(
+    Effect.timeout(GIT_TIMEOUT),
+    Effect.catchTag("TimeoutError", () =>
+      Effect.fail(new GitCommandError({ message: `git ${args[0] ?? ""} timed out` })),
+    ),
+  );
 
 const listRelativeFiles = (root: string, excludedRoot: string) =>
   Effect.tryPromise({
@@ -127,7 +184,15 @@ const gitFileKinds = (root: string) =>
       "--ignored",
       "-z",
       "--untracked-files=all",
-    ]).pipe(Effect.catch(() => Effect.succeed("")));
+    ]).pipe(
+      // Not a repository means nothing is ignored, staged, or untracked. Any other
+      // failure leaves the classification unknown, and reporting "no ignored files"
+      // to a destructive-restore confirmation would be a lie.
+      Effect.catchTag("NotAGitRepository", () => Effect.succeed("")),
+      Effect.catchTag("GitCommandError", (cause) =>
+        Effect.fail(new CheckpointError({ operation: "capture", message: cause.message })),
+      ),
+    );
     const kinds = new Map<string, CheckpointFile["kind"]>();
     const records = status.split("\0").filter((record) => record.length >= 4);
     for (const record of records) {
@@ -146,73 +211,100 @@ const gitFileKinds = (root: string) =>
     return kinds;
   });
 
-const loadCheckpointFiles = (checkpoint: Checkpoint) =>
-  Effect.forEach(
-    checkpoint.files,
-    (file) =>
-      Effect.tryPromise({
-        try: async () => {
-          const path = join(checkpoint.snapshotPath, "files", file.path);
-          const metadata = await lstat(path);
-          const content = metadata.isSymbolicLink()
-            ? Buffer.from(await readlink(path))
-            : await readFile(path);
-          return [
-            file.path,
-            {
-              content,
-              size: metadata.size,
-              type: metadata.isSymbolicLink() ? "symlink" : "file",
-            },
-          ] as const;
-        },
-        catch: (cause) => failure("diff", cause),
-      }),
-    { concurrency: 8 },
-  ).pipe(Effect.map((entries) => new Map(entries)));
+const COMPARE_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * Compares two snapshot entries without materializing either workspace. Reading both
+ * sides in full only to call `.equals()` made peak memory the size of two workspaces.
+ */
+const sameSnapshotEntry = (left: string, right: string) =>
+  Effect.tryPromise({
+    try: async (signal) => {
+      const [leftMetadata, rightMetadata] = await Promise.all([lstat(left), lstat(right)]);
+      if (leftMetadata.isSymbolicLink() !== rightMetadata.isSymbolicLink()) return false;
+      if (leftMetadata.size !== rightMetadata.size) return false;
+      if (leftMetadata.isSymbolicLink()) {
+        const [leftTarget, rightTarget] = await Promise.all([readlink(left), readlink(right)]);
+        return leftTarget === rightTarget;
+      }
+      const [leftHandle, rightHandle] = await Promise.all([open(left, "r"), open(right, "r")]);
+      try {
+        const leftChunk = Buffer.allocUnsafe(COMPARE_CHUNK_BYTES);
+        const rightChunk = Buffer.allocUnsafe(COMPARE_CHUNK_BYTES);
+        for (;;) {
+          signal.throwIfAborted();
+          const [leftRead, rightRead] = await Promise.all([
+            leftHandle.read(leftChunk, 0, COMPARE_CHUNK_BYTES),
+            rightHandle.read(rightChunk, 0, COMPARE_CHUNK_BYTES),
+          ]);
+          if (leftRead.bytesRead !== rightRead.bytesRead) return false;
+          if (leftRead.bytesRead === 0) return true;
+          if (
+            !leftChunk
+              .subarray(0, leftRead.bytesRead)
+              .equals(rightChunk.subarray(0, rightRead.bytesRead))
+          ) {
+            return false;
+          }
+        }
+      } finally {
+        await Promise.all([leftHandle.close(), rightHandle.close()]);
+      }
+    },
+    catch: (cause) => failure("diff", cause),
+  });
+
+const snapshotEntryPath = (checkpoint: Checkpoint, path: string): string =>
+  join(checkpoint.snapshotPath, "files", path);
 
 const compareCheckpoints = (before: Checkpoint, after: Checkpoint) =>
   Effect.gen(function* () {
-    const beforeData = yield* loadCheckpointFiles(before);
-    const afterData = yield* loadCheckpointFiles(after);
-    const paths = new Set([...beforeData.keys(), ...afterData.keys()]);
-    const files: WorkspaceDiff["files"][number][] = [];
-    for (const path of [...paths].toSorted()) {
-      const previous = beforeData.get(path);
-      const next = afterData.get(path);
-      if (previous === undefined && next !== undefined) {
-        files.push({ path, status: "added", beforeSize: 0, afterSize: next.size });
-        continue;
-      }
-      if (previous !== undefined && next === undefined) {
-        files.push({ path, status: "deleted", beforeSize: previous.size, afterSize: 0 });
-        continue;
-      }
-      if (
-        previous !== undefined &&
-        next !== undefined &&
-        (previous.type !== next.type || !previous.content.equals(next.content))
-      ) {
-        files.push({
-          path,
-          status: "modified",
-          beforeSize: previous.size,
-          afterSize: next.size,
-        });
-      }
-    }
-    return { files } satisfies WorkspaceDiff;
+    const beforeByPath = new Map(before.files.map((file) => [file.path, file]));
+    const afterByPath = new Map(after.files.map((file) => [file.path, file]));
+    const paths = [...new Set([...beforeByPath.keys(), ...afterByPath.keys()])].toSorted();
+    const compared = yield* Effect.forEach(
+      paths,
+      (path) =>
+        Effect.gen(function* () {
+          const previous = beforeByPath.get(path);
+          const next = afterByPath.get(path);
+          if (previous === undefined) {
+            return next === undefined
+              ? []
+              : [{ path, status: "added", beforeSize: 0, afterSize: next.size } as const];
+          }
+          if (next === undefined) {
+            return [{ path, status: "deleted", beforeSize: previous.size, afterSize: 0 } as const];
+          }
+          const identical = yield* sameSnapshotEntry(
+            snapshotEntryPath(before, path),
+            snapshotEntryPath(after, path),
+          );
+          return identical
+            ? []
+            : [
+                {
+                  path,
+                  status: "modified",
+                  beforeSize: previous.size,
+                  afterSize: next.size,
+                } as const,
+              ];
+        }),
+      { concurrency: 8 },
+    );
+    return { files: compared.flat() } satisfies WorkspaceDiff;
   });
 
+/** Best-effort: the caller is already reporting a failure and must not be masked by it. */
+const discardSnapshot = (snapshotPath: string) =>
+  Effect.promise(() => rm(snapshotPath, { recursive: true, force: true }).catch(() => undefined));
+
 const makeCheckpoints = (storageRoot: string): Checkpoints => {
-  const capture: Checkpoints["capture"] = (
-    projectPath,
-    checkpointId = CheckpointId.make(crypto.randomUUID()),
-  ) =>
+  const captureInto = (projectPath: string, checkpointId: CheckpointId, checkpointRoot: string) =>
     Effect.gen(function* () {
-      const root = yield* validateRoot(projectPath);
+      const root = yield* validateRoot(projectPath, "capture");
       const id = checkpointId;
-      const checkpointRoot = join(storageRoot, id);
       const filesRoot = join(checkpointRoot, "files");
       yield* Effect.tryPromise({
         try: () => mkdir(filesRoot, { recursive: true }),
@@ -259,33 +351,50 @@ const makeCheckpoints = (storageRoot: string): Checkpoints => {
         catch: (cause) => failure("capture", cause),
       });
       return checkpoint;
-    }).pipe(
-      Effect.mapError((cause) => failure("capture", cause)),
-      Effect.withSpan("checkpoints.capture"),
-    );
+    }).pipe(Effect.mapError((cause) => failure("capture", cause)));
+
+  /**
+   * A snapshot without its `checkpoint.json` is unusable and undiscoverable, and this is
+   * the undo path for a destructive restore. A capture that fails or is interrupted takes
+   * its partial directory with it.
+   */
+  const capture: Checkpoints["capture"] = (
+    projectPath,
+    checkpointId = CheckpointId.make(crypto.randomUUID()),
+  ) => {
+    const checkpointRoot = join(storageRoot, checkpointId);
+    return Effect.onExit(captureInto(projectPath, checkpointId, checkpointRoot), (exit) =>
+      Exit.isSuccess(exit) ? Effect.void : discardSnapshot(checkpointRoot),
+    ).pipe(Effect.withSpan("checkpoints.capture"));
+  };
 
   const previewRestore: Checkpoints["previewRestore"] = (checkpoint) =>
-    Effect.gen(function* () {
-      const current = yield* capture(checkpoint.projectPath);
-      const workspaceDiff = yield* compareCheckpoints(current, checkpoint);
-      const checkpointByPath = new Map(checkpoint.files.map((file) => [file.path, file]));
-      const currentByPath = new Map(current.files.map((file) => [file.path, file]));
-      const preview: RestorePreview = {
-        additions: workspaceDiff.files
-          .filter((file) => file.status === "added")
-          .flatMap((file) => checkpointByPath.get(file.path) ?? []),
-        modifications: workspaceDiff.files
-          .filter((file) => file.status === "modified")
-          .flatMap((file) => checkpointByPath.get(file.path) ?? []),
-        deletions: workspaceDiff.files
-          .filter((file) => file.status === "deleted")
-          .flatMap((file) => currentByPath.get(file.path) ?? []),
-        includesIgnoredFiles: [...checkpoint.files, ...current.files].some(
-          (file) => file.kind === "ignored",
-        ),
-      };
-      return preview;
-    }).pipe(
+    // The comparison snapshot is a full copy of the workspace and nothing else ever
+    // reads it, so it is released the moment the preview is computed.
+    Effect.acquireUseRelease(
+      capture(checkpoint.projectPath),
+      (current) =>
+        Effect.gen(function* () {
+          const workspaceDiff = yield* compareCheckpoints(current, checkpoint);
+          const checkpointByPath = new Map(checkpoint.files.map((file) => [file.path, file]));
+          const currentByPath = new Map(current.files.map((file) => [file.path, file]));
+          return {
+            additions: workspaceDiff.files
+              .filter((file) => file.status === "added")
+              .flatMap((file) => checkpointByPath.get(file.path) ?? []),
+            modifications: workspaceDiff.files
+              .filter((file) => file.status === "modified")
+              .flatMap((file) => checkpointByPath.get(file.path) ?? []),
+            deletions: workspaceDiff.files
+              .filter((file) => file.status === "deleted")
+              .flatMap((file) => currentByPath.get(file.path) ?? []),
+            includesIgnoredFiles: [...checkpoint.files, ...current.files].some(
+              (file) => file.kind === "ignored",
+            ),
+          } satisfies RestorePreview;
+        }),
+      (current) => discardSnapshot(current.snapshotPath),
+    ).pipe(
       Effect.mapError((cause) => failure("preview", cause)),
       Effect.withSpan("checkpoints.previewRestore"),
     );
@@ -300,7 +409,7 @@ const makeCheckpoints = (storageRoot: string): Checkpoints => {
     previewRestore,
     restore: (checkpoint, undoCheckpointId) =>
       Effect.gen(function* () {
-        const root = yield* validateRoot(checkpoint.projectPath);
+        const root = yield* validateRoot(checkpoint.projectPath, "restore");
         const undo = yield* capture(root, undoCheckpointId);
         const excludedRoot = yield* Effect.tryPromise({
           try: () => realpath(storageRoot),
@@ -358,45 +467,20 @@ export class CheckpointsService extends Context.Service<CheckpointsService, Chec
 ) {}
 
 const projectFiles: ProjectFiles = {
-  validateProject: (path) =>
-    Effect.tryPromise({
-      try: async () => {
-        if (!isAbsolute(path)) {
-          throw new ProjectValidationFailure("not-absolute");
-        }
-        const resolved = await realpath(path);
-        const metadata = await stat(resolved);
-        if (!metadata.isDirectory()) {
-          throw new ProjectValidationFailure("not-directory");
-        }
-        await access(resolved, constants.R_OK | constants.W_OK);
-        const branch = await execFilePromise("git", ["branch", "--show-current"], {
-          cwd: resolved,
-          encoding: "utf8",
-        }).then(
-          (result) => result.stdout.trim() || null,
-          () => null,
-        );
-        const dirty = await execFilePromise("git", ["status", "--porcelain=v1"], {
-          cwd: resolved,
-          encoding: "utf8",
-        }).then(
-          (result) => result.stdout.length > 0,
-          () => null,
-        );
-        return { branch, status: workspaceStatus(dirty) } as const;
-      },
-      catch: (cause): ProjectPathError => {
-        const reason =
-          typeof cause === "object" && cause !== null && "reason" in cause
-            ? String(cause.reason)
-            : "not-found";
-        if (reason === "not-absolute" || reason === "not-directory") {
-          return new ProjectPathError({ path, reason });
-        }
-        return new ProjectPathError({ path, reason: "not-found" });
-      },
-    }),
+  validateProject: Effect.fn("Files.validateProject")(function* (path: string) {
+    const resolved = yield* validateProjectRoot(path);
+    // Unlike ignored-file classification, "unavailable" is a truthful answer here: the
+    // caller is told the workspace state is unknown rather than shown a fabricated one.
+    const branch = yield* git(resolved, ["branch", "--show-current"]).pipe(
+      Effect.map((value) => (value.length === 0 ? null : value)),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    const dirty = yield* git(resolved, ["status", "--porcelain=v1"]).pipe(
+      Effect.map((value) => value.length > 0),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    return { branch, status: workspaceStatus(dirty) } as const;
+  }),
 };
 
 export const projectFilesLayer = Layer.succeed(Files, projectFiles);

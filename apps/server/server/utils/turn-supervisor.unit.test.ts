@@ -1,11 +1,11 @@
 import { expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { describe } from "vitest";
 
+import { ApplicationError } from "@metaclanker/application/commands";
 import { AcpRuntimeError, type AcpSessionHandle } from "@metaclanker/application/ports";
 import { ThreadId } from "@metaclanker/contracts/ids";
 
@@ -65,52 +65,44 @@ describe("TurnSupervisor", () => {
 
   it.effect("interrupts an in-flight thread worker when the runtime closes", () =>
     Effect.gen(function* () {
-      const runtime = ManagedRuntime.make(turnSupervisorLayer);
       const interrupted = yield* Deferred.make<void>();
-      yield* Effect.promise(() =>
-        runtime.runPromise(
-          Effect.gen(function* () {
-            const supervisor = yield* TurnSupervisor;
-            yield* supervisor.submit(
-              ThreadId.make("thread:interrupted"),
-              Effect.never.pipe(Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined))),
-            );
-          }),
-        ),
-      );
-      yield* Effect.promise(() => runtime.dispose());
+
+      // The layer's own scope is the runtime lifetime here, so closing it is what the
+      // assertion is about; a `ManagedRuntime` built in the test body was untied to it.
+      yield* Effect.gen(function* () {
+        const supervisor = yield* TurnSupervisor;
+        yield* supervisor.submit(
+          ThreadId.make("thread:interrupted"),
+          Effect.never.pipe(Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined))),
+        );
+      }).pipe(Effect.provide(turnSupervisorLayer), Effect.scoped);
+
       expect(yield* Deferred.isDone(interrupted)).toBe(true);
     }),
   );
 
   it.effect("closes runtime-owned sessions and rejects new ownership during shutdown", () =>
     Effect.gen(function* () {
-      const runtime = ManagedRuntime.make(turnSupervisorLayer);
       const threadId = ThreadId.make("thread-1");
       let closed = 0;
 
-      const accepted = yield* Effect.promise(() =>
-        runtime.runPromise(
-          Effect.gen(function* () {
-            const supervisor = yield* TurnSupervisor;
-            expect(
-              supervisor.registerSession(
-                threadId,
-                testSession(() => closed++),
-              ),
-            ).toBe(true);
-            yield* supervisor.closeAll;
-            return supervisor.registerSession(
-              threadId,
-              testSession(() => closed++),
-            );
-          }),
-        ),
-      );
+      const accepted = yield* Effect.gen(function* () {
+        const supervisor = yield* TurnSupervisor;
+        expect(
+          supervisor.registerSession(
+            threadId,
+            testSession(() => closed++),
+          ),
+        ).toBe(true);
+        yield* supervisor.closeAll;
+        return supervisor.registerSession(
+          threadId,
+          testSession(() => closed++),
+        );
+      }).pipe(Effect.provide(turnSupervisorLayer), Effect.scoped);
 
-      expect(closed).toBe(1);
       expect(accepted).toBe(false);
-      yield* Effect.promise(() => runtime.dispose());
+      // Closing the layer must not close the session a second time.
       expect(closed).toBe(1);
     }),
   );
@@ -189,11 +181,15 @@ describe("TurnSupervisor", () => {
           Stream.make({ type: "agent-message-chunk", chunk: "must persist" }),
           Effect.never,
         );
-        supervisor.setEventHandler(threadId, () => Effect.fail(new Error("database unavailable")));
+        supervisor.setEventHandler(threadId, () =>
+          Effect.fail(
+            new ApplicationError({ code: "persistence", message: "database unavailable" }),
+          ),
+        );
         expect(supervisor.registerSession(threadId, session)).toBe(true);
         yield* supervisor.attachSession(threadId, session);
         const failure = yield* supervisor.drainSessionEvents(threadId, session).pipe(Effect.flip);
-        expect(failure).toBeInstanceOf(Error);
+        expect(failure).toMatchObject({ _tag: "ApplicationError", code: "persistence" });
         expect(supervisor.session(threadId)).toBeUndefined();
       }).pipe(Effect.provide(turnSupervisorLayer));
     }),

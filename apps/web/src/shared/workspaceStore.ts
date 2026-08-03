@@ -16,6 +16,7 @@ import type {
 import { Provider as ProviderSchema, defaultUserSettings } from "@metaclanker/contracts/wire";
 
 import { api, schemas } from "./apiClient.js";
+import { apiErrorMessage } from "./apiError.js";
 import {
   persistDesktopConversationDrafts,
   readDesktopConversationDrafts,
@@ -176,7 +177,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       await subscribeShell();
     } catch (cause) {
       if (generation !== bootstrapGeneration) return;
-      workspaceError.value = cause instanceof Error ? cause.message : String(cause);
+      workspaceError.value = apiErrorMessage(cause, "The workspace could not be loaded.");
     } finally {
       if (generation === bootstrapGeneration) loading.value = false;
     }
@@ -201,7 +202,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       await subscribe(id);
     } catch (cause) {
       if (generation !== threadLoadGeneration || selectedThreadId !== id) return;
-      threadError.value = cause instanceof Error ? cause.message : String(cause);
+      threadError.value = apiErrorMessage(cause, "The conversation could not be loaded.");
     } finally {
       if (generation === threadLoadGeneration) loading.value = false;
     }
@@ -245,7 +246,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       await subscribe(id);
     } catch (cause) {
       if (selectedThreadId !== id) return;
-      threadError.value = `The conversation could not be resynchronized: ${cause instanceof Error ? cause.message : String(cause)}`;
+      threadError.value = `The conversation could not be resynchronized: ${apiErrorMessage(cause, "The server could not be reached.")}`;
       const delay = Math.min(10_000, 500 * 2 ** reconnectAttempt) + Math.random() * 250;
       reconnectAttempt += 1;
       reconnectTimer = setTimeout(() => {
@@ -266,7 +267,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       reconnectTimer = null;
       void subscribe(id).catch((cause: unknown) => {
         if (selectedThreadId !== id) return;
-        threadError.value = `The conversation could not reconnect: ${cause instanceof Error ? cause.message : String(cause)}`;
+        threadError.value = `The conversation could not reconnect: ${apiErrorMessage(cause, "The server could not be reached.")}`;
         scheduleThreadReconnect(id);
       });
     }, delay);
@@ -292,9 +293,9 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       (event: ServerEvent) => {
         if (generation === threadSocketGeneration) applyEvent(event);
       },
-      (cause) => {
+      () => {
         if (generation === threadSocketGeneration) {
-          threadError.value = `The live update stream sent invalid data: ${String(cause)}`;
+          threadError.value = "The live update stream sent data this version cannot read.";
         }
       },
     );
@@ -334,7 +335,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       shellSnapshotLoading = false;
       await subscribeShell();
     } catch (cause) {
-      workspaceError.value = `The workspace could not be resynchronized: ${cause instanceof Error ? cause.message : String(cause)}`;
+      workspaceError.value = `The workspace could not be resynchronized: ${apiErrorMessage(cause, "The server could not be reached.")}`;
       const delay = Math.min(10_000, 500 * 2 ** shellReconnectAttempt) + Math.random() * 250;
       shellReconnectAttempt += 1;
       shellReconnectTimer = setTimeout(() => {
@@ -358,7 +359,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       const reconnectGeneration = shellSocketGeneration;
       void reconnect.catch((cause: unknown) => {
         if (reconnectGeneration !== shellSocketGeneration) return;
-        workspaceError.value = `The workspace could not reconnect: ${cause instanceof Error ? cause.message : String(cause)}`;
+        workspaceError.value = `The workspace could not reconnect: ${apiErrorMessage(cause, "The server could not be reached.")}`;
         scheduleShellReconnect();
       });
     }, delay);
@@ -384,9 +385,9 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       (event: ServerEvent) => {
         if (generation === shellSocketGeneration) applyShellLiveEvent(event);
       },
-      (cause) => {
+      () => {
         if (generation === shellSocketGeneration) {
-          workspaceError.value = `The workspace update stream sent invalid data: ${String(cause)}`;
+          workspaceError.value = "The workspace update stream sent data this version cannot read.";
         }
       },
     );
