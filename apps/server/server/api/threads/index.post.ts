@@ -1,11 +1,11 @@
-import { Effect } from "effect";
+import * as Effect from "effect/Effect";
 import { defineEventHandler } from "h3";
 
 import { Store } from "@metaclanker/application/commands";
 import { ThreadId } from "@metaclanker/contracts/ids";
-import { CreateThreadRequest } from "@metaclanker/contracts/wire";
+import { CreateThreadRequest, Thread } from "@metaclanker/contracts/wire";
 
-import { decodeBody, publicError } from "../../utils/http.js";
+import { decodeBody, encodeResponse, publicError } from "../../utils/http.js";
 import { publishShellEvent } from "../../utils/hub.js";
 import { runApplication } from "../../utils/runtime.js";
 
@@ -35,5 +35,5 @@ export default defineEventHandler(async (event) => {
       thread: result.record,
     });
   }
-  return result.record;
+  return encodeResponse(Thread, result.record);
 });

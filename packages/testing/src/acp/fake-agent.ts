@@ -6,6 +6,7 @@ import { scenarioFromEnvironment } from "./scenarios.js";
 const sessions = new Map<string, string>();
 const scenario = scenarioFromEnvironment(process.env["METACLANKER_FAKE_ACP_SCENARIO"]);
 const cancellations = new Map<string, () => void>();
+const trailingUpdates = new Set<string>();
 const noop = (): void => undefined;
 const createCancellation = (): {
   readonly promise: Promise<void>;
@@ -59,6 +60,7 @@ const app = acp
   .agent({ name: "MetaClanker deterministic fake" })
   .onRequest(acp.methods.agent.initialize, ({ params }) => {
     if (scenario.crashAt === "initialize") return terminate();
+    if (scenario.crashAt === "initialize-hang") return new Promise<never>(() => undefined);
     return {
       protocolVersion:
         scenario.protocolVersion === 1 ? params.protocolVersion : scenario.protocolVersion,
@@ -126,12 +128,29 @@ const app = acp
       process.stdout.write('{"jsonrpc":\n');
       return terminate();
     }
+    if (scenario.prompt.mode === "event-overflow") {
+      await Promise.all(
+        Array.from({ length: 300 }, (_, index) =>
+          client.notify(acp.methods.client.session.update, {
+            sessionId: params.sessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: `overflow-${index}` },
+            },
+          }),
+        ),
+      );
+      return { stopReason: "end_turn" };
+    }
     if (scenario.prompt.mode === "complete") {
       await client.notify(acp.methods.client.session.update, {
         sessionId: params.sessionId,
         update: {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: `${scenario.prompt.message} (${params.sessionId})` },
+          ...(scenario.metadataMode === "invalid-codex"
+            ? { _meta: { codex: { subagent: { threadId: 42 } } } }
+            : {}),
         },
       });
       return { stopReason: "end_turn" };
@@ -142,17 +161,9 @@ const app = acp
       .join(" ");
 
     if (promptText.includes("trailing update")) {
-      // Deliberately writes the final update after the prompt response so a
-      // client that unbinds its turn on the response is caught dropping it.
-      setTimeout(() => {
-        void client.notify(acp.methods.client.session.update, {
-          sessionId: params.sessionId,
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "trailing chunk" },
-          },
-        });
-      }, 0);
+      // The close request is the deterministic provider milestone that releases
+      // this deliberately post-response update.
+      trailingUpdates.add(params.sessionId);
       return { stopReason: "end_turn" };
     }
 
@@ -213,7 +224,16 @@ const app = acp
   .onNotification(acp.methods.agent.session.cancel, ({ params }) => {
     cancellations.get(params.sessionId)?.();
   })
-  .onRequest(acp.methods.agent.session.close, ({ params }) => {
+  .onRequest(acp.methods.agent.session.close, async ({ client, params }) => {
+    if (trailingUpdates.delete(params.sessionId)) {
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "trailing chunk" },
+        },
+      });
+    }
     sessions.delete(params.sessionId);
     return {};
   });

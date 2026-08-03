@@ -1,5 +1,6 @@
 import type { SessionUpdate, ToolCallContent } from "@agentclientprotocol/sdk";
-import { Option, Schema } from "effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import type { NormalizedAgentEvent } from "@metaclanker/application/ports";
 import { ToolCallId } from "@metaclanker/contracts/ids";
@@ -28,6 +29,11 @@ export type SubagentMetadata =
       readonly parentToolUseId: string | null;
     };
 
+export type SubagentMetadataDecode =
+  | { readonly status: "absent" }
+  | { readonly status: "invalid" }
+  | { readonly status: "decoded"; readonly metadata: SubagentMetadata };
+
 const recordValue = (value: unknown, key: string): unknown => {
   if (typeof value !== "object" || value === null || !(key in value)) {
     return undefined;
@@ -38,29 +44,38 @@ const recordValue = (value: unknown, key: string): unknown => {
 export const decodeSubagentMetadata = (
   provider: Provider,
   meta: Readonly<Record<string, unknown>> | null | undefined,
-): SubagentMetadata | null => {
+): SubagentMetadataDecode => {
   if (provider === "codex") {
     const candidate = recordValue(recordValue(meta, "codex"), "subagent");
+    if (candidate === undefined) return { status: "absent" };
     const decoded = Schema.decodeUnknownOption(CodexSubagent)(candidate);
     if (Option.isNone(decoded)) {
-      return null;
+      return { status: "invalid" };
     }
     return {
-      provider: "codex",
-      threadId: decoded.value.threadId,
-      path: decoded.value.path ?? null,
-      activity: decoded.value.activity ?? "interacted",
+      status: "decoded",
+      metadata: {
+        provider: "codex",
+        threadId: decoded.value.threadId,
+        path: decoded.value.path ?? null,
+        activity: decoded.value.activity ?? "interacted",
+      },
     };
   }
 
   const candidate = recordValue(meta, "claudeCode");
+  if (candidate === undefined) return { status: "absent" };
   const decoded = Schema.decodeUnknownOption(ClaudeSubagent)(candidate);
-  if (Option.isNone(decoded) || !decoded.value.subagent) {
-    return null;
+  if (Option.isNone(decoded)) {
+    return { status: "invalid" };
   }
+  if (!decoded.value.subagent) return { status: "absent" };
   return {
-    provider: "claude",
-    parentToolUseId: decoded.value.parentToolUseId ?? null,
+    status: "decoded",
+    metadata: {
+      provider: "claude",
+      parentToolUseId: decoded.value.parentToolUseId ?? null,
+    },
   };
 };
 

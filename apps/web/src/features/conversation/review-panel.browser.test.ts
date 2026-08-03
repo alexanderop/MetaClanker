@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 import { userEvent } from "vitest/browser";
 import { defineComponent, ref } from "vue";
 
-import { ThreadId } from "@metaclanker/contracts/ids";
+import { CheckpointId, ThreadId } from "@metaclanker/contracts/ids";
 import { renderFeature } from "@metaclanker/testing/vue/render-feature";
 
 import { createAppAtomModel } from "../../app-atom-model.js";
@@ -14,11 +14,9 @@ import ReviewPanel from "./ReviewPanel.vue";
 const threadId = ThreadId.make("thread:review-browser");
 const checkpoint = {
   checkpoint: {
-    id: "checkpoint:before-turn",
-    projectPath: "/private/project",
+    id: CheckpointId.make("checkpoint:before-turn"),
     createdAt: "2026-08-02T08:00:00.000Z",
     files: [{ path: "src/main.ts", size: 12, kind: "tracked" as const }],
-    snapshotPath: "/private/checkpoints/before-turn",
   },
   threadId,
   turnId: null,

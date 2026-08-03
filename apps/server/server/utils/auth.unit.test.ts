@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import { describe } from "vitest";
 
 import {
   consumeWebSocketTicket,
   createEnvironmentSession,
+  authenticationLayer,
   isLoopbackRequest,
   isTrustedLocalBootstrap,
   issueWebSocketTicket,
@@ -44,20 +47,35 @@ describe("environment authentication", () => {
     ).toBe(true);
   });
 
-  it("revokes an environment session explicitly", () => {
-    const session = createEnvironmentSession();
-    expect(validateEnvironmentSession(session)).toBe(true);
+  it.layer(authenticationLayer({ pairingCode: "configured-test-code" }))(
+    "with runtime-scoped authentication state",
+    (layerIt) => {
+      layerIt.effect("revokes an environment session explicitly", () =>
+        Effect.gen(function* () {
+          const session = yield* createEnvironmentSession;
+          expect(yield* validateEnvironmentSession(session)).toBe(true);
+          yield* revokeEnvironmentSession(session);
+          expect(yield* validateEnvironmentSession(session)).toBe(false);
+        }),
+      );
 
-    revokeEnvironmentSession(session);
+      layerIt.effect("consumes WebSocket tickets at most once", () =>
+        Effect.gen(function* () {
+          const ticket = yield* issueWebSocketTicket;
+          expect(yield* consumeWebSocketTicket(ticket)).toBe(true);
+          expect(yield* consumeWebSocketTicket(ticket)).toBe(false);
+        }),
+      );
 
-    expect(validateEnvironmentSession(session)).toBe(false);
-  });
-
-  it("consumes WebSocket tickets at most once", () => {
-    const ticket = issueWebSocketTicket();
-    expect(consumeWebSocketTicket(ticket)).toBe(true);
-    expect(consumeWebSocketTicket(ticket)).toBe(false);
-  });
+      layerIt.effect("accepts only the configured pairing secret", () =>
+        Effect.gen(function* () {
+          const hint = yield* pairingHint;
+          expect(yield* verifyPairingCode(hint)).toBe(true);
+          expect(yield* verifyPairingCode(`${hint}-invalid`)).toBe(false);
+        }),
+      );
+    },
+  );
 
   it("uses one session lifetime and changes the Secure attribute only for HTTPS", () => {
     expect(sessionCookieOptions(false)).toMatchObject({
@@ -68,10 +86,5 @@ describe("environment authentication", () => {
       maxAge: 12 * 60 * 60,
     });
     expect(sessionCookieOptions(true)).toMatchObject({ secure: true });
-  });
-
-  it("accepts only the configured pairing secret", () => {
-    expect(verifyPairingCode(pairingHint())).toBe(true);
-    expect(verifyPairingCode(`${pairingHint()}-invalid`)).toBe(false);
   });
 });

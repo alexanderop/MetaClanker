@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AgentNodeId,
+  CheckpointId,
   EventId,
   MessageId,
   ProjectId,
@@ -182,7 +183,7 @@ describe("domain event projection", () => {
         type: "checkpoint.saved",
         record: {
           checkpoint: {
-            id: "checkpoint:replay",
+            id: CheckpointId.make("checkpoint:replay"),
             projectPath: "/tmp/replay-project",
             createdAt: "2026-08-01T00:00:04.000Z",
             files: [{ path: "README.md", size: 42, kind: "tracked" }],

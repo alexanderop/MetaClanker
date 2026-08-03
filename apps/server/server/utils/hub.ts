@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import * as Effect from "effect/Effect";
 
 import type { ThreadId } from "@metaclanker/contracts/ids";
 import type { ServerEvent } from "@metaclanker/contracts/wire";

@@ -1,15 +1,17 @@
-import { createError, defineEventHandler, getRouterParam } from "h3";
+import { defineEventHandler } from "h3";
 
 import { ThreadId } from "@metaclanker/contracts/ids";
+import { ReviewResponse } from "@metaclanker/contracts/wire";
 import { reviewThread } from "@metaclanker/application/review";
 
-import { publicError } from "../../../utils/http.js";
+import { decodeRouteParam, encodeResponse, publicError } from "../../../utils/http.js";
 import { runApplication } from "../../../utils/runtime.js";
 
 export default defineEventHandler(async (event) => {
-  const rawId = getRouterParam(event, "id");
-  if (rawId === undefined) throw createError({ statusCode: 400, message: "Thread ID required" });
-  return runApplication(reviewThread(ThreadId.make(rawId))).catch((cause: unknown) => {
-    throw publicError(cause);
-  });
+  const id = await decodeRouteParam(event, "id", ThreadId);
+  return runApplication(reviewThread(id))
+    .then((review) => encodeResponse(ReviewResponse, review))
+    .catch((cause: unknown) => {
+      throw publicError(cause);
+    });
 });

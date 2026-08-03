@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect } from "effect";
+import * as Effect from "effect/Effect";
 
 import { Store } from "@metaclanker/application/commands";
 import type { CreateProjectRecord } from "@metaclanker/application/ports";
@@ -12,6 +12,7 @@ import type {
   StartThreadWithPromptInput,
   StartThreadWithPromptResult,
 } from "../utils/orchestrator.js";
+import type { ApplicationRuntime } from "../utils/runtime.js";
 
 export interface OrchestrationHarness {
   readonly projectDirectory: string;
@@ -27,6 +28,9 @@ export interface OrchestrationHarness {
   readonly drain: () => Promise<void>;
   /** Drains current background work by closing active ACP handles, then joins every worker. */
   readonly close: () => Promise<void>;
+  /** Recreates the full application runtime against the same durable data directory. */
+  readonly restartRuntime: () => Promise<void>;
+  readonly setFakeAcpScenario: (scenario: string) => void;
 }
 
 export interface OrchestrationHarnessOptions {
@@ -35,11 +39,6 @@ export interface OrchestrationHarnessOptions {
   /** Serialized fake scenario inherited by the production ACP child process. */
   readonly fakeAcpScenario?: string;
 }
-
-const restoreEnvironment = (name: string, value: string | undefined): void => {
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
-};
 
 /**
  * Server-owned integration support. It starts the production composition root
@@ -51,19 +50,33 @@ export const withOrchestrationHarness = async <A>(
 ): Promise<A> => {
   const dataDirectory = await mkdtemp(join(tmpdir(), "metaclanker-orchestrator-data-"));
   const projectDirectory = await mkdtemp(join(tmpdir(), "metaclanker-orchestrator-project-"));
-  const previousFakeScenario = process.env["METACLANKER_FAKE_ACP_SCENARIO"];
   const fakeEntry =
     options.fakeAcpEntry ?? join(process.cwd(), "packages/testing/dist/acp/fake-agent.js");
-  const fakeCommand: AdapterCommand = { command: process.execPath, args: [fakeEntry] };
-  process.env["METACLANKER_FAKE_ACP_SCENARIO"] =
+  let fakeScenario =
     options.fakeAcpScenario ??
     JSON.stringify({
       prompt: { mode: "complete", message: "Integration fake completed" },
     });
+  const fakeCommand: AdapterCommand = {
+    command: process.execPath,
+    args: [fakeEntry],
+    environment: () => ({ METACLANKER_FAKE_ACP_SCENARIO: fakeScenario }),
+  };
 
   try {
     const loadedRuntime = await import("../utils/runtime.js");
     const loadedOrchestrator = await import("../utils/orchestrator.js");
+    const providerAdapters = {
+      commands: { codex: fakeCommand, claude: fakeCommand },
+      readiness: { codex: true, claude: true },
+    } as const;
+    let runtime = loadedRuntime.makeApplicationRuntime(dataDirectory, providerAdapters);
+    const scopedRuntime: ApplicationRuntime = {
+      dataDirectory,
+      providerAdapters,
+      runApplication: (effect) => runtime.runApplication(effect),
+      dispose: () => runtime.dispose(),
+    };
     const runStore = <B>(effect: Effect.Effect<B, unknown, Store>): Promise<B> =>
       loadedRuntime.runApplication(effect);
     const harness: OrchestrationHarness = {
@@ -93,12 +106,16 @@ export const withOrchestrationHarness = async <A>(
         ),
       drain: loadedOrchestrator.drainAgentWork,
       close: loadedOrchestrator.closeAgentSessions,
+      restartRuntime: async () => {
+        await loadedOrchestrator.closeAgentSessions();
+        await runtime.dispose();
+        runtime = loadedRuntime.makeApplicationRuntime(dataDirectory, providerAdapters);
+      },
+      setFakeAcpScenario: (scenario) => {
+        fakeScenario = scenario;
+      },
     };
-    const runtime = loadedRuntime.makeApplicationRuntime(dataDirectory, {
-      commands: { codex: fakeCommand, claude: fakeCommand },
-      readiness: { codex: true, claude: true },
-    });
-    return await loadedRuntime.withApplicationRuntimeForTest(runtime, async () => {
+    return await loadedRuntime.withApplicationRuntimeForTest(scopedRuntime, async () => {
       try {
         return await use(harness);
       } finally {
@@ -107,7 +124,6 @@ export const withOrchestrationHarness = async <A>(
       }
     });
   } finally {
-    restoreEnvironment("METACLANKER_FAKE_ACP_SCENARIO", previousFakeScenario);
     await Promise.all([
       rm(dataDirectory, { recursive: true, force: true }),
       rm(projectDirectory, { recursive: true, force: true }),

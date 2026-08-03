@@ -16,19 +16,21 @@ import {
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
-import { Context, Data, Effect, Layer } from "effect";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 import type {
   Checkpoint,
-  CheckpointError,
   CheckpointFile,
   Checkpoints,
   ProjectFiles,
-  ProjectPathError,
   RestorePreview,
   WorkspaceDiff,
 } from "@metaclanker/application/ports";
+import { CheckpointError, ProjectPathError } from "@metaclanker/application/ports";
 import { Files } from "@metaclanker/application/commands";
+import { CheckpointId } from "@metaclanker/contracts/ids";
 
 const execFilePromise = promisify(execFile);
 
@@ -36,11 +38,6 @@ const workspaceStatus = (dirty: boolean | null): "clean" | "dirty" | "unavailabl
   if (dirty === null) return "unavailable";
   return dirty ? "dirty" : "clean";
 };
-
-class LiveCheckpointError extends Data.TaggedError("CheckpointError")<{
-  readonly operation: CheckpointError["operation"];
-  readonly message: string;
-}> {}
 
 class ProjectValidationFailure extends Error {
   readonly reason: "not-absolute" | "not-directory";
@@ -52,7 +49,7 @@ class ProjectValidationFailure extends Error {
 }
 
 const failure = (operation: CheckpointError["operation"], cause: unknown): CheckpointError =>
-  new LiveCheckpointError({
+  new CheckpointError({
     operation,
     message: cause instanceof Error ? cause.message : String(cause),
   });
@@ -208,7 +205,10 @@ const compareCheckpoints = (before: Checkpoint, after: Checkpoint) =>
   });
 
 const makeCheckpoints = (storageRoot: string): Checkpoints => {
-  const capture: Checkpoints["capture"] = (projectPath, checkpointId = crypto.randomUUID()) =>
+  const capture: Checkpoints["capture"] = (
+    projectPath,
+    checkpointId = CheckpointId.make(crypto.randomUUID()),
+  ) =>
     Effect.gen(function* () {
       const root = yield* validateRoot(projectPath);
       const id = checkpointId;
@@ -259,7 +259,10 @@ const makeCheckpoints = (storageRoot: string): Checkpoints => {
         catch: (cause) => failure("capture", cause),
       });
       return checkpoint;
-    }).pipe(Effect.mapError((cause) => failure("capture", cause)));
+    }).pipe(
+      Effect.mapError((cause) => failure("capture", cause)),
+      Effect.withSpan("checkpoints.capture"),
+    );
 
   const previewRestore: Checkpoints["previewRestore"] = (checkpoint) =>
     Effect.gen(function* () {
@@ -282,12 +285,18 @@ const makeCheckpoints = (storageRoot: string): Checkpoints => {
         ),
       };
       return preview;
-    }).pipe(Effect.mapError((cause) => failure("preview", cause)));
+    }).pipe(
+      Effect.mapError((cause) => failure("preview", cause)),
+      Effect.withSpan("checkpoints.previewRestore"),
+    );
 
   return {
     capture,
     diff: (before, after) =>
-      compareCheckpoints(before, after).pipe(Effect.mapError((cause) => failure("diff", cause))),
+      compareCheckpoints(before, after).pipe(
+        Effect.mapError((cause) => failure("diff", cause)),
+        Effect.withSpan("checkpoints.diff"),
+      ),
     previewRestore,
     restore: (checkpoint, undoCheckpointId) =>
       Effect.gen(function* () {
@@ -334,7 +343,10 @@ const makeCheckpoints = (storageRoot: string): Checkpoints => {
           { concurrency: 8 },
         );
         return undo;
-      }).pipe(Effect.mapError((cause) => failure("restore", cause))),
+      }).pipe(
+        Effect.mapError((cause) => failure("restore", cause)),
+        Effect.withSpan("checkpoints.restore"),
+      ),
   };
 };
 
@@ -380,9 +392,9 @@ const projectFiles: ProjectFiles = {
             ? String(cause.reason)
             : "not-found";
         if (reason === "not-absolute" || reason === "not-directory") {
-          return { _tag: "ProjectPathError", path, reason };
+          return new ProjectPathError({ path, reason });
         }
-        return { _tag: "ProjectPathError", path, reason: "not-found" };
+        return new ProjectPathError({ path, reason: "not-found" });
       },
     }),
 };

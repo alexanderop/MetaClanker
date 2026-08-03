@@ -1,12 +1,13 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import { Effect } from "effect";
+import * as Effect from "effect/Effect";
 import { defineEventHandler } from "h3";
 
 import { Store } from "@metaclanker/application/commands";
+import { BackupResponse } from "@metaclanker/contracts/wire";
 
-import { publicError } from "../../utils/http.js";
+import { encodeResponse, publicError } from "../../utils/http.js";
 import { applicationDataDirectory, runApplication } from "../../utils/runtime.js";
 
 export default defineEventHandler(async () => {
@@ -23,5 +24,5 @@ export default defineEventHandler(async () => {
   ).catch((cause: unknown) => {
     throw publicError(cause);
   });
-  return { fileName };
+  return encodeResponse(BackupResponse, { fileName });
 });

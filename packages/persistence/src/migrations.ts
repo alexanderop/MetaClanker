@@ -1,5 +1,6 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { Effect, Schema } from "effect";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 const ColumnRow = Schema.Struct({ name: Schema.String });
 
@@ -78,4 +79,11 @@ export const runMigrations = Effect.gen(function* () {
     (provider TEXT NOT NULL, model TEXT NOT NULL, discovered_at TEXT NOT NULL,
       PRIMARY KEY (provider, model))`;
   yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (8, datetime('now'))`;
+  yield* sql`CREATE TABLE IF NOT EXISTS provider_session_capabilities
+    (thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+      continuation_safety TEXT NOT NULL CHECK (continuation_safety IN ('safe', 'unsafe')))`;
+  yield* sql`INSERT OR IGNORE INTO provider_session_capabilities
+    (thread_id, continuation_safety)
+    SELECT id, 'unsafe' FROM threads WHERE provider_session_id IS NOT NULL`;
+  yield* sql`INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (9, datetime('now'))`;
 }).pipe(Effect.withSpan("persistence.migrations"));

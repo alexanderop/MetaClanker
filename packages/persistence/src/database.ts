@@ -1,17 +1,21 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqliteClient from "@effect/sql-sqlite-node/SqliteClient";
-import { Context, Data, Effect, Layer, Schema } from "effect";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import type {
   MetaClankerStore,
   PersistedCheckpoint,
-  StoreError,
   PromptIntentLease,
   UpsertToolCallRecord,
 } from "@metaclanker/application/ports";
+import { StoreError } from "@metaclanker/application/ports";
 import { Store } from "@metaclanker/application/commands";
 import {
   AgentNodeId,
+  CheckpointId,
   CommandId,
   EventId,
   MessageId,
@@ -39,31 +43,33 @@ import type { DomainEvent, UnsequencedDomainEvent } from "@metaclanker/domain/ev
 import { eventThreadId, UnsequencedDomainEventSchema } from "./eventCodec.js";
 import { runMigrations } from "./migrations.js";
 
-class DecodeStoreError extends Data.TaggedError("StoreError")<{
-  readonly code: "persistence";
-  readonly operation: string;
-  readonly message: string;
-}> {}
-
 const storeError = (
   operation: string,
   cause: unknown,
   code: StoreError["code"] = "persistence",
-): StoreError => ({
-  _tag: "StoreError",
-  code,
-  operation,
-  message: cause instanceof Error ? cause.message : String(cause),
-});
-
-const decode = <A>(operation: string, schema: Schema.ConstraintDecoder<A, never>, value: unknown) =>
-  Effect.try({
-    try: () => Schema.decodeUnknownSync(schema)(value),
-    catch: (cause) =>
-      new DecodeStoreError({ code: "persistence", operation, message: String(cause) }),
+): StoreError =>
+  new StoreError({
+    code,
+    operation,
+    message: cause instanceof Error ? cause.message : String(cause),
   });
 
-const parseJson = (value: string): unknown => JSON.parse(value);
+const decode = <A>(operation: string, schema: Schema.ConstraintDecoder<A, never>, value: unknown) =>
+  Schema.decodeUnknownEffect(schema)(value).pipe(
+    Effect.mapError(
+      (cause) => new StoreError({ code: "persistence", operation, message: String(cause) }),
+    ),
+  );
+
+const decodeJson = <A>(
+  operation: string,
+  schema: Schema.ConstraintDecoder<A, never>,
+  value: string,
+) =>
+  Effect.try({
+    try: () => JSON.parse(value) as unknown,
+    catch: (cause) => new StoreError({ code: "persistence", operation, message: String(cause) }),
+  }).pipe(Effect.flatMap((parsed) => decode(operation, schema, parsed)));
 
 const ProjectRow = Schema.Struct({
   id: ProjectId,
@@ -71,8 +77,8 @@ const ProjectRow = Schema.Struct({
   path: Schema.String,
   git_branch: Schema.NullOr(Schema.String),
   git_status: Schema.Literals(["clean", "dirty", "unavailable"]),
-  hidden: Schema.Number,
-  sort_order: Schema.Number,
+  hidden: Schema.Literals([0, 1]),
+  sort_order: Schema.Natural,
   created_at: Schema.String,
 });
 
@@ -84,7 +90,7 @@ const ThreadRow = Schema.Struct({
   status: ThreadStatus,
   model: Schema.NullOr(Schema.String),
   provider_session_id: Schema.NullOr(Schema.String),
-  archived: Schema.Number,
+  archived: Schema.Literals([0, 1]),
   created_at: Schema.String,
   updated_at: Schema.String,
 });
@@ -92,6 +98,10 @@ const ThreadRow = Schema.Struct({
 const ProviderModelRow = Schema.Struct({
   provider: Provider,
   model: Schema.String,
+});
+
+const ProviderSessionCapabilityRow = Schema.Struct({
+  continuation_safety: Schema.Literals(["safe", "unsafe"]),
 });
 
 const MessageRow = Schema.Struct({
@@ -147,9 +157,9 @@ const AgentNodeRow = Schema.Struct({
   model: Schema.NullOr(Schema.String),
   state: AgentNode.fields.state,
   activity: Schema.String,
-  child_count: Schema.Number,
-  pending_approval: Schema.Number,
-  changed_file_count: Schema.Number,
+  child_count: Schema.Natural,
+  pending_approval: Schema.Literals([0, 1]),
+  changed_file_count: Schema.Natural,
 });
 
 const ReceiptRow = Schema.Struct({
@@ -170,12 +180,12 @@ const EventRow = Schema.Struct({
 
 const CheckpointFileSchema = Schema.Struct({
   path: Schema.String,
-  size: Schema.Number,
+  size: Schema.Natural,
   kind: Schema.Literals(["tracked", "staged", "untracked", "ignored", "unknown"]),
 });
 
 const CheckpointSchema = Schema.Struct({
-  id: Schema.String,
+  id: CheckpointId,
   projectPath: Schema.String,
   createdAt: Schema.String,
   files: Schema.Array(CheckpointFileSchema),
@@ -199,6 +209,7 @@ const PromptIntentRow = Schema.Struct({
 
 type ProjectRow = typeof ProjectRow.Type;
 type ThreadRow = typeof ThreadRow.Type;
+type ProviderSessionCapabilityRow = typeof ProviderSessionCapabilityRow.Type;
 type MessageRow = typeof MessageRow.Type;
 type TurnRow = typeof TurnRow.Type;
 type ToolCallRow = typeof ToolCallRow.Type;
@@ -258,10 +269,10 @@ const toolCallFromRow = (row: ToolCallRow): ToolCall => ({
 });
 
 const interactionFromRow = (row: InteractionRow) =>
-  decode(
+  decodeJson(
     "decode interaction options",
     PendingInteraction.fields.options,
-    parseJson(row.options_json),
+    row.options_json,
   ).pipe(
     Effect.map(
       (options): PendingInteraction => ({
@@ -345,7 +356,9 @@ const makeStore = Effect.gen(function* () {
     Effect.gen(function* () {
       const receipt = yield* findReceipt(input.commandId);
       let projectId =
-        receipt === null ? input.id : Schema.decodeUnknownSync(ProjectId)(receipt.aggregateId);
+        receipt === null
+          ? input.id
+          : yield* decode("project receipt aggregate", ProjectId, receipt.aggregateId);
       let eventSequence: Sequence | null = null;
 
       if (receipt === null) {
@@ -443,7 +456,10 @@ const makeStore = Effect.gen(function* () {
         readonly sequence: number;
       }>`SELECT last_insert_rowid() AS sequence`;
       return yield* decode("append event", Sequence, rows[0]?.sequence);
-    }).pipe(Effect.mapError((cause) => storeError("append event", cause)));
+    }).pipe(
+      Effect.mapError((cause) => storeError("append event", cause)),
+      Effect.withSpan("persistence.appendEvent"),
+    );
 
   const readEvents: MetaClankerStore["readEvents"] = (afterSequence, limit) =>
     sql<EventRow>`SELECT sequence, schema_version, event_id, payload_json, received_at
@@ -601,10 +617,10 @@ const makeStore = Effect.gen(function* () {
         checkpointRows,
       );
       for (const row of checkpoints) {
-        const checkpoint = yield* decode(
+        const checkpoint = yield* decodeJson(
           "baseline checkpoint",
           CheckpointSchema,
-          parseJson(row.checkpoint_json),
+          row.checkpoint_json,
         );
         yield* appendEvent({
           origin: "git",
@@ -622,7 +638,7 @@ const makeStore = Effect.gen(function* () {
         FROM settings WHERE key = 'user'`;
       const settingsValue = settingsRows[0]?.value_json;
       if (settingsValue !== undefined) {
-        const settings = yield* decode("baseline settings", UserSettings, parseJson(settingsValue));
+        const settings = yield* decodeJson("baseline settings", UserSettings, settingsValue);
         yield* appendEvent({ origin: "server", type: "settings.saved", settings });
       }
     }
@@ -673,10 +689,10 @@ const makeStore = Effect.gen(function* () {
       payload_json FROM side_effect_intents WHERE kind = 'git.restore'
         AND state IN ('pending', 'running')`;
     for (const restore of restoreRows) {
-      const payload = yield* decode(
+      const payload = yield* decodeJson(
         "recover restore intent",
         Schema.Struct({ threadId: ThreadId }),
-        parseJson(restore.payload_json),
+        restore.payload_json,
       );
       const updatedAt = new Date().toISOString();
       yield* appendEvent({
@@ -826,7 +842,9 @@ const makeStore = Effect.gen(function* () {
       Effect.gen(function* () {
         const receipt = yield* findReceipt(input.commandId);
         const threadId =
-          receipt === null ? input.id : Schema.decodeUnknownSync(ThreadId)(receipt.aggregateId);
+          receipt === null
+            ? input.id
+            : yield* decode("thread receipt aggregate", ThreadId, receipt.aggregateId);
         let eventSequence: Sequence | null = null;
         if (receipt === null) {
           const thread: Thread = {
@@ -1144,7 +1162,12 @@ const makeStore = Effect.gen(function* () {
       Effect.gen(function* () {
         const receipt = yield* findReceipt(input.commandId);
         if (receipt !== null) {
-          return { acceptedNow: false, undoCheckpointId: receipt.aggregateId } as const;
+          const undoCheckpointId = yield* decode(
+            "restore receipt checkpoint",
+            CheckpointId,
+            receipt.aggregateId,
+          );
+          return { acceptedNow: false, undoCheckpointId } as const;
         }
         yield* getThreadRow(input.threadId);
         const activeRows = yield* sql<TurnRow>`SELECT id, thread_id FROM turns
@@ -1286,10 +1309,10 @@ const makeStore = Effect.gen(function* () {
         const claimed = yield* decode("claim prompt intent", Schema.Array(PromptIntentRow), rows);
         const row = claimed[0];
         if (row === undefined) return null;
-        const payload = yield* decode(
+        const payload = yield* decodeJson(
           "claim prompt intent payload",
           Schema.Struct({ threadId: ThreadId, turnId: TurnId }),
-          parseJson(row.payload_json),
+          row.payload_json,
         );
         return {
           intentId: row.id,
@@ -1415,7 +1438,7 @@ const makeStore = Effect.gen(function* () {
         sql.withTransaction,
         Effect.mapError((cause) => storeError("set thread status", cause)),
       ),
-    setProviderSession: (id, providerSessionId) =>
+    setProviderSession: (id, providerSessionId, continuationSafety) =>
       Effect.gen(function* () {
         const current = yield* getThreadRow(id);
         const thread = {
@@ -1430,10 +1453,22 @@ const makeStore = Effect.gen(function* () {
         });
         yield* sql`UPDATE threads SET provider_session_id = ${providerSessionId},
           updated_at = ${thread.updatedAt} WHERE id = ${id}`;
+        yield* sql`INSERT INTO provider_session_capabilities (thread_id, continuation_safety)
+          VALUES (${id}, ${continuationSafety})
+          ON CONFLICT(thread_id) DO UPDATE SET continuation_safety = excluded.continuation_safety`;
         return { record: thread, eventSequence };
       }).pipe(
         sql.withTransaction,
         Effect.mapError((cause) => storeError("set provider session", cause)),
+      ),
+    getProviderContinuationSafety: (id) =>
+      sql<ProviderSessionCapabilityRow>`SELECT continuation_safety
+        FROM provider_session_capabilities WHERE thread_id = ${id}`.pipe(
+        Effect.mapError((cause) => storeError("get provider continuation safety", cause)),
+        Effect.flatMap((rows) =>
+          decode("provider continuation safety", Schema.Array(ProviderSessionCapabilityRow), rows),
+        ),
+        Effect.map((rows) => rows[0]?.continuation_safety ?? null),
       ),
     appendMessage: (input) =>
       Effect.gen(function* () {
@@ -1753,7 +1788,7 @@ const makeStore = Effect.gen(function* () {
       Effect.flatMap((rows) => {
         const value = rows[0]?.value_json;
         if (value === undefined) return Effect.succeed(defaultUserSettings);
-        return decode("get settings", UserSettings, parseJson(value));
+        return decodeJson("get settings", UserSettings, value);
       }),
     ),
     saveSettings: (settings) =>
@@ -1788,7 +1823,7 @@ const makeStore = Effect.gen(function* () {
         Effect.flatMap((rows) => decode("checkpoint rows", Schema.Array(CheckpointRow), rows)),
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) =>
-            decode("checkpoint record", CheckpointSchema, parseJson(row.checkpoint_json)).pipe(
+            decodeJson("checkpoint record", CheckpointSchema, row.checkpoint_json).pipe(
               Effect.map(
                 (checkpoint): PersistedCheckpoint => ({
                   checkpoint,

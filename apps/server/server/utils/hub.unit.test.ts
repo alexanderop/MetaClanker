@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import * as Effect from "effect/Effect";
 import { describe, vi } from "vitest";
 
 import { ThreadId } from "@metaclanker/contracts/ids";

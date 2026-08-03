@@ -1,4 +1,6 @@
-import { Context, Data, Effect } from "effect";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import type { Checkpoints, MetaClankerStore, ProjectFiles } from "./ports.js";
 
@@ -14,16 +16,20 @@ export class CheckpointService extends Context.Service<CheckpointService, Checkp
   "@metaclanker/application/CheckpointService",
 ) {}
 
-export class ApplicationError extends Data.TaggedError("ApplicationError")<{
-  readonly code:
-    | "invalid-project"
-    | "invalid-request"
-    | "provider-unavailable"
-    | "not-found"
-    | "conflict"
-    | "persistence";
-  readonly message: string;
-}> {}
+export class ApplicationError extends Schema.TaggedErrorClass<ApplicationError>()(
+  "ApplicationError",
+  {
+    code: Schema.Literals([
+      "invalid-project",
+      "invalid-request",
+      "provider-unavailable",
+      "not-found",
+      "conflict",
+      "persistence",
+    ]),
+    message: Schema.String,
+  },
+) {}
 
 export const mapStoreError = <A>(
   effect: Effect.Effect<

@@ -1,13 +1,11 @@
-import * as Data from "effect/Data";
-
-export type ClientErrorKind = "network" | "http" | "invalid-json" | "invalid-response";
+import * as Schema from "effect/Schema";
 
 /** Safe client-boundary failure; it never retains response bodies or request payloads. */
-export class ClientError extends Data.TaggedError("ClientError")<{
-  readonly operation: string;
-  readonly kind: ClientErrorKind;
-  readonly status?: number;
-}> {}
+export class ClientError extends Schema.TaggedErrorClass<ClientError>()("ClientError", {
+  operation: Schema.String,
+  kind: Schema.Literals(["network", "http", "invalid-json", "invalid-response"]),
+  status: Schema.optionalKey(Schema.Number),
+}) {}
 
 export const clientErrorMessage = (error: ClientError): string => {
   const status = error.status === undefined ? "" : ` (HTTP ${error.status})`;

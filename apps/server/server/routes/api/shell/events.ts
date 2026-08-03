@@ -1,6 +1,9 @@
 import { defineWebSocketHandler } from "h3";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { Sequence } from "@metaclanker/contracts/ids";
+import { EventCursorQuery, TicketResponse } from "@metaclanker/contracts/wire";
 import { domainEventToShellEvent } from "@metaclanker/domain/events";
 
 import { consumeWebSocketTicket } from "../../../utils/auth.js";
@@ -21,15 +24,25 @@ const peerCleanup = (peer: {
 export default defineWebSocketHandler({
   async open(peer) {
     const url = new URL(peer.request.url, "http://localhost");
-    if (!consumeWebSocketTicket(url.searchParams.get("ticket"))) {
+    const ticket = Schema.decodeUnknownOption(TicketResponse)({
+      ticket: url.searchParams.get("ticket"),
+    });
+    if (
+      Option.isNone(ticket) ||
+      !(await runApplication(consumeWebSocketTicket(ticket.value.ticket)))
+    ) {
       peer.close(4401, "Authentication required");
       return;
     }
-    const requestedSequence = Number(url.searchParams.get("afterSequence") ?? "0");
-    if (!Number.isSafeInteger(requestedSequence) || requestedSequence < 0) {
+    const cursor = url.searchParams.get("afterSequence");
+    const decodedCursor = Schema.decodeUnknownOption(EventCursorQuery)(
+      cursor === null ? {} : { afterSequence: cursor },
+    );
+    if (Option.isNone(decodedCursor)) {
       peer.close(4400, "Invalid event cursor");
       return;
     }
+    const requestedSequence = decodedCursor.value.afterSequence ?? 0;
     let active = true;
     let unsubscribe = noop;
     const cleanup = (): void => {

@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@metaclanker/application": "workspace:*",
+    "@metaclanker/contracts": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

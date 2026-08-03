@@ -2,7 +2,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect, ManagedRuntime } from "effect";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqliteClient from "@effect/sql-sqlite-node/SqliteClient";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Store } from "@metaclanker/application/commands";
 import {
   AgentNodeId,
+  CheckpointId,
   CommandId,
   MessageId,
   PendingInteractionId,
@@ -346,8 +351,8 @@ describe("SQLite event store", () => {
         return yield* store.admitRestore({
           commandId,
           threadId,
-          checkpointId: "checkpoint:source",
-          undoCheckpointId: "checkpoint:undo",
+          checkpointId: CheckpointId.make("checkpoint:source"),
+          undoCheckpointId: CheckpointId.make("checkpoint:undo"),
           leaseId: "lease:restore",
           createdAt: "2026-08-02T00:00:02.000Z",
         });
@@ -364,8 +369,8 @@ describe("SQLite event store", () => {
           replayed: yield* store.admitRestore({
             commandId,
             threadId,
-            checkpointId: "checkpoint:source",
-            undoCheckpointId: "checkpoint:other",
+            checkpointId: CheckpointId.make("checkpoint:source"),
+            undoCheckpointId: CheckpointId.make("checkpoint:other"),
             leaseId: "lease:restore-replay",
             createdAt: "2026-08-02T00:00:03.000Z",
           }),
@@ -547,7 +552,7 @@ describe("SQLite event store", () => {
         });
         const checkpoint = yield* store.saveCheckpoint({
           checkpoint: {
-            id: "checkpoint:journal",
+            id: CheckpointId.make("checkpoint:journal"),
             projectPath: "/tmp/journal-completeness",
             createdAt: "2026-08-01T00:00:02.000Z",
             files: [{ path: "README.md", size: 42, kind: "tracked" }],
@@ -752,5 +757,202 @@ describe("SQLite event store", () => {
         outcome: "recovery-required",
       }),
     );
+  });
+
+  it("reports malformed persisted settings JSON through StoreError", async () => {
+    const filename = await temporaryDatabase();
+    const firstRuntime = ManagedRuntime.make(databaseLayer(filename));
+    await firstRuntime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        yield* store.saveSettings({
+          schemaVersion: 1,
+          theme: "dark",
+          graphDensity: "comfortable",
+          statusColors: "default",
+          hiddenPanels: [],
+          shortcuts: { commandPalette: "Meta+K", agentMap: "Meta+M", review: "Meta+R" },
+          providerDefaults: {
+            codex: { model: null, effort: null, permissionMode: null },
+            claude: { model: null, effort: null, permissionMode: null },
+          },
+        });
+      }),
+    );
+    await firstRuntime.dispose();
+
+    const sqlRuntime = ManagedRuntime.make(SqliteClient.layer({ filename }));
+    await sqlRuntime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE settings SET value_json = '{invalid-json' WHERE key = 'user'`;
+      }),
+    );
+    await sqlRuntime.dispose();
+
+    const restarted = ManagedRuntime.make(databaseLayer(filename));
+    const exit = await restarted.runPromiseExit(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        return yield* store.getSettings;
+      }),
+    );
+    await restarted.dispose();
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isSuccess(exit)) return;
+    const error = Cause.findErrorOption(exit.cause);
+    expect(Option.isSome(error)).toBe(true);
+    if (Option.isSome(error)) {
+      expect(error.value).toMatchObject({ _tag: "StoreError", code: "persistence" });
+    }
+  });
+
+  it("rejects corrupted SQLite boolean and natural-number projections", async () => {
+    const filename = await temporaryDatabase();
+    const projectId = ProjectId.make("project:corrupt-row");
+    const firstRuntime = ManagedRuntime.make(databaseLayer(filename));
+    await firstRuntime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        yield* store.createProject({
+          id: projectId,
+          commandId: CommandId.make("command:corrupt-row"),
+          name: "Corrupt row",
+          path: "/tmp/corrupt-row",
+          gitBranch: null,
+          gitStatus: "unavailable",
+          createdAt: "2026-08-02T00:00:00.000Z",
+        });
+      }),
+    );
+    await firstRuntime.dispose();
+
+    const sqlRuntime = ManagedRuntime.make(SqliteClient.layer({ filename }));
+    await sqlRuntime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE projects SET hidden = 2, sort_order = -1 WHERE id = ${projectId}`;
+      }),
+    );
+    await sqlRuntime.dispose();
+
+    const restarted = ManagedRuntime.make(databaseLayer(filename));
+    const exit = await restarted.runPromiseExit(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        return yield* store.shellSnapshot;
+      }),
+    );
+    await restarted.dispose();
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isSuccess(exit)) return;
+    const error = Cause.findErrorOption(exit.cause);
+    expect(Option.isSome(error)).toBe(true);
+    if (Option.isSome(error)) {
+      expect(error.value).toMatchObject({ _tag: "StoreError", code: "persistence" });
+    }
+  });
+
+  it("reports a malformed persisted receipt aggregate through StoreError", async () => {
+    const filename = await temporaryDatabase();
+    const commandId = CommandId.make("command:corrupt-receipt");
+    const firstRuntime = ManagedRuntime.make(databaseLayer(filename));
+    await firstRuntime.runPromise(
+      Effect.gen(function* () {
+        yield* Store;
+      }),
+    );
+    await firstRuntime.dispose();
+
+    const sqlRuntime = ManagedRuntime.make(SqliteClient.layer({ filename }));
+    await sqlRuntime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO command_receipts
+          (command_id, status, aggregate_id, reason, created_at)
+          VALUES (${commandId}, 'accepted', '', NULL, '2026-08-02T00:00:00.000Z')`;
+      }),
+    );
+    await sqlRuntime.dispose();
+
+    const restarted = ManagedRuntime.make(databaseLayer(filename));
+    const exit = await restarted.runPromiseExit(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        return yield* store.createProject({
+          id: ProjectId.make("project:corrupt-receipt"),
+          commandId,
+          name: "Corrupt receipt",
+          path: "/tmp/corrupt-receipt",
+          gitBranch: null,
+          gitStatus: "unavailable",
+          createdAt: "2026-08-02T00:00:00.000Z",
+        });
+      }),
+    );
+    await restarted.dispose();
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isSuccess(exit)) return;
+    const error = Cause.findErrorOption(exit.cause);
+    expect(Option.isSome(error)).toBe(true);
+    if (Option.isSome(error)) {
+      expect(error.value).toMatchObject({ _tag: "StoreError", code: "persistence" });
+    }
+  });
+
+  it("conservatively backfills continuation safety when upgrading a saved provider session", async () => {
+    const filename = await temporaryDatabase();
+    const projectId = ProjectId.make("project:v8-provider-session");
+    const threadId = ThreadId.make("thread:v8-provider-session");
+    const firstRuntime = ManagedRuntime.make(databaseLayer(filename));
+    await firstRuntime.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        yield* store.createProject({
+          id: projectId,
+          commandId: CommandId.make("command:v8-provider-session-project"),
+          name: "Version eight provider session",
+          path: "/tmp/v8-provider-session",
+          gitBranch: null,
+          gitStatus: "unavailable",
+          createdAt: "2026-08-02T00:00:00.000Z",
+        });
+        yield* store.createThread({
+          id: threadId,
+          commandId: CommandId.make("command:v8-provider-session-thread"),
+          projectId,
+          provider: "codex",
+          title: "Saved provider session",
+          model: null,
+          createdAt: "2026-08-02T00:00:01.000Z",
+        });
+        yield* store.setProviderSession(threadId, "provider-session:v8", "safe");
+      }),
+    );
+    await firstRuntime.dispose();
+
+    const sqlRuntime = ManagedRuntime.make(SqliteClient.layer({ filename }));
+    await sqlRuntime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM schema_migrations WHERE version = 9`;
+        yield* sql`DROP TABLE provider_session_capabilities`;
+      }),
+    );
+    await sqlRuntime.dispose();
+
+    const restarted = ManagedRuntime.make(databaseLayer(filename));
+    const safety = await restarted.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        return yield* store.getProviderContinuationSafety(threadId);
+      }),
+    );
+    await restarted.dispose();
+
+    expect(safety).toBe("unsafe");
   });
 });

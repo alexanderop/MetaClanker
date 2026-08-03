@@ -1,5 +1,11 @@
 import { defineEventHandler } from "h3";
 
-import { issueWebSocketTicket } from "../../utils/auth.js";
+import { TicketResponse } from "@metaclanker/contracts/wire";
 
-export default defineEventHandler(() => ({ ticket: issueWebSocketTicket() }));
+import { issueWebSocketTicket } from "../../utils/auth.js";
+import { runApplication } from "../../utils/runtime.js";
+import { encodeResponse } from "../../utils/http.js";
+
+export default defineEventHandler(async () =>
+  encodeResponse(TicketResponse, { ticket: await runApplication(issueWebSocketTicket) }),
+);

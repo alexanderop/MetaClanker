@@ -1,13 +1,22 @@
 import { expect, it } from "@effect/vitest";
-import { Deferred, Effect, ManagedRuntime, Ref } from "effect";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 import { describe } from "vitest";
 
-import type { AcpSessionHandle } from "@metaclanker/application/ports";
+import { AcpRuntimeError, type AcpSessionHandle } from "@metaclanker/application/ports";
 import { ThreadId } from "@metaclanker/contracts/ids";
 
 import { TurnSupervisor, turnSupervisorLayer } from "./turn-supervisor.js";
 
-const testSession = (onClose: () => void): AcpSessionHandle => ({
+const testSession = (
+  onClose: () => void,
+  events: AcpSessionHandle["events"] = Stream.empty,
+  drainAcceptedEvents: AcpSessionHandle["drainAcceptedEvents"] = Effect.void,
+  abort: AcpSessionHandle["abort"] = Effect.sync(onClose),
+): AcpSessionHandle => ({
   providerSessionId: "provider-session",
   capabilities: {
     protocolVersion: 1,
@@ -19,10 +28,13 @@ const testSession = (onClose: () => void): AcpSessionHandle => ({
     models: [],
     modes: [],
   },
+  events,
+  drainAcceptedEvents,
   prompt: () => Effect.succeed({ stopReason: "completed" }),
   requestCancel: () => Effect.void,
   respondInteraction: () => Effect.void,
   close: Effect.sync(onClose),
+  abort,
 });
 
 describe("TurnSupervisor", () => {
@@ -100,6 +112,90 @@ describe("TurnSupervisor", () => {
       expect(accepted).toBe(false);
       yield* Effect.promise(() => runtime.dispose());
       expect(closed).toBe(1);
+    }),
+  );
+
+  it.effect("evicts an idle session when its event stream disconnects", () =>
+    Effect.gen(function* () {
+      const release = yield* Deferred.make<void>();
+      const aborted = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        const supervisor = yield* TurnSupervisor;
+        const threadId = ThreadId.make("thread:idle-disconnect");
+        const events = Stream.fromEffect(Deferred.await(release)).pipe(
+          Stream.flatMap(() =>
+            Stream.fail(
+              new AcpRuntimeError({ code: "disconnected", message: "idle adapter exited" }),
+            ),
+          ),
+        );
+        const session = testSession(
+          () => undefined,
+          events,
+          Effect.void,
+          Deferred.succeed(aborted, undefined),
+        );
+        expect(supervisor.registerSession(threadId, session)).toBe(true);
+        yield* supervisor.attachSession(threadId, session);
+        yield* Deferred.succeed(release, undefined);
+        yield* Deferred.await(aborted);
+        expect(supervisor.session(threadId)).toBeUndefined();
+        expect(supervisor.continuationSafety(threadId)).toBe("safe");
+      }).pipe(Effect.provide(turnSupervisorLayer));
+    }),
+  );
+
+  it.effect("retains an unsafe continuation marker after an idle disconnect", () =>
+    Effect.gen(function* () {
+      const release = yield* Deferred.make<void>();
+      const aborted = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        const supervisor = yield* TurnSupervisor;
+        const threadId = ThreadId.make("thread:unsafe-idle-disconnect");
+        const events = Stream.fromEffect(Deferred.await(release)).pipe(
+          Stream.flatMap(() =>
+            Stream.fail(
+              new AcpRuntimeError({ code: "disconnected", message: "idle adapter exited" }),
+            ),
+          ),
+        );
+        const base = testSession(
+          () => undefined,
+          events,
+          Effect.void,
+          Deferred.succeed(aborted, undefined),
+        );
+        const session: AcpSessionHandle = {
+          ...base,
+          capabilities: { ...base.capabilities, resume: false, load: false, close: false },
+        };
+        expect(supervisor.registerSession(threadId, session)).toBe(true);
+        yield* supervisor.attachSession(threadId, session);
+        yield* Deferred.succeed(release, undefined);
+        yield* Deferred.await(aborted);
+        expect(supervisor.session(threadId)).toBeUndefined();
+        expect(supervisor.continuationSafety(threadId)).toBe("unsafe");
+      }).pipe(Effect.provide(turnSupervisorLayer));
+    }),
+  );
+
+  it.effect("fails the turn drain when durable event handling fails", () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        const supervisor = yield* TurnSupervisor;
+        const threadId = ThreadId.make("thread:event-persistence-failure");
+        const session = testSession(
+          () => undefined,
+          Stream.make({ type: "agent-message-chunk", chunk: "must persist" }),
+          Effect.never,
+        );
+        supervisor.setEventHandler(threadId, () => Effect.fail(new Error("database unavailable")));
+        expect(supervisor.registerSession(threadId, session)).toBe(true);
+        yield* supervisor.attachSession(threadId, session);
+        const failure = yield* supervisor.drainSessionEvents(threadId, session).pipe(Effect.flip);
+        expect(failure).toBeInstanceOf(Error);
+        expect(supervisor.session(threadId)).toBeUndefined();
+      }).pipe(Effect.provide(turnSupervisorLayer));
     }),
   );
 });

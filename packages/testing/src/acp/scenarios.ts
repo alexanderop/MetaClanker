@@ -1,6 +1,11 @@
-export type FakePromptMode = "complete" | "permission" | "crash" | "malformed-frame";
+export type FakePromptMode =
+  | "complete"
+  | "permission"
+  | "crash"
+  | "malformed-frame"
+  | "event-overflow";
 
-export type FakeCrashPoint = "initialize" | "session-new" | "prompt";
+export type FakeCrashPoint = "initialize" | "initialize-hang" | "session-new" | "prompt";
 
 /**
  * Configuration for the deterministic ACP executable. It is deliberately a
@@ -22,6 +27,7 @@ export interface AcpScenario {
   readonly modes: ReadonlyArray<string>;
   readonly requiredMode: string | null;
   readonly crashAt: FakeCrashPoint | null;
+  readonly metadataMode: "none" | "invalid-codex";
 }
 
 export type AcpScenarioOverrides = {
@@ -32,6 +38,7 @@ export type AcpScenarioOverrides = {
   readonly modes?: ReadonlyArray<string>;
   readonly requiredMode?: string | null;
   readonly crashAt?: FakeCrashPoint | null;
+  readonly metadataMode?: AcpScenario["metadataMode"];
 };
 
 const defaults: AcpScenario = {
@@ -45,6 +52,7 @@ const defaults: AcpScenario = {
   modes: ["default"],
   requiredMode: null,
   crashAt: null,
+  metadataMode: "none",
 };
 
 export const acpScenario = (overrides: AcpScenarioOverrides = {}): AcpScenario => ({
@@ -61,16 +69,21 @@ export const acpScenario = (overrides: AcpScenarioOverrides = {}): AcpScenario =
   modes: overrides.modes ?? defaults.modes,
   requiredMode: overrides.requiredMode ?? defaults.requiredMode,
   crashAt: overrides.crashAt ?? defaults.crashAt,
+  metadataMode: overrides.metadataMode ?? defaults.metadataMode,
 });
 
 const isPromptMode = (value: unknown): value is FakePromptMode =>
   value === "complete" ||
   value === "permission" ||
   value === "crash" ||
-  value === "malformed-frame";
+  value === "malformed-frame" ||
+  value === "event-overflow";
 
 const isCrashPoint = (value: unknown): value is FakeCrashPoint =>
-  value === "initialize" || value === "session-new" || value === "prompt";
+  value === "initialize" ||
+  value === "initialize-hang" ||
+  value === "session-new" ||
+  value === "prompt";
 
 /** Invalid external configuration falls back to the safe, deterministic default. */
 export const scenarioFromEnvironment = (value: string | undefined): AcpScenario => {
@@ -122,6 +135,9 @@ export const scenarioFromEnvironment = (value: string | undefined): AcpScenario 
         : {}),
       ...(input["crashAt"] === null || isCrashPoint(input["crashAt"])
         ? { crashAt: input["crashAt"] }
+        : {}),
+      ...(input["metadataMode"] === "none" || input["metadataMode"] === "invalid-codex"
+        ? { metadataMode: input["metadataMode"] }
         : {}),
     });
   } catch {

@@ -1,7 +1,10 @@
 import { appendFile, mkdir, readdir, rename, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
-import { Context, Effect, Layer } from "effect";
+import * as Config from "effect/Config";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 import type { ProjectId, ThreadId, TurnId } from "@metaclanker/contracts/ids";
 import type { Provider } from "@metaclanker/contracts/wire";
@@ -61,33 +64,34 @@ const appendRecord = async (directory: string, record: LocalDiagnosticRecord): P
   await appendFile(current, line, { encoding: "utf8", mode: 0o600 });
 };
 
-export const localDiagnosticsLayer = (
-  dataDirectory: string,
-  enabled = process.env["METACLANKER_DIAGNOSTICS"] === "1",
-) => {
-  if (!enabled) return Layer.succeed(LocalDiagnostics, discard());
-  return Layer.effect(
+export const localDiagnosticsLayer = (dataDirectory: string, enabledOverride?: boolean) =>
+  Layer.effect(
     LocalDiagnostics,
-    Effect.acquireRelease(
-      Effect.tryPromise(() => prepareDirectory(join(dataDirectory, "diagnostics"))).pipe(
-        Effect.map(() => {
-          let pending = Promise.resolve();
-          const diagnosticsDirectory = join(dataDirectory, "diagnostics");
-          const service: LocalDiagnosticsService = {
-            record: (record) =>
-              Effect.promise(() => {
-                pending = pending
-                  .then(() => appendRecord(diagnosticsDirectory, record))
-                  .catch(() => undefined);
-                return pending;
-              }),
-            flush: Effect.promise(() => pending),
-          };
-          return service;
-        }),
-        Effect.catch(() => Effect.succeed(discard())),
-      ),
-      (service) => service.flush,
-    ),
+    Effect.gen(function* () {
+      const enabled =
+        enabledOverride ??
+        (yield* Config.string("METACLANKER_DIAGNOSTICS").pipe(Config.withDefault("0"))) === "1";
+      if (!enabled) return discard();
+      return yield* Effect.acquireRelease(
+        Effect.tryPromise(() => prepareDirectory(join(dataDirectory, "diagnostics"))).pipe(
+          Effect.map(() => {
+            let pending = Promise.resolve();
+            const diagnosticsDirectory = join(dataDirectory, "diagnostics");
+            const service: LocalDiagnosticsService = {
+              record: (record) =>
+                Effect.promise(() => {
+                  pending = pending
+                    .then(() => appendRecord(diagnosticsDirectory, record))
+                    .catch(() => undefined);
+                  return pending;
+                }),
+              flush: Effect.promise(() => pending),
+            };
+            return service;
+          }),
+          Effect.catch(() => Effect.succeed(discard())),
+        ),
+        (service) => service.flush,
+      );
+    }),
   );
-};

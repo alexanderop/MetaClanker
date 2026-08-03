@@ -3,7 +3,13 @@ import { mkdirSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { Cause, Effect, Exit, Layer, ManagedRuntime, Option } from "effect";
+import * as Cause from "effect/Cause";
+import * as Config from "effect/Config";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 
 import { adapterEntry, type AdapterCommand } from "@metaclanker/acp-client/session";
 import type { Provider } from "@metaclanker/contracts/wire";
@@ -26,6 +32,8 @@ import { turnSupervisorLayer } from "./turn-supervisor.js";
 import type { EventFanout } from "./event-fanout.js";
 import { eventFanoutLayer } from "./event-fanout.js";
 import { agentCommandsLayer } from "../services/agent-commands.js";
+import type { Authentication } from "./auth.js";
+import { authenticationLayer } from "./auth.js";
 
 type ApplicationRequirements =
   | Store
@@ -35,7 +43,8 @@ type ApplicationRequirements =
   | CheckpointService
   | LocalDiagnostics
   | TurnSupervisor
-  | EventFanout;
+  | EventFanout
+  | Authentication;
 
 export interface ProviderAdapters {
   readonly commands: Readonly<Record<Provider, AdapterCommand>>;
@@ -71,8 +80,18 @@ const productionProviderAdapters = (): ProviderAdapters => {
 
 /** The packaged server never accepts an arbitrary adapter override. This narrowly supports built E2E. */
 const testProviderAdapters = (): ProviderAdapters | undefined => {
-  const fakeEntry = process.env["METACLANKER_TEST_ACP_ENTRY"];
-  if (process.env["NODE_ENV"] !== "test" || fakeEntry === undefined || !existsSync(fakeEntry)) {
+  const configuration = Effect.runSync(
+    Config.all({
+      nodeEnvironment: Config.string("NODE_ENV").pipe(Config.withDefault("production")),
+      fakeEntry: Config.option(Config.string("METACLANKER_TEST_ACP_ENTRY")),
+    }),
+  );
+  const fakeEntry = Option.getOrUndefined(configuration.fakeEntry);
+  if (
+    configuration.nodeEnvironment !== "test" ||
+    fakeEntry === undefined ||
+    !existsSync(fakeEntry)
+  ) {
     return undefined;
   }
   const command: AdapterCommand = { command: process.execPath, args: [fakeEntry] };
@@ -111,22 +130,23 @@ export const makeApplicationRuntime = (
   const resolvedDataDirectory = resolve(dataDirectory);
   mkdirSync(join(resolvedDataDirectory, "checkpoints"), { recursive: true });
   const checkpoints = checkpointsLayer(join(resolvedDataDirectory, "checkpoints"));
+  const coreLayer = Layer.mergeAll(
+    databaseLayer(join(resolvedDataDirectory, "metaclanker.sqlite")),
+    projectFilesLayer,
+    checkpoints,
+    Layer.effect(
+      ApplicationCheckpointService,
+      Effect.gen(function* () {
+        return yield* CheckpointsService;
+      }),
+    ).pipe(Layer.provide(checkpoints)),
+    localDiagnosticsLayer(resolvedDataDirectory),
+    turnSupervisorLayer,
+    eventFanoutLayer,
+    authenticationLayer(),
+  );
   const runtime = ManagedRuntime.make(
-    Layer.mergeAll(
-      databaseLayer(join(resolvedDataDirectory, "metaclanker.sqlite")),
-      projectFilesLayer,
-      checkpoints,
-      Layer.effect(
-        ApplicationCheckpointService,
-        Effect.gen(function* () {
-          return yield* CheckpointsService;
-        }),
-      ).pipe(Layer.provide(checkpoints)),
-      localDiagnosticsLayer(resolvedDataDirectory),
-      turnSupervisorLayer,
-      eventFanoutLayer,
-      agentCommandsLayer,
-    ),
+    Layer.merge(coreLayer, agentCommandsLayer(providerAdapters).pipe(Layer.provide(coreLayer))),
   );
   return {
     dataDirectory: resolvedDataDirectory,

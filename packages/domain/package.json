@@ -8,6 +8,10 @@
       "types": "./dist/events.d.ts",
       "default": "./dist/events.js"
     },
+    "./persisted-events": {
+      "types": "./dist/persisted-events.d.ts",
+      "default": "./dist/persisted-events.js"
+    },
     "./graph": {
       "types": "./dist/graph.d.ts",
       "default": "./dist/graph.js"

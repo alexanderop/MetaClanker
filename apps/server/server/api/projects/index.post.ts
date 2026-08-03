@@ -4,9 +4,9 @@ import { defineEventHandler } from "h3";
 
 import { createProject } from "@metaclanker/application/projects";
 import { ProjectId } from "@metaclanker/contracts/ids";
-import { CreateProjectRequest } from "@metaclanker/contracts/wire";
+import { CreateProjectRequest, Project } from "@metaclanker/contracts/wire";
 
-import { decodeBody, publicError } from "../../utils/http.js";
+import { decodeBody, encodeResponse, publicError } from "../../utils/http.js";
 import { publishShellEvent } from "../../utils/hub.js";
 import { runApplication } from "../../utils/runtime.js";
 
@@ -31,5 +31,5 @@ export default defineEventHandler(async (event) => {
       project: result.record,
     });
   }
-  return result.record;
+  return encodeResponse(Project, result.record);
 });

@@ -5,7 +5,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import { computed, inject, onUnmounted, ref, type InjectionKey } from "vue";
 
-import { CommandId, type ThreadId } from "@metaclanker/contracts/ids";
+import { CommandId, type CheckpointId, type ThreadId } from "@metaclanker/contracts/ids";
 import type {
   PersistedCheckpointWire,
   RestorePreviewResponse,
@@ -25,7 +25,7 @@ export interface ReviewAtomModel {
   readonly reviewByThread: (threadId: ThreadId) => Atom.Atom<ReviewResult>;
   readonly previewByThread: (
     threadId: ThreadId,
-  ) => (checkpointId: string) => Atom.Atom<PreviewResult>;
+  ) => (checkpointId: CheckpointId) => Atom.Atom<PreviewResult>;
   readonly emptyPreview: Atom.Atom<PreviewResult>;
   readonly restoreByCommand: (
     commandId: CommandId,
@@ -47,7 +47,7 @@ export const createReviewAtomModel = (client: ClientAtomModel): ReviewAtomModel 
     ),
   );
   const previewByThread = Atom.family((threadId: ThreadId) =>
-    Atom.family((checkpointId: string) =>
+    Atom.family((checkpointId: CheckpointId) =>
       client.runtime.atom(
         Effect.gen(function* () {
           const service = yield* Client;
@@ -112,7 +112,7 @@ export interface UseReviewModelOptions {
 export const useReviewModel = (options: UseReviewModelOptions) => {
   const model = injectReviewAtomModel();
   const reviewResult = useAtomValue(() => model.reviewByThread(options.threadId()));
-  const selectedCheckpointId = ref<string | null>(null);
+  const selectedCheckpointId = ref<CheckpointId | null>(null);
   const confirmed = ref(false);
   const commandId = ref(CommandId.make(crypto.randomUUID()));
   const previewResult = useAtomValue(() => {
@@ -156,7 +156,7 @@ export const useReviewModel = (options: UseReviewModelOptions) => {
 
   const refresh = (): void => model.refreshReview(options.threadId());
 
-  const selectCheckpoint = (checkpointId: string): void => {
+  const selectCheckpoint = (checkpointId: CheckpointId): void => {
     confirmed.value = false;
     selectedCheckpointId.value = checkpointId;
     commandId.value = CommandId.make(crypto.randomUUID());

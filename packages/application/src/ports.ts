@@ -1,7 +1,11 @@
-import type { Effect } from "effect";
+import type * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
+import type * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
 
 import type {
   CommandId,
+  CheckpointId,
   MessageId,
   PendingInteractionId,
   ProjectId,
@@ -95,6 +99,8 @@ export type TurnCompletionStatus =
   | "failed"
   | "recovery-required";
 
+export type ProviderContinuationSafety = "safe" | "unsafe";
+
 export type PromptIntentPhase =
   | "admitted"
   | "scheduling-failed"
@@ -153,15 +159,19 @@ export type AdmittedCancel =
 export interface AdmitRestoreRecord {
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
-  readonly checkpointId: string;
-  readonly undoCheckpointId: string;
+  readonly checkpointId: CheckpointId;
+  readonly undoCheckpointId: CheckpointId;
   readonly leaseId: string;
   readonly createdAt: string;
 }
 
 export type AdmittedRestore =
-  | { readonly acceptedNow: false; readonly undoCheckpointId: string }
-  | { readonly acceptedNow: true; readonly undoCheckpointId: string; readonly leaseId: string };
+  | { readonly acceptedNow: false; readonly undoCheckpointId: CheckpointId }
+  | {
+      readonly acceptedNow: true;
+      readonly undoCheckpointId: CheckpointId;
+      readonly leaseId: string;
+    };
 
 export interface AppendMessageRecord {
   readonly id: MessageId;
@@ -180,12 +190,11 @@ export interface UpsertToolCallRecord extends Omit<
   readonly updatedAt: string;
 }
 
-export interface StoreError {
-  readonly _tag: "StoreError";
-  readonly code: "not-found" | "conflict" | "persistence";
-  readonly operation: string;
-  readonly message: string;
-}
+export class StoreError extends Schema.TaggedErrorClass<StoreError>()("StoreError", {
+  code: Schema.Literals(["not-found", "conflict", "persistence"]),
+  operation: Schema.String,
+  message: Schema.String,
+}) {}
 
 export interface PersistedMutation<A> {
   readonly record: A;
@@ -294,7 +303,11 @@ export interface MetaClankerStore {
   readonly setProviderSession: (
     id: ThreadId,
     providerSessionId: string,
+    continuationSafety: ProviderContinuationSafety,
   ) => Effect.Effect<PersistedMutation<Thread>, StoreError>;
+  readonly getProviderContinuationSafety: (
+    id: ThreadId,
+  ) => Effect.Effect<ProviderContinuationSafety | null, StoreError>;
   readonly appendMessage: (
     input: AppendMessageRecord,
   ) => Effect.Effect<PersistedMutation<Message>, StoreError>;
@@ -351,7 +364,7 @@ export interface CheckpointFile {
 }
 
 export interface Checkpoint {
-  readonly id: string;
+  readonly id: CheckpointId;
   readonly projectPath: string;
   readonly createdAt: string;
   readonly files: ReadonlyArray<CheckpointFile>;
@@ -376,16 +389,15 @@ export interface RestorePreview {
   readonly includesIgnoredFiles: boolean;
 }
 
-export interface CheckpointError {
-  readonly _tag: "CheckpointError";
-  readonly operation: "capture" | "diff" | "preview" | "restore";
-  readonly message: string;
-}
+export class CheckpointError extends Schema.TaggedErrorClass<CheckpointError>()("CheckpointError", {
+  operation: Schema.Literals(["capture", "diff", "preview", "restore"]),
+  message: Schema.String,
+}) {}
 
 export interface Checkpoints {
   readonly capture: (
     projectPath: string,
-    id?: string,
+    id?: CheckpointId,
   ) => Effect.Effect<Checkpoint, CheckpointError>;
   readonly diff: (
     before: Checkpoint,
@@ -396,7 +408,7 @@ export interface Checkpoints {
   ) => Effect.Effect<RestorePreview, CheckpointError>;
   readonly restore: (
     checkpoint: Checkpoint,
-    undoCheckpointId?: string,
+    undoCheckpointId?: CheckpointId,
   ) => Effect.Effect<Checkpoint, CheckpointError>;
 }
 
@@ -416,11 +428,13 @@ export interface ProjectFiles {
   readonly validateProject: (path: string) => Effect.Effect<GitWorkspaceStatus, ProjectPathError>;
 }
 
-export interface ProjectPathError {
-  readonly _tag: "ProjectPathError";
-  readonly path: string;
-  readonly reason: "not-absolute" | "not-found" | "not-directory" | "not-readable";
-}
+export class ProjectPathError extends Schema.TaggedErrorClass<ProjectPathError>()(
+  "ProjectPathError",
+  {
+    path: Schema.String,
+    reason: Schema.Literals(["not-absolute", "not-found", "not-directory", "not-readable"]),
+  },
+) {}
 
 export interface PromptInput {
   readonly turnId: TurnId;
@@ -461,28 +475,36 @@ export type NormalizedAgentEvent =
       readonly type: "permission";
       readonly interaction: Omit<PendingInteraction, "sequence">;
     }
+  | { readonly type: "capability-degraded"; readonly capability: "graph" }
   | { readonly type: "runtime-failure"; readonly message: string };
 
-export interface AcpRuntimeError {
-  readonly _tag: "AcpRuntimeError";
-  readonly code: "spawn" | "protocol" | "process-exit" | "disconnected" | "unsupported";
-  readonly message: string;
-}
+export class AcpRuntimeError extends Schema.TaggedErrorClass<AcpRuntimeError>()("AcpRuntimeError", {
+  code: Schema.Literals([
+    "spawn",
+    "protocol",
+    "process-exit",
+    "disconnected",
+    "unsupported",
+    "event-overflow",
+  ]),
+  message: Schema.String,
+}) {}
 
 export interface AcpSessionHandle {
   readonly providerSessionId: string;
   readonly capabilities: SessionCapabilities;
-  readonly prompt: (
-    input: PromptInput,
-    /** The ACP SDK calls this foreign-boundary bridge outside an Effect runtime. */
-    emit: (event: NormalizedAgentEvent) => Promise<void>,
-  ) => Effect.Effect<PromptOutcome, AcpRuntimeError>;
+  readonly events: Stream.Stream<NormalizedAgentEvent, AcpRuntimeError>;
+  /** Waits until every event already accepted by the bounded queue has been consumed. */
+  readonly drainAcceptedEvents: Effect.Effect<void, AcpRuntimeError>;
+  readonly prompt: (input: PromptInput) => Effect.Effect<PromptOutcome, AcpRuntimeError>;
   readonly requestCancel: () => Effect.Effect<void, AcpRuntimeError>;
   readonly respondInteraction: (
     id: PendingInteractionId,
     optionId: string,
   ) => Effect.Effect<void, AcpRuntimeError>;
-  readonly close: Effect.Effect<void>;
+  readonly close: Effect.Effect<void, AcpRuntimeError>;
+  /** Immediately tears down transport and the child process without protocol handshakes. */
+  readonly abort: Effect.Effect<void>;
 }
 
 export interface OpenAcpSessionInput {
@@ -497,5 +519,7 @@ export interface OpenAcpSessionInput {
 }
 
 export interface AcpSessions {
-  readonly open: (input: OpenAcpSessionInput) => Effect.Effect<AcpSessionHandle, AcpRuntimeError>;
+  readonly open: (
+    input: OpenAcpSessionInput,
+  ) => Effect.Effect<AcpSessionHandle, AcpRuntimeError, Scope.Scope>;
 }

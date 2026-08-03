@@ -2,7 +2,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect, ManagedRuntime } from "effect";
+import * as Effect from "effect/Effect";
+import * as ManagedRuntime from "effect/ManagedRuntime";
 import { describe, expect, it } from "vitest";
 
 import { ProjectId, ThreadId, TurnId } from "@metaclanker/contracts/ids";

@@ -1,6 +1,9 @@
 import { shellSnapshot } from "@metaclanker/application/workspace";
+import { ShellSnapshot } from "@metaclanker/contracts/wire";
 
-import { defineApiHandler } from "../utils/http.js";
+import { defineApiHandler, encodeResponse } from "../utils/http.js";
 import { runApplication } from "../utils/runtime.js";
 
-export default defineApiHandler(() => runApplication(shellSnapshot()));
+export default defineApiHandler(() =>
+  runApplication(shellSnapshot()).then((snapshot) => encodeResponse(ShellSnapshot, snapshot)),
+);

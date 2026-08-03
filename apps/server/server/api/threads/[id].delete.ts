@@ -1,16 +1,14 @@
-import { createError, getRouterParam } from "h3";
-
 import { deleteThread } from "@metaclanker/application/workspace";
 import { ThreadId } from "@metaclanker/contracts/ids";
+import { RemovedResponse } from "@metaclanker/contracts/wire";
 
-import { defineApiHandler } from "../../utils/http.js";
+import { decodeRouteParam, defineApiHandler, encodeResponse } from "../../utils/http.js";
 import { publishShellEvent, publishThreadEvent } from "../../utils/hub.js";
 import { runApplication } from "../../utils/runtime.js";
 
 export default defineApiHandler(async (event) => {
-  const rawId = getRouterParam(event, "id");
-  if (rawId === undefined) throw createError({ statusCode: 400, message: "Thread ID required" });
-  const result = await runApplication(deleteThread(ThreadId.make(rawId)));
+  const id = await decodeRouteParam(event, "id", ThreadId);
+  const result = await runApplication(deleteThread(id));
   const liveEvent = {
     type: "thread-removed",
     threadId: result.record,
@@ -18,5 +16,5 @@ export default defineApiHandler(async (event) => {
   } as const;
   await publishShellEvent(liveEvent);
   await publishThreadEvent(result.record, liveEvent);
-  return { removed: true };
+  return encodeResponse(RemovedResponse, { removed: true });
 });

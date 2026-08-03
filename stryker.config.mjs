@@ -10,6 +10,7 @@ export default {
   thresholds: { high: 80, low: 70, break: 70 },
   tempDirName: ".stryker-tmp",
   ignorePatterns: [
+    "/.claude/**",
     "/artifacts/**",
     "/.packaging/**",
     "/apps/*/dist/**",

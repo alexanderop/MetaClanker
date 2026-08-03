@@ -2,7 +2,8 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect, ManagedRuntime } from "effect";
+import * as Effect from "effect/Effect";
+import * as ManagedRuntime from "effect/ManagedRuntime";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CheckpointsService, checkpointsLayer } from "./checkpoints.js";

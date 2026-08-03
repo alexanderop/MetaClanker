@@ -197,7 +197,7 @@ test("theme settings preview, cancel, report failure, and save without duplicate
         saveStarted.resolve();
         await releaseFailure.promise;
         return HttpResponse.json(
-          { error: { message: "Settings temporarily unavailable" } },
+          { error: { code: "internal", message: "Settings temporarily unavailable" } },
           { status: 503 },
         );
       }
@@ -552,7 +552,7 @@ test("a rejected follow-up keeps its draft across navigation with visible feedba
         requestStarted.resolve();
         await responseGate.promise;
         return HttpResponse.json(
-          { message: "The provider rejected this follow-up" },
+          { error: { code: "conflict", message: "The provider rejected this follow-up" } },
           { status: 409 },
         );
       }
@@ -861,7 +861,7 @@ test("a failed thread load retries the requested conversation without losing its
       threadRequests += 1;
       if (threadRequests === 1) {
         return HttpResponse.json(
-          { error: { code: "temporarily-unavailable", message: "Thread temporarily unavailable" } },
+          { error: { code: "internal", message: "Thread temporarily unavailable" } },
           { status: 503 },
         );
       }
@@ -986,7 +986,7 @@ test("a rejected permission response keeps its card and retries with visible fee
         responseStarted.resolve();
         await responseGate.promise;
         return HttpResponse.json(
-          { message: "Provider rejected permission response" },
+          { error: { code: "conflict", message: "Provider rejected permission response" } },
           { status: 409 },
         );
       }
@@ -1032,7 +1032,10 @@ test("an active follow-up keeps its draft and exposes stop instead of sending", 
       if (cancelRequests.length === 1) {
         cancelStarted.resolve();
         await cancelGate.promise;
-        return HttpResponse.json({ message: "Cancellation was rejected" }, { status: 409 });
+        return HttpResponse.json(
+          { error: { code: "conflict", message: "Cancellation was rejected" } },
+          { status: 409 },
+        );
       }
       cancelRetried.resolve();
       return HttpResponse.json({ accepted: true });
@@ -1214,7 +1217,12 @@ test("a rejected first send preserves every local draft field and reuses its com
     http.post("/api/threads/start", async ({ request }) => {
       startRequests.push(await request.json());
       return HttpResponse.json(
-        { message: `Claude needs authentication (attempt ${String(startRequests.length)})` },
+        {
+          error: {
+            code: "provider-unavailable",
+            message: `Claude needs authentication (attempt ${String(startRequests.length)})`,
+          },
+        },
         { status: 409 },
       );
     }),

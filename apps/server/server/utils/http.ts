@@ -1,18 +1,17 @@
-import { Schema } from "effect";
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
-import { createError, defineEventHandler, type H3Error, type H3Event, readBody } from "h3";
+import * as Option from "effect/Option";
+import {
+  createError,
+  defineEventHandler,
+  getRouterParam,
+  type H3Error,
+  type H3Event,
+  readBody,
+} from "h3";
 
-import type { ApplicationError } from "@metaclanker/application/commands";
-
-const isApplicationError = (cause: unknown): cause is ApplicationError =>
-  typeof cause === "object" &&
-  cause !== null &&
-  "_tag" in cause &&
-  cause._tag === "ApplicationError" &&
-  "code" in cause &&
-  typeof cause.code === "string" &&
-  "message" in cause &&
-  typeof cause.message === "string";
+import { ApplicationError } from "@metaclanker/application/commands";
+import { ProjectPathError } from "@metaclanker/application/ports";
 
 export const decodeBody = async <A>(
   event: H3Event,
@@ -28,10 +27,33 @@ export const decodeBody = async <A>(
   });
 };
 
+export const decodeRouteParam = async <A>(
+  event: H3Event,
+  name: string,
+  schema: Schema.ConstraintDecoder<A, never>,
+): Promise<A> => {
+  const value: unknown = getRouterParam(event, name);
+  return Schema.decodeUnknownPromise(schema)(value).catch(() => {
+    throw createError({
+      statusCode: 400,
+      message: `Invalid ${name} route parameter`,
+      data: { code: "invalid-request" },
+    });
+  });
+};
+
+/** Encodes public output through the same shared contract consumed by clients. */
+export const encodeResponse = <S extends Schema.ConstraintEncoder<unknown>>(
+  schema: S,
+  value: S["Type"],
+): S["Encoded"] => Schema.encodeSync(schema)(value);
+
 const applicationPublicError = (cause: unknown) => {
-  if (isApplicationError(cause)) {
+  const decoded = Schema.decodeUnknownOption(ApplicationError)(cause);
+  if (Option.isSome(decoded)) {
+    const error = decoded.value;
     const statusCode = (() => {
-      switch (cause.code) {
+      switch (error.code) {
         case "invalid-request":
           return 400;
         case "provider-unavailable":
@@ -47,21 +69,17 @@ const applicationPublicError = (cause: unknown) => {
     })();
     return createError({
       statusCode,
-      message: cause.code === "persistence" ? "Operation failed" : cause.message,
-      data: { code: cause.code },
+      message: error.code === "persistence" ? "Operation failed" : error.message,
+      data: { code: error.code },
     });
   }
   return undefined;
 };
 
 const projectPathPublicError = (cause: unknown) => {
-  if (
-    typeof cause === "object" &&
-    cause !== null &&
-    "_tag" in cause &&
-    cause._tag === "ProjectPathError"
-  ) {
-    const reason = "reason" in cause ? cause.reason : "not-readable";
+  const decoded = Schema.decodeUnknownOption(ProjectPathError)(cause);
+  if (Option.isSome(decoded)) {
+    const reason = decoded.value.reason;
     let message = "That server directory is not readable";
     if (reason === "not-absolute") message = "Enter an absolute server path";
     if (reason === "not-found") message = "That server path does not exist";

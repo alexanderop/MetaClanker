@@ -1,83 +1,20 @@
-import type { EventId, ProjectId, Sequence, ThreadId, TurnId } from "@metaclanker/contracts/ids";
+import type { Sequence, ThreadId } from "@metaclanker/contracts/ids";
 import type {
   AgentNode,
-  Message,
-  PendingInteraction,
   Project,
   ShellSnapshot,
   Thread,
   ThreadDetail,
-  ThreadStatus,
-  ToolCall,
   UserSettings,
   ServerEvent,
 } from "@metaclanker/contracts/wire";
+import type { CheckpointProjectionRecord, DomainEvent } from "./persisted-events.js";
 
-interface EventMetadata {
-  readonly schemaVersion: 1;
-  readonly sequence: Sequence;
-  readonly eventId: EventId;
-  readonly receivedAt: string;
-  readonly origin: "client" | "server" | "provider" | "git";
-}
-
-export interface CheckpointProjectionRecord {
-  readonly checkpoint: {
-    readonly id: string;
-    readonly projectPath: string;
-    readonly createdAt: string;
-    readonly files: ReadonlyArray<{
-      readonly path: string;
-      readonly size: number;
-      readonly kind: "tracked" | "staged" | "untracked" | "ignored" | "unknown";
-    }>;
-    readonly snapshotPath: string;
-  };
-  readonly threadId: ThreadId;
-  readonly turnId: TurnId | null;
-  readonly kind: "pre-turn" | "post-turn" | "undo";
-}
-
-type EventData =
-  | { readonly type: "project.upserted"; readonly project: Project }
-  | { readonly type: "project.removed"; readonly projectId: ProjectId }
-  | { readonly type: "thread.upserted"; readonly thread: Thread }
-  | {
-      readonly type: "thread.status-changed";
-      readonly threadId: ThreadId;
-      readonly status: ThreadStatus;
-      readonly updatedAt: string;
-    }
-  | { readonly type: "thread.removed"; readonly threadId: ThreadId }
-  | {
-      readonly type: "turn.started";
-      readonly threadId: ThreadId;
-      readonly turnId: TurnId;
-    }
-  | {
-      readonly type: "turn.completed";
-      readonly threadId: ThreadId;
-      readonly turnId: TurnId;
-      readonly outcome: "completed" | "cancelled" | "interrupted" | "failed" | "recovery-required";
-    }
-  | {
-      readonly type: "message.upserted";
-      readonly message: Omit<Message, "sequence">;
-    }
-  | {
-      readonly type: "tool.upserted";
-      readonly toolCall: Omit<ToolCall, "sequence">;
-    }
-  | {
-      readonly type: "interaction.upserted";
-      readonly interaction: Omit<PendingInteraction, "sequence">;
-    }
-  | { readonly type: "agent-node.upserted"; readonly node: AgentNode }
-  | { readonly type: "checkpoint.saved"; readonly record: CheckpointProjectionRecord }
-  | { readonly type: "settings.saved"; readonly settings: UserSettings };
-
-export type DomainEvent = EventMetadata & EventData;
-export type UnsequencedDomainEvent = EventData & Pick<EventMetadata, "origin">;
+export type {
+  CheckpointProjectionRecord,
+  DomainEvent,
+  UnsequencedDomainEvent,
+} from "./persisted-events.js";
 export type ThreadReplayEvent = Exclude<
   ServerEvent,
   {

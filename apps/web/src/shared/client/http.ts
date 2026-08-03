@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
-import type { CommandId, ThreadId } from "@metaclanker/contracts/ids";
+import type { CheckpointId, CommandId, ThreadId } from "@metaclanker/contracts/ids";
 import {
   PersistedCheckpointWire,
   RestorePreviewResponse,
@@ -16,7 +16,7 @@ type Decoder<A> = Schema.ConstraintDecoder<A, never>;
 
 export interface RestoreFilesInput {
   readonly commandId: CommandId;
-  readonly checkpointId: string;
+  readonly checkpointId: CheckpointId;
   readonly confirmed: true;
 }
 
@@ -25,7 +25,7 @@ export interface ClientService {
   readonly review: (threadId: ThreadId) => Effect.Effect<typeof ReviewResponse.Type, ClientError>;
   readonly restorePreview: (
     threadId: ThreadId,
-    checkpointId: string,
+    checkpointId: CheckpointId,
   ) => Effect.Effect<typeof RestorePreviewResponse.Type, ClientError>;
   readonly restoreFiles: (
     threadId: ThreadId,

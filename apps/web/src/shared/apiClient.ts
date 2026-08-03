@@ -1,4 +1,5 @@
-import { Schema } from "effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import type { ThreadId } from "@metaclanker/contracts/ids";
 import type {
@@ -8,7 +9,11 @@ import type {
 } from "@metaclanker/contracts/wire";
 import {
   AgentNode,
+  AcceptedResponse,
+  AcceptedTurnResponse,
+  AuthenticationResponse,
   DirectoryBrowserResponse,
+  ErrorResponse,
   Message,
   PendingInteraction,
   Project,
@@ -17,6 +22,7 @@ import {
   ShellSnapshot,
   StartThreadResponse,
   ThreadDetail,
+  TicketResponse,
   ToolCall,
   UserSettings,
 } from "@metaclanker/contracts/wire";
@@ -46,31 +52,15 @@ const request = async <A>(
   });
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null);
-    let message = response.statusText;
-    if (
-      typeof payload === "object" &&
-      payload !== null &&
-      "error" in payload &&
-      typeof payload.error === "object" &&
-      payload.error !== null &&
-      "message" in payload.error
-    ) {
-      message = String(payload.error.message);
-    } else if (typeof payload === "object" && payload !== null && "message" in payload) {
-      message = String(payload.message);
-    }
+    const decoded = Schema.decodeUnknownOption(ErrorResponse)(payload);
+    const message = Option.isSome(decoded) ? decoded.value.error.message : response.statusText;
     throw new ApiError(response.status, message);
   }
   return decode(schema, await response.json());
 };
 
-const AcceptedTurn = Schema.Struct({ accepted: Schema.Boolean, turnId: Schema.String });
-const Accepted = Schema.Struct({ accepted: Schema.Boolean });
-const Ticket = Schema.Struct({ ticket: Schema.String });
-const Authentication = Schema.Struct({ authenticated: Schema.Boolean });
-
 export const api = {
-  authenticateLocal: () => request("/api/auth/local", Authentication, { method: "POST" }),
+  authenticateLocal: () => request("/api/auth/local", AuthenticationResponse, { method: "POST" }),
   shell: () => request("/api/shell", ShellSnapshot),
   providerReadiness: () => request("/api/providers", ProviderReadinessResponse),
   createProject: (input: CreateProjectRequest) =>
@@ -87,12 +77,12 @@ export const api = {
     }),
   thread: (id: ThreadId) => request(`/api/threads/${encodeURIComponent(id)}`, ThreadDetail),
   prompt: (id: ThreadId, input: object) =>
-    request(`/api/threads/${encodeURIComponent(id)}/prompts`, AcceptedTurn, {
+    request(`/api/threads/${encodeURIComponent(id)}/prompts`, AcceptedTurnResponse, {
       method: "POST",
       body: JSON.stringify(input),
     }),
   cancel: (id: ThreadId, input: CancelPromptRequest) =>
-    request(`/api/threads/${encodeURIComponent(id)}/cancel`, Accepted, {
+    request(`/api/threads/${encodeURIComponent(id)}/cancel`, AcceptedResponse, {
       method: "POST",
       body: JSON.stringify(input),
     }),
@@ -101,7 +91,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  ticket: () => request("/api/auth/ticket", Ticket, { method: "POST" }),
+  ticket: () => request("/api/auth/ticket", TicketResponse, { method: "POST" }),
   settings: () => request("/api/settings", UserSettings),
   saveSettings: (settings: typeof UserSettings.Type) =>
     request("/api/settings", UserSettings, { method: "PUT", body: JSON.stringify(settings) }),

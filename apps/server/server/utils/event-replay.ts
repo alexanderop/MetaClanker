@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import * as Effect from "effect/Effect";
 
 import { Store } from "@metaclanker/application/commands";
 import type { Sequence } from "@metaclanker/contracts/ids";

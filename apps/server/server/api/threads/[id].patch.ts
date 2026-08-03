@@ -1,22 +1,20 @@
-import { Effect } from "effect";
-import { createError, defineEventHandler, getRouterParam } from "h3";
+import * as Effect from "effect/Effect";
+import { defineEventHandler } from "h3";
 
 import { ApplicationError, Store } from "@metaclanker/application/commands";
 import { ThreadId } from "@metaclanker/contracts/ids";
-import { UpdateThreadRequest } from "@metaclanker/contracts/wire";
+import { Thread, UpdateThreadRequest } from "@metaclanker/contracts/wire";
 
-import { decodeBody, publicError } from "../../utils/http.js";
+import { decodeBody, decodeRouteParam, encodeResponse, publicError } from "../../utils/http.js";
 import { publishShellEvent, publishThreadEvent } from "../../utils/hub.js";
 import { runApplication } from "../../utils/runtime.js";
 
 export default defineEventHandler(async (event) => {
-  const rawId = getRouterParam(event, "id");
-  if (rawId === undefined) throw createError({ statusCode: 400, message: "Thread ID required" });
+  const id = await decodeRouteParam(event, "id", ThreadId);
   const input = await decodeBody(event, UpdateThreadRequest);
   const result = await runApplication(
     Effect.gen(function* () {
       const store = yield* Store;
-      const id = ThreadId.make(rawId);
       const existing = yield* store.getThread(id);
       if (existing === null) {
         return yield* Effect.fail(
@@ -44,5 +42,5 @@ export default defineEventHandler(async (event) => {
     await publishShellEvent(liveEvent);
     await publishThreadEvent(result.thread.id, liveEvent);
   }
-  return result.thread;
+  return encodeResponse(Thread, result.thread);
 });

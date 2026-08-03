@@ -1,7 +1,8 @@
-import { Schema } from "effect";
+import * as Schema from "effect/Schema";
 
 import {
   AgentNodeId,
+  CheckpointId,
   CommandId,
   MessageId,
   PendingInteractionId,
@@ -228,6 +229,11 @@ export const DirectoryBrowserResponse = Schema.Struct({
 });
 export type DirectoryBrowserResponse = typeof DirectoryBrowserResponse.Type;
 
+export const DirectoryBrowserQuery = Schema.Struct({
+  path: Schema.optionalKey(Schema.NonEmptyString),
+});
+export type DirectoryBrowserQuery = typeof DirectoryBrowserQuery.Type;
+
 export const ProviderReadiness = Schema.Struct({
   provider: Provider,
   status: Schema.Literals(["ready", "unavailable"]),
@@ -276,10 +282,13 @@ export type CancelPromptRequest = typeof CancelPromptRequest.Type;
 
 export const RestoreThreadFilesRequest = Schema.Struct({
   commandId: CommandId,
-  checkpointId: Schema.String,
+  checkpointId: CheckpointId,
   confirmed: Schema.Literal(true),
 });
 export type RestoreThreadFilesRequest = typeof RestoreThreadFilesRequest.Type;
+
+export const RestorePreviewRequest = Schema.Struct({ checkpointId: CheckpointId });
+export type RestorePreviewRequest = typeof RestorePreviewRequest.Type;
 
 export const StartThreadRequest = Schema.Struct({
   commandId: CommandId,
@@ -335,13 +344,77 @@ export const CommandReceipt = Schema.Struct({
 });
 export type CommandReceipt = typeof CommandReceipt.Type;
 
+export const ErrorCode = Schema.Literals([
+  "invalid-request",
+  "provider-unavailable",
+  "conflict",
+  "not-found",
+  "invalid-project",
+  "persistence",
+  "unauthenticated",
+  "forbidden",
+  "internal",
+]);
+export type ErrorCode = typeof ErrorCode.Type;
+
 export const ErrorResponse = Schema.Struct({
   error: Schema.Struct({
-    code: Schema.String,
+    code: ErrorCode,
     message: Schema.String,
   }),
 });
 export type ErrorResponse = typeof ErrorResponse.Type;
+
+export const AuthenticationResponse = Schema.Struct({ authenticated: Schema.Boolean });
+export type AuthenticationResponse = typeof AuthenticationResponse.Type;
+
+export const PairRequest = Schema.Struct({ code: Schema.NonEmptyString });
+export type PairRequest = typeof PairRequest.Type;
+
+export const TicketResponse = Schema.Struct({ ticket: Schema.NonEmptyString });
+export type TicketResponse = typeof TicketResponse.Type;
+
+export const PairingCodeResponse = Schema.Struct({ code: Schema.NonEmptyString });
+export type PairingCodeResponse = typeof PairingCodeResponse.Type;
+
+export const HealthResponse = Schema.Struct({
+  status: Schema.Literal("ready"),
+  protocolVersion: Schema.Literal(1),
+  serverTime: Schema.String,
+});
+export type HealthResponse = typeof HealthResponse.Type;
+
+export const BackupResponse = Schema.Struct({ fileName: NonEmptyTrimmedString });
+export type BackupResponse = typeof BackupResponse.Type;
+
+export const RemovedResponse = Schema.Struct({ removed: Schema.Literal(true) });
+export type RemovedResponse = typeof RemovedResponse.Type;
+
+export const AcceptedResponse = Schema.Struct({ accepted: Schema.Literal(true) });
+export type AcceptedResponse = typeof AcceptedResponse.Type;
+
+export const AcceptedTurnResponse = Schema.Struct({
+  accepted: Schema.Literal(true),
+  turnId: TurnId,
+});
+export type AcceptedTurnResponse = typeof AcceptedTurnResponse.Type;
+
+const EventCursor = Schema.NumberFromString.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.makeFilter(Number.isSafeInteger, { expected: "a safe event cursor" }),
+);
+
+export const EventCursorQuery = Schema.Struct({
+  afterSequence: Schema.optionalKey(EventCursor),
+});
+export type EventCursorQuery = typeof EventCursorQuery.Type;
+
+export const ThreadEventStreamIdentity = Schema.Struct({
+  threadId: ThreadId,
+  ticket: Schema.NonEmptyString,
+});
+export type ThreadEventStreamIdentity = typeof ThreadEventStreamIdentity.Type;
 
 export const Theme = Schema.Literals(["light", "dark", "system"]);
 export type Theme = typeof Theme.Type;
@@ -394,11 +467,9 @@ const CheckpointFileWire = Schema.Struct({
 });
 
 const CheckpointWire = Schema.Struct({
-  id: Schema.String,
-  projectPath: Schema.String,
+  id: CheckpointId,
   createdAt: Schema.String,
   files: Schema.Array(CheckpointFileWire),
-  snapshotPath: Schema.String,
 });
 
 export const PersistedCheckpointWire = Schema.Struct({
@@ -407,6 +478,7 @@ export const PersistedCheckpointWire = Schema.Struct({
   turnId: Schema.NullOr(TurnId),
   kind: Schema.Literals(["pre-turn", "post-turn", "undo"]),
 });
+export type PersistedCheckpointWire = typeof PersistedCheckpointWire.Type;
 
 export const WorkspaceDiffWire = Schema.Struct({
   files: Schema.Array(

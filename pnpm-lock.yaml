@@ -355,6 +355,9 @@ importers:
       '@metaclanker/application':
         specifier: workspace:*
         version: link:../application
+      '@metaclanker/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.102

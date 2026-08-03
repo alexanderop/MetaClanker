@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { Effect } from "effect";
+import * as Effect from "effect/Effect";
 import { expect, test } from "vitest";
 
 import { Store } from "@metaclanker/application/commands";
@@ -151,6 +151,137 @@ test("a Claude workspace-write first send caches its advertised model catalog", 
   );
 });
 
+test("malformed provider metadata keeps chat available and durably reports a degraded graph", async () => {
+  await withOrchestrationHarness(
+    async (harness) => {
+      const projectId = ProjectId.make("project:metadata-degraded");
+      await harness.createProject({
+        id: projectId,
+        commandId: CommandId.make("command:metadata-degraded-project"),
+        name: "Metadata degradation",
+        path: harness.projectDirectory,
+        gitBranch: null,
+        gitStatus: "unavailable",
+        createdAt: "2026-08-02T00:00:00.000Z",
+      });
+      const started = await harness.startThreadWithPrompt({
+        commandId: CommandId.make("command:metadata-degraded-start"),
+        projectId,
+        provider: "codex",
+        model: null,
+        effort: null,
+        permissionMode: null,
+        prompt: "Keep the conversation available",
+        attachments: [],
+      });
+      await harness.drain();
+
+      const detail = await harness.threadDetail(started.thread.id);
+      expect(detail?.thread.status).toBe("completed");
+      expect(detail?.messages.map((message) => message.content).join(" ")).toContain(
+        "agent graph is degraded",
+      );
+    },
+    {
+      fakeAcpScenario: JSON.stringify({
+        prompt: { mode: "complete", message: "Chat still completed" },
+        metadataMode: "invalid-codex",
+      }),
+    },
+  );
+});
+
+test("a disconnected provider without a safe rollover rejects a follow-up before durable admission", async () => {
+  await withOrchestrationHarness(
+    async (harness) => {
+      const projectId = ProjectId.make("project:non-resumable");
+      await harness.createProject({
+        id: projectId,
+        commandId: CommandId.make("command:non-resumable-project"),
+        name: "Non-resumable provider",
+        path: harness.projectDirectory,
+        gitBranch: null,
+        gitStatus: "unavailable",
+        createdAt: "2026-08-02T00:00:00.000Z",
+      });
+      const started = await harness.startThreadWithPrompt({
+        commandId: CommandId.make("command:non-resumable-start"),
+        projectId,
+        provider: "codex",
+        model: null,
+        effort: null,
+        permissionMode: null,
+        prompt: "Complete one safely attributed turn",
+        attachments: [],
+      });
+      await harness.drain();
+      await harness.restartRuntime();
+
+      await expect(
+        dispatchPrompt(
+          CommandId.make("command:non-resumable-follow-up"),
+          started.thread.id,
+          "Do not misattribute this follow-up",
+          [],
+        ),
+      ).rejects.toThrow("cannot safely correlate a follow-up turn");
+      const detail = await harness.threadDetail(started.thread.id);
+      expect(detail?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    },
+    {
+      fakeAcpScenario: JSON.stringify({
+        sessionCapabilities: { close: false, resume: false, load: false },
+        prompt: { mode: "complete", message: "Only attributed turn" },
+      }),
+    },
+  );
+});
+
+test("resume without close is not treated as a safe generation rollover", async () => {
+  await withOrchestrationHarness(
+    async (harness) => {
+      const projectId = ProjectId.make("project:resume-without-close");
+      await harness.createProject({
+        id: projectId,
+        commandId: CommandId.make("command:resume-without-close-project"),
+        name: "Resume without close",
+        path: harness.projectDirectory,
+        gitBranch: null,
+        gitStatus: "unavailable",
+        createdAt: "2026-08-02T00:00:00.000Z",
+      });
+      const started = await harness.startThreadWithPrompt({
+        commandId: CommandId.make("command:resume-without-close-start"),
+        projectId,
+        provider: "codex",
+        model: null,
+        effort: null,
+        permissionMode: null,
+        prompt: "Complete without a close boundary",
+        attachments: [],
+      });
+      await harness.drain();
+
+      await expect(
+        dispatchPrompt(
+          CommandId.make("command:resume-without-close-follow-up"),
+          started.thread.id,
+          "Do not cross the unsafe boundary",
+          [],
+        ),
+      ).rejects.toThrow("cannot safely correlate a follow-up turn");
+      const detail = await harness.threadDetail(started.thread.id);
+      expect(detail?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    },
+    {
+      fakeAcpScenario: JSON.stringify({
+        sessionCapabilities: { close: false, resume: true, load: false },
+        prompt: { mode: "complete", message: "No deterministic close boundary" },
+      }),
+    },
+  );
+});
+
 test("a permission request publishes needs-input before returning to running and completing", async () => {
   await withOrchestrationHarness(
     async (harness) => {
@@ -281,9 +412,11 @@ test("a prompt after an adapter disconnect opens a fresh resumable session", asy
         "recovery-required",
       );
 
-      process.env["METACLANKER_FAKE_ACP_SCENARIO"] = JSON.stringify({
-        prompt: { mode: "complete", message: "Fresh session completed" },
-      });
+      harness.setFakeAcpScenario(
+        JSON.stringify({
+          prompt: { mode: "complete", message: "Fresh session completed" },
+        }),
+      );
       await dispatchPrompt(
         CommandId.make("command:orchestrator-after-disconnect"),
         accepted.thread.id,

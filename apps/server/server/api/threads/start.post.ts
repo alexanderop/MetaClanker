@@ -1,8 +1,8 @@
 import { createError } from "h3";
 
-import { StartThreadRequest } from "@metaclanker/contracts/wire";
+import { StartThreadRequest, StartThreadResponse } from "@metaclanker/contracts/wire";
 
-import { decodeBody, defineApiHandler } from "../../utils/http.js";
+import { decodeBody, defineApiHandler, encodeResponse } from "../../utils/http.js";
 import { runAgentCommand } from "../../utils/runtime.js";
 
 export default defineApiHandler(async (event) => {
@@ -21,5 +21,5 @@ export default defineApiHandler(async (event) => {
       prompt: input.prompt,
       attachments: input.attachments ?? [],
     }),
-  );
+  ).then((result) => encodeResponse(StartThreadResponse, result));
 });

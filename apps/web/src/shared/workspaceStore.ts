@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import * as Schema from "effect/Schema";
 import { defineStore } from "pinia";
 import { computed, onScopeDispose, ref, shallowRef } from "vue";
 

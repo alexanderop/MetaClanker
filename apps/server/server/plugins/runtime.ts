@@ -1,5 +1,7 @@
 import { defineNitroPlugin } from "nitropack/runtime/plugin";
 import { useRuntimeConfig } from "nitropack/runtime/config";
+import * as Config from "effect/Config";
+import * as Effect from "effect/Effect";
 
 import { closeAgentSessions } from "../utils/orchestrator.js";
 import { closeApplicationRuntime, installApplicationRuntime } from "../utils/runtime-app.js";
@@ -21,8 +23,11 @@ export default defineNitroPlugin((nitroApp: NitroAppWithCloseHook) => {
   // Nitro v2's virtual runtime-config declaration only exists after the first server build.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call
   const runtimeConfig: ServerRuntimeConfig = useRuntimeConfig() as ServerRuntimeConfig;
-  const dataDirectory =
-    process.env["METACLANKER_DATA_DIR"] ?? runtimeConfig.metaclanker.dataDirectory;
+  const dataDirectory = Effect.runSync(
+    Config.string("METACLANKER_DATA_DIR").pipe(
+      Config.withDefault(runtimeConfig.metaclanker.dataDirectory),
+    ),
+  );
   installApplicationRuntime(nitroApp, makeApplicationRuntime(dataDirectory));
   nitroApp.hooks.hook("close", async () => {
     await closeAgentSessions();

@@ -1,15 +1,22 @@
-import { Context, type Effect } from "effect";
+import * as Context from "effect/Context";
+import type * as Effect from "effect/Effect";
 
 import type { ApplicationError } from "./commands.js";
 
 import type {
   CommandId,
+  CheckpointId,
   PendingInteractionId,
   ProjectId,
   ThreadId,
   TurnId,
 } from "@metaclanker/contracts/ids";
-import type { PendingInteraction, Provider, Thread } from "@metaclanker/contracts/wire";
+import type {
+  PendingInteraction,
+  PersistedCheckpointWire,
+  Provider,
+  Thread,
+} from "@metaclanker/contracts/wire";
 
 export interface StartAgentThreadInput {
   readonly commandId: CommandId;
@@ -56,8 +63,8 @@ export interface AgentCommandsService {
   readonly restoreThreadFiles: (
     commandId: CommandId,
     threadId: ThreadId,
-    checkpointId: string,
-  ) => Effect.Effect<unknown, ApplicationError>;
+    checkpointId: CheckpointId,
+  ) => Effect.Effect<PersistedCheckpointWire, ApplicationError>;
 }
 
 export class AgentCommands extends Context.Service<AgentCommands, AgentCommandsService>()(
